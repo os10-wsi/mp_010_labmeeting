@@ -37,9 +37,13 @@ columns:
   output_counts: auto
   codon: auto                 # only needed for A12
   variant_class: null
+  aa_ham: auto                # rows with aa_ham = 0 and no pos are synonymous (position from nt_seq)
+  nt_ham: auto
+  wt_flag: auto               # boolean `wt` column
+  stop_flag: auto             # boolean `stop` column: forces the nonsense class
 
 variant_encoding:
-  synonymous_symbols: ["=", "syn", "WT", "_"]
+  synonymous_symbols: ["=", "syn", "WT"]
   nonsense_symbols: ["*", "Ter", "X", "Stop", "STOP"]
 
 normalization:
@@ -66,7 +70,7 @@ evolution:
   esm_scores: null            # csv: pos,wt,mut,llr (or pos,llr)
 
 filters:
-  min_reads: 10               # minimum input count per replicate
+  min_reads: 5                # minimum input count per replicate (check qc_read_threshold)
   min_replicates: 2
   drop_positions: []
 

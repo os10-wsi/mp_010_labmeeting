@@ -4,7 +4,7 @@ This pipeline takes one DMS folder per yeast membrane protein (a `fitness_estima
 plus the three QC PDFs) through these steps:
 
 1. **QC.** Read-count filter, replicate correlations, and fitness distributions by variant
-   class (missense blue, synonymous green, stop dark red).
+   class (missense blue, synonymous green, stop red).
 2. **Per-protein normalisation.** Median(stop) is set to −1, median(synonymous) to 0, and
    every variant is rescaled linearly between them. Each replicate is normalised on its own
    anchors.
@@ -41,15 +41,25 @@ For an offline demo on two synthetic datasets, run `tests/run_demo.sh`.
 
 ## Input table
 
-Column names are detected automatically. Any of them can be overridden under `columns:` in
-the config.
+The lab's `fitness_estimation.tsv` layout is supported as is:
 
-| what | detected names |
-|---|---|
-| variant | `Pos`/`WT_AA`/`Mut`, or a `variant`/`hgvs` column (`M1A`, `p.Met1Ala`, `p.Gly7=`), or DiMSum `aa_seq` (+ `nt_seq`, `WT`) |
-| replicate fitness | `rescaled_fitness_rep1..N`, `fitness1_uncorr`, `fitness_rep1`, `rep1`, … |
-| mean fitness / error | `rescaled_fitness`/`fitness`, `rescaled_sigma`/`sigma` |
-| counts | `input1..N`, `output1..N` (DiMSum `input1_e1_s0_bNA_count` works too) |
+```
+wt aa  pos  mut aa  aa_ham  aa_seq  nt_ham  nt_seq  input1..3  output1..3  wt  stop
+raw_fitness_rep1..3  rescaled_fitness_rep1..3  mean fitness  fitness sd
+```
+
+- Replicates are read from `rescaled_fitness_rep1..3` and the mean from `mean fitness`.
+  Normalisation is linear, so using the rescaled rather than the raw columns does not change
+  `score_z`.
+- Synonymous rows have `aa_ham = 0` and an empty `pos`/`wt aa`/`mut aa`. Their position and
+  codon are recovered from `nt_seq`, compared with the WT CDS (the `nt_ham = 0` / `wt` row,
+  or the consensus of all variants if there is no WT row). They form the 0 anchor.
+- The boolean `stop` column forces the nonsense class, and the `wt` row is kept aside.
+- Rows with more than one amino-acid change are dropped.
+
+Other layouts are auto-detected too: `Pos`/`WT_AA`/`Mut`, HGVS strings (`p.Met1Ala`), DiMSum
+`aa_seq` tables, `fitness1_uncorr`, and so on. Any column can be pinned under `columns:` in
+the config.
 
 Filters: a replicate value is used only if its input count is at least `filters.min_reads`.
 A variant passes if it has `filters.min_replicates` usable replicates. The QC figure

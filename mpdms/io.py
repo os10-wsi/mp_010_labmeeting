@@ -45,6 +45,10 @@ CANDIDATES = {
     "n_reads": ["n_reads", "mean_count", "input_count", "depth", "count_input", "reads"],
     "codon": ["codon", "mut_codon", "alt_codon", "variant_codon"],
     "variant_class": ["variant_class", "vclass", "mutation_type", "consequence", "class"],
+    "aa_ham": ["aa_ham", "nham_aa", "n_aa_mut", "aa_hamming"],
+    "nt_ham": ["nt_ham", "nham_nt", "n_nt_mut", "nt_hamming"],
+    "wt_flag": ["wt", "is_wt", "wildtype_flag"],
+    "stop_flag": ["stop", "is_stop", "nonsense"],
 }
 REP_PATTERNS = [
     r"^rescaled_fitness_rep_?(\d+)$", r"^fitness_rep_?(\d+)$", r"^fitness(\d+)_uncorr$",
@@ -67,8 +71,12 @@ def read_source(path: Path) -> pd.DataFrame:
     return pd.read_csv(path, sep=sep, engine="python", comment=None)
 
 
+def _norm(name: str) -> str:
+    return re.sub(r"[\s\-.]+", "_", str(name).strip().lower())
+
+
 def _find(cols: list[str], names: list[str]) -> str | None:
-    low = {c.lower(): c for c in cols}
+    low = {_norm(c): c for c in cols}
     for n in names:
         if n in low:
             return low[n]
@@ -79,7 +87,7 @@ def _find_numbered(cols: list[str], patterns: list[str]) -> list[str]:
     for pat in patterns:
         hits = []
         for c in cols:
-            m = re.match(pat, c, flags=re.I)
+            m = re.match(pat, _norm(c), flags=re.I)
             if m:
                 hits.append((int(m.group(1)), c))
         if hits:
@@ -92,7 +100,7 @@ def detect_columns(raw: pd.DataFrame, cfg: Config) -> dict:
     spec = dict(cfg.get("columns") or {})
     out: dict = {}
     for key in ["position", "wt_aa", "mut_aa", "variant", "aa_seq", "nt_seq", "score", "se",
-                "n_reads", "codon", "variant_class"]:
+                "n_reads", "codon", "variant_class", "aa_ham", "nt_ham", "wt_flag", "stop_flag"]:
         v = spec.get(key, "auto")
         if v in (None, "null"):
             out[key] = None
@@ -102,6 +110,10 @@ def detect_columns(raw: pd.DataFrame, cfg: Config) -> dict:
             if v not in cols:
                 raise KeyError(f"columns.{key} = {v!r} not in source columns {cols}")
             out[key] = v
+    for key in ("wt_flag", "stop_flag"):
+        c = out.get(key)
+        if c is not None and (c in (out.get("wt_aa"), out.get("mut_aa")) or not _is_flag(raw[c])):
+            out[key] = None
     # a DiMSum "WT" column is a boolean flag, not the WT residue
     for key in ("wt_aa", "mut_aa"):
         c = out.get(key)
@@ -124,6 +136,16 @@ def detect_columns(raw: pd.DataFrame, cfg: Config) -> dict:
     if out["score"] is None and not out["replicates"]:
         raise KeyError(f"no fitness/score column found in {cols}; set columns.score in the config")
     return out
+
+
+def _is_flag(col: pd.Series) -> bool:
+    v = col.dropna().astype(str).str.strip().str.upper()  # noqa: PD011
+    v = v[v != ""]
+    return len(v) == 0 or v.isin(["TRUE", "FALSE", "T", "F", "1", "0", "1.0", "0.0", "YES", "NO"]).all()
+
+
+def _truthy(col: pd.Series) -> pd.Series:
+    return col.fillna("").astype(str).str.strip().str.upper().isin(["TRUE", "T", "1", "1.0", "YES"])
 
 
 # ---------------------------------------------------------- variant parsing
@@ -198,11 +220,11 @@ def parse_variants(raw: pd.DataFrame, colmap: dict, cfg: Config, wt_seq: str | N
     if colmap["position"] and colmap["wt_aa"] and colmap["mut_aa"]:
         v = pd.DataFrame({
             "pos": pd.to_numeric(raw[colmap["position"]], errors="coerce"),
-            "wt": raw[colmap["wt_aa"]].astype(str).str.strip(),
-            "mut": raw[colmap["mut_aa"]].astype(str).str.strip(),
+            "wt": raw[colmap["wt_aa"]].fillna("").astype(str).str.strip(),
+            "mut": raw[colmap["mut_aa"]].fillna("").astype(str).str.strip(),
         }, index=raw.index)
-        v["wt"] = v["wt"].map(lambda t: _aa(t.capitalize()) if len(t) == 3 else t.upper())
-        v["mut"] = v["mut"].map(lambda t: _aa(t.capitalize()) if len(t) == 3 else t)
+        v["wt"] = v["wt"].map(lambda t: (_aa(t.capitalize()) if len(t) == 3 else t.upper()) or None)
+        v["mut"] = v["mut"].map(lambda t: (_aa(t.capitalize()) if len(t) == 3 else t) or None)
     elif colmap["variant"]:
         parsed = raw[colmap["variant"]].map(parse_variant_string)
         v = pd.DataFrame(
@@ -215,6 +237,77 @@ def parse_variants(raw: pd.DataFrame, colmap: dict, cfg: Config, wt_seq: str | N
     v["mut"] = v["mut"].map(lambda m: "*" if m in stop else ("=" if m in syn else m))
     same = v["mut"].notna() & (v["mut"] == v["wt"])
     v.loc[same, "mut"] = "="
+    if "codon_parsed" not in v:
+        v["codon_parsed"] = None
+    v = _recover_synonymous(raw, colmap, v, wt_seq)
+    if colmap.get("stop_flag"):
+        v.loc[_truthy(raw[colmap["stop_flag"]]) & v["pos"].notna(), "mut"] = "*"
+    return v
+
+
+def _first_seq(x) -> str:
+    return str(x).split(",")[0].strip().upper() if isinstance(x, str) else ""
+
+
+def wt_nt_reference(raw: pd.DataFrame, colmap: dict) -> str | None:
+    """WT coding sequence: the nt_ham == 0 / WT-flagged row if present, else the per-base
+    consensus of all variant sequences (every variant differs from WT at only a few bases)."""
+    nt = colmap.get("nt_seq")
+    if not nt:
+        return None
+    seqs = raw[nt].map(_first_seq)
+    for key in ("nt_ham", "wt_flag"):
+        c = colmap.get(key)
+        if c:
+            m = (pd.to_numeric(raw[c], errors="coerce") == 0) if key == "nt_ham" else _truthy(raw[c])
+            cand = seqs[m & (seqs != "")]
+            if len(cand):
+                return cand.iloc[0]
+    seqs = seqs[seqs != ""]
+    if not len(seqs):
+        return None
+    L = seqs.str.len().mode().iloc[0]
+    arr = np.array([list(x) for x in seqs[seqs.str.len() == L].iloc[:5000]])
+    out = []
+    for j in range(arr.shape[1]):
+        vals, cnt = np.unique(arr[:, j], return_counts=True)
+        out.append(vals[np.argmax(cnt)])
+    return "".join(out)
+
+
+def _recover_synonymous(raw: pd.DataFrame, colmap: dict, v: pd.DataFrame, wt_seq: str | None) -> pd.DataFrame:
+    """Rows with no amino-acid change often carry no pos/wt/mut (only aa_ham = 0 and an
+    nt_seq). Locate the changed codon from the nucleotide sequence so they count as
+    synonymous at the right position (and as the 0 anchor); an unchanged row is the WT."""
+    missing = v["pos"].isna()
+    if colmap.get("aa_ham"):
+        missing &= pd.to_numeric(raw[colmap["aa_ham"]], errors="coerce") == 0
+    else:
+        return v
+    if not missing.any():
+        return v
+    if colmap.get("wt_flag"):
+        wtm = missing & _truthy(raw[colmap["wt_flag"]])
+        v.loc[wtm, "mut"] = "WT_ROW"
+        missing &= ~wtm
+    ref = wt_nt_reference(raw, colmap)
+    if ref is None:
+        v.loc[missing, "mut"] = "="  # synonymous but position unknown -> dropped later
+        return v
+    v = v.copy()
+    for i in v.index[missing]:
+        nt = _first_seq(raw.at[i, colmap["nt_seq"]])
+        diffs = [k for k in range(min(len(nt), len(ref))) if nt[k] != ref[k]]
+        if not diffs:
+            v.at[i, "mut"] = "WT_ROW"
+            continue
+        p = diffs[0] // 3 + 1
+        cod = nt[(p - 1) * 3:(p - 1) * 3 + 3]
+        wt_res = wt_seq[p - 1] if wt_seq and p <= len(wt_seq) else CODON_TABLE.get(ref[(p - 1) * 3:(p - 1) * 3 + 3], "X")
+        v.at[i, "pos"] = p
+        v.at[i, "wt"] = wt_res
+        v.at[i, "mut"] = "="
+        v.at[i, "codon_parsed"] = cod
     return v
 
 
@@ -289,7 +382,7 @@ def load_dataset(cfg: Config, use_cache: bool = False) -> pd.DataFrame:
     else:
         df["n_reads"] = np.nan
     codon_col = colmap["codon"]
-    df["codon"] = raw[codon_col].astype(str) if codon_col else var.get("codon_parsed")
+    df["codon"] = raw[codon_col].astype(str) if codon_col else var["codon_parsed"]
 
     # single amino-acid variants only; keep WT row aside
     n_in = len(df)

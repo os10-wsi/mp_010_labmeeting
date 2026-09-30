@@ -161,6 +161,45 @@ def simulate(seq, layout, rng, n_reps=3, stop_present=True, depth=150):
     return df
 
 
+def to_lab_format(df, seq, rng):
+    """Write the lab's fitness_estimation.tsv layout (spaced names, empty pos for synonymous)."""
+    from mpdms.io import CODON_TABLE
+    by_aa = {}
+    for c, a in CODON_TABLE.items():
+        by_aa.setdefault(a, []).append(c)
+    cds = [rng.choice(by_aa[a]) for a in seq]
+    out = []
+    for r in df.itertuples():
+        i = r.pos - 1
+        if r.mut == r.wt:  # synonymous: alternative codon, no pos/wt/mut
+            alts = [c for c in by_aa[r.wt] if c != cds[i]]
+            if not alts:
+                continue
+            cod, aa_seq, wt_, pos_, mut_, aa_ham = rng.choice(alts), seq, "", "", "", 0
+        else:
+            cod = by_aa[r.mut][0]
+            aa_seq = seq[:i] + r.mut + seq[i + 1:]
+            wt_, pos_, mut_, aa_ham = r.wt, r.pos, r.mut, 1
+        nt = "".join(cds[:i]) + cod + "".join(cds[i + 1:])
+        row = {"wt aa": wt_, "pos": pos_, "mut aa": mut_, "aa_ham": aa_ham, "aa_seq": aa_seq,
+               "nt_ham": sum(a != b for a, b in zip(cod, cds[i])), "nt_seq": nt}
+        for k in (1, 2, 3):
+            row[f"input{k}"] = getattr(r, f"input{k}")
+        for k in (1, 2, 3):
+            row[f"output{k}"] = getattr(r, f"output{k}")
+        row["wt"], row["stop"] = "", (r.mut == "*") or ""
+        for k in (1, 2, 3):
+            row[f"raw_fitness_rep{k}"] = getattr(r, f"rescaled_fitness_rep{k}") * 1.3
+        for k in (1, 2, 3):
+            row[f"rescaled_fitness_rep{k}"] = getattr(r, f"rescaled_fitness_rep{k}")
+        row["mean fitness"] = r.rescaled_fitness
+        row["fitness sd"] = r.rescaled_sigma
+        out.append(row)
+    wt_row = dict(out[0], **{"wt aa": "", "pos": "", "mut aa": "", "aa_ham": 0, "aa_seq": seq, "nt_ham": 0,
+                              "nt_seq": "".join(cds), "wt": True, "stop": "", "mean fitness": 0.0})
+    return pd.DataFrame([wt_row] + out)
+
+
 def main():
     rng = np.random.default_rng(7)
     # SYN1: 4-TM, N-term cytosolic
@@ -170,8 +209,7 @@ def main():
     d1 = simulate(seq1, lay1, rng, n_reps=3)
     out1 = ROOT / "data/raw/SYN1/fitness_estimation"
     out1.mkdir(parents=True, exist_ok=True)
-    d1.rename(columns={"pos": "Pos", "wt": "WT_AA", "mut": "Mut"}).drop(columns="true").to_csv(
-        out1 / "fitness_estimation.tsv", sep="\t", index=False)
+    to_lab_format(d1, seq1, rng).to_csv(out1 / "fitness_estimation.tsv", sep="\t", index=False)
     ext1 = ROOT / "data/external/SYN1"
     ext1.mkdir(parents=True, exist_ok=True)
     (ext1 / "SYN1.fasta").write_text(f">SYN1\n{seq1}\n")

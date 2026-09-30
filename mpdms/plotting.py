@@ -14,8 +14,8 @@ from matplotlib.colors import LinearSegmentedColormap, TwoSlopeNorm  # noqa: E40
 
 from .config import REPO_ROOT  # noqa: E402
 
-# variant classes: missense blue, synonymous green, nonsense dark red
-CLASS_COLORS = {"missense": "#2F6DB5", "synonymous": "#2A9D55", "nonsense": "#9E1B1B"}
+# variant classes: missense blue, synonymous green, stop red (checked for deutan/protan separation)
+CLASS_COLORS = {"missense": "#2F6DB5", "synonymous": "#1B9E77", "nonsense": "#D62728"}
 CLASS_LABELS = {"missense": "Missense", "synonymous": "Synonymous", "nonsense": "Stop"}
 CLASS_ORDER = ["missense", "synonymous", "nonsense"]
 
