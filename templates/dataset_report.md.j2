@@ -1,0 +1,35 @@
+# {{ cfg.display_name }}
+
+*Dataset `{{ cfg.id }}` · UniProt {{ cfg.protein.uniprot or "—" }} · source `{{ cfg.source.path }}` · git `{{ commit }}` · {{ date }}*
+
+| | |
+|---|---|
+| Variants (pass / all) | {{ meta.n_pass_filter }} / {{ meta.n_single_variants }} |
+| Replicates | {{ meta.n_replicates }} |
+| Normalisation anchors (raw) | syn median {{ "%.3f"|format(meta.normalization.score.syn_median) }} → 0, stop median {{ "%.3f"|format(meta.normalization.score.stop_median) }} → −1 ({{ meta.normalization.score.stop_source }}) |
+| Topology | {{ cfg.topology.source }} · {{ n_tm }} TM segments |
+| Structure | {{ cfg.structure.path or "none" }} |
+
+## Headlines
+
+{% for r in results %}- **{{ r.analysis|upper }}** — {{ r.headline }}{% if r.status != "ok" %} *({{ r.status }})*{% endif %}
+{% endfor %}
+
+{% for r in results if r.status == "ok" %}
+## {{ r.analysis|upper }}
+
+{{ r.headline }}
+
+{% for f in r.figures %}![{{ r.analysis }}]({{ f }})
+{% endfor %}
+{% if r.caveats %}**Caveats**
+{% for c in r.caveats %}- {{ c }}
+{% endfor %}{% endif %}
+{% endfor %}
+
+## All caveats
+
+{% for r in results %}{% for c in r.caveats %}- `{{ r.analysis }}` {{ c }}
+{% endfor %}{% endfor %}
+{% for r in results if r.status != "ok" %}- `{{ r.analysis }}` {{ r.status }}: {{ r.reason }}
+{% endfor %}

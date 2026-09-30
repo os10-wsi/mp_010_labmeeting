@@ -1,0 +1,17 @@
+# Extra motif classes scanned by A09 (Python regexes on the protein sequence).
+# GxxxG, small-xxx-small and N-glycosylation sequons (N-X-S/T, X != P) are built in.
+di_lysine_ER_retrieval:
+  regex: "K.K..$|KK..$"         # C-terminal KKXX / KXKXX (cytosolic C-terminus only)
+  note: "COPI binding; Jackson et al. 1990"
+di_arginine_ER_retention:
+  regex: "[RK]R.R|R.RR"
+  note: "Michelsen et al. 2005"
+diacidic_ER_export:
+  regex: "[DE].[DE]"
+  note: "COPII Sec24 binding; Nishimura & Balch 1997"
+HDEL_retrieval:
+  regex: "[HK]DEL$"
+  note: "yeast ER lumenal retrieval signal"
+tyrosine_sorting_YxxPhi:
+  regex: "Y..[LIMFV]"
+  note: "AP-binding tyrosine motif"

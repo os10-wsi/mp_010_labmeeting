@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+data/raw/*
+!data/raw/.gitkeep
+data/external/*
+!data/external/.gitkeep
+data/processed/*
+!data/processed/.gitkeep
+outputs/*
+!outputs/.gitkeep
+reports/*.md
+!reports/.gitkeep
+configs/SYN*.yaml

@@ -1,0 +1,78 @@
+# Per-dataset config. `python -m mpdms init <dms_folder>` writes one of these
+# automatically (UniProt accession, sequence, topology, AlphaFold model);
+# curate the topology block by hand before trusting A04-A08.
+id: SEC61                     # dataset id = yeast gene name (folder name)
+display_name: "Sec61 growth DMS"
+source:
+  path: /path/to/SEC61/fitness_estimation/fitness_estimation.tsv
+  citation: ""
+  numbering: uniprot          # uniprot | construct
+  numbering_offset: 0         # add to source position to get UniProt numbering
+
+protein:
+  gene: SEC61
+  organism_id: 559292         # S. cerevisiae S288C
+  uniprot: P32915
+  sequence: data/external/SEC61/P32915.fasta
+  region: null                # [start, end] mutagenized; null = inferred from data
+
+assay:
+  type: function              # insertion | surface_expression | abundance | glyc_reporter | function
+  readout: growth             # facs_sort_seq | growth | barcode_seq
+  higher_is_better: true      # if false, pipeline flips sign at load time
+  n_bins: null
+
+# "auto" detects DiMSum-style / generic column names. Override any entry with
+# the literal column name in fitness_estimation.tsv if auto-detection is wrong.
+columns:
+  position: auto
+  wt_aa: auto
+  mut_aa: auto
+  aa_seq: auto                # full variant protein sequence (DiMSum style), used if no pos/wt/mut
+  score: auto                 # mean fitness across replicates
+  se: auto
+  n_reads: auto               # input counts; per-replicate columns are auto-detected
+  replicates: auto            # e.g. [rescaled_fitness_rep1, rescaled_fitness_rep2, rescaled_fitness_rep3]
+  input_counts: auto          # e.g. [input1, input2, input3]
+  output_counts: auto
+  codon: auto                 # only needed for A12
+  variant_class: null
+
+variant_encoding:
+  synonymous_symbols: ["=", "syn", "WT", "_"]
+  nonsense_symbols: ["*", "Ter", "X", "Stop", "STOP"]
+
+normalization:
+  syn_anchor: 0.0             # median(synonymous) -> 0
+  stop_anchor: -1.0           # median(nonsense)  -> -1
+  stop_exclude_last_n: 0      # optionally drop C-terminal stops from the -1 anchor (see A11)
+
+topology:
+  n_terminus: cytosolic       # cytosolic | lumenal
+  source: "UniProt features"
+  segments: []                # filled by `mpdms init`; e.g.
+  #  - {name: TM1, start: 81,  end: 101, type: TM, orientation: in_out}
+  #  - {name: L1,  start: 102, end: 117, type: loop, side: lumenal}
+
+structure:
+  path: data/external/SEC61/AF-P32915-F1-model_v4.pdb
+  chain: A
+  numbering_offset: 0
+  membrane_normal: pca_tm_axes  # ppm | opm (file already in membrane frame) | pca_tm_axes | none
+  membrane_center_z: 0.0
+
+evolution:
+  msa: null                   # .a3m / aligned .fasta, query first
+  esm_scores: null            # csv: pos,wt,mut,llr (or pos,llr)
+
+filters:
+  min_reads: 10               # minimum input count per replicate
+  min_replicates: 2
+  drop_positions: []
+
+plotting:
+  score_label: "Normalised fitness"
+  clip_percentiles: [0.5, 99.5]
+  heatmap_vmin: -1.0          # dark red
+  heatmap_vmax: 0.5           # light blue ceiling
+  residues_per_row: 100

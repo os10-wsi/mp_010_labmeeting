@@ -1,0 +1,18 @@
+# pinned versions the pipeline was developed and tested with (Python 3.11)
+numpy==2.4.6
+pandas==3.0.6
+pyarrow==25.0.1
+scipy==1.17.1
+matplotlib==3.11.2
+statsmodels==0.15.0
+scikit-learn==1.9.1
+biopython==1.88
+diptest==0.11.0
+SSDraw==0.2.0
+pydssp==0.9.1
+PyYAML==6.0.1
+Jinja2==3.1.6
+requests==2.33.1
+# tests / synthetic demo only
+pytest
+PeptideBuilder==1.1.0
