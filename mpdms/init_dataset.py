@@ -6,6 +6,7 @@ retrieves UniProt sequence/topology and the AlphaFold model, and writes configs/
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 from pathlib import Path
 
@@ -51,7 +52,7 @@ def wt_sequence_from_data(src: Path) -> str | None:
     return "".join(wt.get(i, "X") for i in range(1, L + 1))
 
 
-def make_config(src: Path, gene: str | None = None, offline: bool = False) -> dict:
+def make_config(src: Path, gene: str | None = None, offline: bool = False, dataset_id: str | None = None) -> dict:
     gene = (gene or fetch.gene_from_path(src.parent if src.is_file() else src)).upper()
     cfg = defaults()
     notes = []
@@ -105,7 +106,9 @@ def make_config(src: Path, gene: str | None = None, offline: bool = False) -> di
     if entry:
         pname = (entry.get("proteinDescription", {}).get("recommendedName", {})
                  .get("fullName", {}).get("value"))
-    cfg.update(id=gene, display_name=gene if not pname else f"{gene} ({pname})")
+    did = dataset_id or gene
+    label = did if did == gene else f"{gene} [{did[len(gene) + 1:]}]"
+    cfg.update(id=did, display_name=label if not pname else f"{label} ({pname})")
     cfg["source"].update(path=_rel(src), citation="")
     cfg["protein"].update(gene=gene, uniprot=acc, sequence=_rel(fasta) if fasta else None, region=None)
     cfg["topology"].update(n_terminus=n_term, source=topo_src, segments=segs)
@@ -137,6 +140,41 @@ def write_config(cfg: dict, force: bool = False) -> Path:
     return out
 
 
+def _tag(root: Path, src: Path) -> str:
+    """Short label for the results set a source came from: the nearest folder named like
+    '008_default_results' gives '008'; otherwise the name of the folder passed to init."""
+    for part in reversed(src.resolve().parent.parts):
+        m = re.match(r"^(\d+)[_\-]", part)
+        if m:
+            return m.group(1)
+    m = re.match(r"^(\d+)", root.resolve().name)
+    return m.group(1) if m else re.sub(r"\W+", "_", root.resolve().name)
+
+
+def dataset_ids(found: list[tuple[Path, Path]], gene: str | None = None) -> dict:
+    """Dataset id per source: the gene name, suffixed with the results-set tag when the same
+    gene occurs more than once (e.g. SEC61_008 and SEC61_010)."""
+    genes = {}
+    for root, src in found:
+        try:
+            genes[src] = (gene or fetch.gene_from_path(src.parent)).upper()
+        except ValueError as e:
+            print(f"skip {src}: {e}")
+    counts = {}
+    for g in genes.values():
+        counts[g] = counts.get(g, 0) + 1
+    ids = {}
+    for root, src in found:
+        if src not in genes:
+            continue
+        g = genes[src]
+        ids[src] = g if counts[g] == 1 else f"{g}_{_tag(root, src)}"
+    if len(set(ids.values())) < len(ids):  # same tag twice: fall back to the full relative path
+        ids = {s: (g if counts[genes[s]] == 1 else f"{genes[s]}_{'_'.join(s.parent.parts[-3:-1])}")
+               for s, g in ids.items()}
+    return ids
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="python -m mpdms init")
     ap.add_argument("paths", nargs="+", help="DMS folders (searched recursively) or fitness_estimation.tsv files")
@@ -144,12 +182,16 @@ def main(argv=None):
     ap.add_argument("--offline", action="store_true", help="use only files already in data/external/<GENE>/")
     ap.add_argument("--force", action="store_true", help="overwrite existing configs")
     a = ap.parse_args(argv)
-    srcs = [s for p in a.paths for s in find_sources(Path(p))]
-    if not srcs:
+    found = [(Path(p), s) for p in a.paths for s in find_sources(Path(p))]
+    if not found:
         sys.exit(f"no {SOURCE_NAMES[0]} found under {a.paths}")
+    srcs = [s for _, s in found]
+    ids = dataset_ids(found, a.gene if len(srcs) == 1 else None)
     for src in srcs:
+        if src not in ids:
+            continue
         try:
-            cfg = make_config(src, a.gene if len(srcs) == 1 else None, a.offline)
+            cfg = make_config(src, a.gene if len(srcs) == 1 else None, a.offline, ids[src])
         except ValueError as e:
             print(f"skip {src}: {e}")
             continue
