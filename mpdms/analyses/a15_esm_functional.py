@@ -96,7 +96,7 @@ def write_structures(cfg, sites: pd.DataFrame, outdir) -> list:
         pdb = sdir / f"{name}.pdb"
         io = PDBIO(); io.set_structure(st); io.save(str(pdb))
         out.append(pdb)
-        obj = f"{cfg.id}_{name.split('_')[1]}"
+        obj = name  # same name PyMOL gives the object when the PDB is opened via File > Open
         sel_t = _ranges(tested) or "none"
         sel_f = _ranges(funcres)
         if name == "a15_zscore":
@@ -109,10 +109,12 @@ def write_structures(cfg, sites: pd.DataFrame, outdir) -> list:
         else:
             pml_col = [f"color white, {obj}"] + ([f"color red, {obj} and resi {sel_f}"] if sel_f else [])
             cxc_col = ["color #1 white"] + ([f"color #1:{_ranges(funcres, ',')} red"] if funcres else [])
-        pml = [f"load {pdb.name}, {obj}", "bg_color white", "hide everything", f"show cartoon, {obj}",
+        pml = [f"# run with:  cd <folder containing {pdb.name}>  then  @{name}.pml   (not 'run')",
+               f"delete {obj}", f"load {pdb.name}, {obj}", "bg_color white", "hide everything", f"show cartoon, {obj}",
                "set cartoon_transparency, 0", "set ray_opaque_background, 0",
                "set ray_trace_mode, 1", "set ray_trace_color, black", "set antialias, 2", *pml_col,
-               f"orient {obj}{orient_sel}", f"png {name}.png, width=2400, height=1800, dpi=300, ray=1"]
+               f"orient {obj}{orient_sel}", f"save {name}.pse",
+               f"png {name}.png, width=2400, height=1800, dpi=300, ray=1"]
         cxc = [f"open {pdb.name}", "set bgColor white", "hide atoms", "show cartoons", *cxc_col,
                "lighting soft", "graphics silhouettes true", "view", f"save {name}_chimerax.png width 2400 height 1800 supersample 3"]
         (sdir / f"{name}.pml").write_text("\n".join(pml) + "\n")
@@ -127,8 +129,9 @@ def write_structures(cfg, sites: pd.DataFrame, outdir) -> list:
             try:
                 subprocess.run(cmd, cwd=sdir, timeout=600, check=False,
                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                if (sdir / f"{name}.png").exists():
-                    out.append(sdir / f"{name}.png")
+                for ext in ("png", "pse"):
+                    if (sdir / f"{name}.{ext}").exists():
+                        out.append(sdir / f"{name}.{ext}")
             except Exception:
                 pass
     return out

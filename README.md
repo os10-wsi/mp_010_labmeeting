@@ -184,7 +184,9 @@ A15 also writes two coloured structures per protein to `outputs/<GENE>/structure
 | `a15_functional.pdb/.pml/.cxc(.png)` | functional sites red, everything else white |
 
 The B-factor column holds the value (z-score, or 1/0 for functional), so any viewer can
-colour by it. `pymol a15_zscore.pml` or ChimeraX `open a15_zscore.cxc` reproduces the
-view and saves a PNG. If PyMOL is installed (`pymol`, or `python -m pymol`), the PNGs are
-rendered automatically during the run.
+colour by it. Easiest is the self-contained PyMOL session: double-click `a15_zscore.pse`.
+To use the script instead, keep the `.pml` next to its `.pdb` and in PyMOL type
+`cd <that folder>` then `@a15_zscore.pml`. Don't use "Run Script" on the `.pdb`: PyMOL will
+try to execute it as Python. ChimeraX: `open a15_zscore.cxc`. If PyMOL is installed in the pipeline environment (`pip install pymol-open-source-whl`),
+the `.pse` sessions and PNGs are written automatically during the run.
 
