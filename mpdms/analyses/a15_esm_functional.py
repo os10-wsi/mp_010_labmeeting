@@ -44,6 +44,96 @@ def loess_fit(x, y, frac=0.3):
     return lambda q: np.interp(q, xs, f[idx, 1])
 
 
+def _ranges(nums, sep="+"):
+    """[1,2,3,7,9,10] -> '1-3+7+9-10' (PyMOL) or '1-3,7,9-10' with sep=','"""
+    nums = sorted(set(int(n) for n in nums))
+    out, i = [], 0
+    while i < len(nums):
+        j = i
+        while j + 1 < len(nums) and nums[j + 1] == nums[j] + 1:
+            j += 1
+        out.append(str(nums[i]) if i == j else f"{nums[i]}-{nums[j]}")
+        i = j + 1
+    return sep.join(out)
+
+
+Z_COLOR_RANGE = 4.0  # structure colouring: -4 red ... 0 white ... +4 blue
+
+
+def write_structures(cfg, sites: pd.DataFrame, outdir) -> list:
+    """Two coloured structures per protein, each as a PDB (B-factor carries the value) plus
+    PyMOL (.pml) and ChimeraX (.cxc) scripts that load it, colour it and save a PNG:
+      a15_zscore     : site median z, red (constrained) - white - blue; untested residues grey
+      a15_functional : functional sites red, everything else white
+    """
+    import shutil
+    import subprocess
+    from pathlib import Path
+
+    from Bio.PDB import PDBIO, PDBParser
+    src = cfg.resolve(cfg.get_path("structure.path"))
+    if src is None or not src.exists():
+        return []
+    sdir = Path(outdir) / "structures"
+    sdir.mkdir(parents=True, exist_ok=True)
+    off = int(cfg.get_path("structure.numbering_offset", 0) or 0)
+    z = dict(zip(sites.pos, sites.median_z))
+    func = set(sites.loc[sites.functional, "pos"])
+    tested = {p_ - off for p_ in z}
+    funcres = sorted(p_ - off for p_ in func)
+    # frame the view on confidently predicted residues (AlphaFold pLDDT in the B-factor column)
+    conf = sorted({r.id[1] for r in PDBParser(QUIET=True).get_structure("s", str(src)).get_residues()
+                   if "CA" in r and r["CA"].bfactor >= 70})
+    orient_sel = f" and resi {_ranges(conf)}" if conf else ""
+    out = []
+    for name, value in (("a15_zscore", lambda p_: z.get(p_, np.nan)),
+                        ("a15_functional", lambda p_: 1.0 if p_ in func else 0.0)):
+        st = PDBParser(QUIET=True).get_structure(cfg.id, str(src))
+        for res in st.get_residues():
+            v = value(res.id[1] + off)
+            for a in res:
+                a.bfactor = float(np.clip(v, -99, 99)) if np.isfinite(v) else 0.0
+        pdb = sdir / f"{name}.pdb"
+        io = PDBIO(); io.set_structure(st); io.save(str(pdb))
+        out.append(pdb)
+        obj = f"{cfg.id}_{name.split('_')[1]}"
+        sel_t = _ranges(tested) or "none"
+        sel_f = _ranges(funcres)
+        if name == "a15_zscore":
+            pml_col = [f"color grey70, {obj}",
+                       f"spectrum b, red_white_blue, {obj} and resi {sel_t}, "
+                       f"minimum=-{Z_COLOR_RANGE}, maximum={Z_COLOR_RANGE}"]
+            cxc_col = ["color #1 #b3b3b3",
+                       f"color byattribute bfactor #1:{_ranges(tested, ',') or '0'} "
+                       f"palette -{Z_COLOR_RANGE},red:0,white:{Z_COLOR_RANGE},blue"]
+        else:
+            pml_col = [f"color white, {obj}"] + ([f"color red, {obj} and resi {sel_f}"] if sel_f else [])
+            cxc_col = ["color #1 white"] + ([f"color #1:{_ranges(funcres, ',')} red"] if funcres else [])
+        pml = [f"load {pdb.name}, {obj}", "bg_color white", "hide everything", f"show cartoon, {obj}",
+               "set cartoon_transparency, 0", "set ray_opaque_background, 0",
+               "set ray_trace_mode, 1", "set ray_trace_color, black", "set antialias, 2", *pml_col,
+               f"orient {obj}{orient_sel}", f"png {name}.png, width=2400, height=1800, dpi=300, ray=1"]
+        cxc = [f"open {pdb.name}", "set bgColor white", "hide atoms", "show cartoons", *cxc_col,
+               "lighting soft", "graphics silhouettes true", "view", f"save {name}_chimerax.png width 2400 height 1800 supersample 3"]
+        (sdir / f"{name}.pml").write_text("\n".join(pml) + "\n")
+        (sdir / f"{name}.cxc").write_text("\n".join(cxc) + "\n")
+        out += [sdir / f"{name}.pml", sdir / f"{name}.cxc"]
+        import importlib.util
+        import sys
+        exe = shutil.which("pymol")
+        cmd = [exe, "-cq", f"{name}.pml"] if exe else (
+            [sys.executable, "-m", "pymol", "-cq", f"{name}.pml"] if importlib.util.find_spec("pymol") else None)
+        if cmd:  # render a PNG if PyMOL is available (headless)
+            try:
+                subprocess.run(cmd, cwd=sdir, timeout=600, check=False,
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                if (sdir / f"{name}.png").exists():
+                    out.append(sdir / f"{name}.png")
+            except Exception:
+                pass
+    return out
+
+
 def run(df, cfg, outdir):
     p = cfg.resolve(cfg.get_path("evolution.esm_scores"))
     if p is None or not p.exists():
@@ -153,6 +243,9 @@ def run(df, cfg, outdir):
     off = int(cfg.get_path("structure.numbering_offset", 0) or 0)
     pml = (f"select {cfg.id}_functional, resi " + "+".join(str(int(p_) - off) for p_ in func.pos)) if len(func) else ""
     (tabdir / "a15_functional_sites.pml").write_text(pml + "\n")
+    structs = write_structures(cfg, sites, outdir)
+    if not structs:
+        caveats.append("no structure in config - coloured structures not written")
     if len(sites) and sites.functional.mean() > 0.3:
         caveats.append(f"{sites.functional.mean():.0%} of sites called functional - check ESM numbering/scale")
     caveats.append("ESM-1v scores conservation for any reason (function, folding in other contexts, interactions); "
@@ -165,4 +258,4 @@ def run(df, cfg, outdir):
                                      "n_functional_tolerant": int(sites.functional_and_tolerant.sum()),
                                      "functional_sites": [f"{r.wt}{r.pos}" for r in func.itertuples()],
                                      "pymol": pml, "best_p": fmt_p(sites.p.min())},
-                  caveats, figs, [t1, t2])
+                  caveats, figs, [t1, t2] + [str(x) for x in structs])

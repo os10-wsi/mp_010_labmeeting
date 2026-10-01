@@ -176,3 +176,15 @@ site is called functional when its variants' residuals are significantly below z
 `abundance_tolerant` column marks the functional sites whose abundance itself is near
 wild type.
 
+A15 also writes two coloured structures per protein to `outputs/<GENE>/structures/`:
+
+| file | colouring |
+|---|---|
+| `a15_zscore.pdb/.pml/.cxc(.png)` | site median z: red (−4, constrained beyond abundance) → white (0) → blue (+4); untested residues grey |
+| `a15_functional.pdb/.pml/.cxc(.png)` | functional sites red, everything else white |
+
+The B-factor column holds the value (z-score, or 1/0 for functional), so any viewer can
+colour by it. `pymol a15_zscore.pml` or ChimeraX `open a15_zscore.cxc` reproduces the
+view and saves a PNG. If PyMOL is installed (`pymol`, or `python -m pymol`), the PNGs are
+rendered automatically during the run.
+
