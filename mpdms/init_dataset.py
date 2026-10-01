@@ -193,12 +193,22 @@ def dataset_ids(found: list[tuple[Path, Path]], gene: str | None = None) -> dict
         g = genes[src]
         # suffix with the results set only when the gene occurs in more than one set
         ids[src] = g if counts[g] == 1 or len(sets[g]) == 1 else f"{g}_{tags[src]}"
-    seen: dict[str, int] = {}
-    for s in ids:  # same gene twice within one results set (different tables): _2, _3, ...
-        base = ids[s]
-        seen[base] = seen.get(base, 0) + 1
-        if seen[base] > 1:
-            ids[s] = f"{base}_{seen[base]}"
+    # same gene twice within one results set: name later copies by the folder that
+    # distinguishes them from the first (e.g. .../fitness/default_results -> AQR1_fitness)
+    first: dict[str, Path] = {}
+    for src in list(ids):
+        base = ids[src]
+        if base not in first:
+            first[base] = src
+            continue
+        ref = set(first[base].parent.parts)
+        extra = [re.sub(r"\W+", "_", p) for p in src.parent.parts if p not in ref and p not in (".", "..")]
+        cand = f"{base}_{extra[0]}" if extra else f"{base}_2"
+        k = 2
+        while cand in ids.values():
+            cand = f"{base}_{extra[0] if extra else ''}{k}".replace("__", "_")
+            k += 1
+        ids[src] = cand
     return ids
 
 
@@ -208,11 +218,14 @@ def main(argv=None):
     ap.add_argument("--gene", help="override gene name (only with a single dataset)")
     ap.add_argument("--offline", action="store_true", help="use only files already in data/external/<GENE>/")
     ap.add_argument("--force", action="store_true", help="overwrite existing configs")
+    ap.add_argument("--keep-duplicates", action="store_true",
+                    help="analyse byte-identical copies of a table separately (named by their distinguishing folder)")
     a = ap.parse_args(argv)
     found = [(Path(p), s) for p in a.paths for s in find_sources(Path(p))]
     if not found:
         sys.exit(f"no {SOURCE_NAMES[0]} found under {a.paths}")
-    found = dedupe(found)
+    if not a.keep_duplicates:
+        found = dedupe(found)
     srcs = [s for _, s in found]
     ids = dataset_ids(found, a.gene if len(srcs) == 1 else None)
     for src in srcs:
