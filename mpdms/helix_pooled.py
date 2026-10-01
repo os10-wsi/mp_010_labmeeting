@@ -33,7 +33,7 @@ def main(argv=None):
         validate(cfg)
         df = load_dataset(cfg)
         loaded.append((df, cfg))
-        print(f"loaded {cfg.id}")
+        print(f"loaded {cfg.id}", flush=True)
     ids = [cfg.id for _, cfg in loaded]
     pooled_dir = REPO_ROOT / "outputs" / ("_helix_" + "_".join(ids))
     tables, variants, summary = [], [], {}
@@ -42,12 +42,16 @@ def main(argv=None):
         tables.append(t)
         variants.append(variant_table(df, t))
         out = REPO_ROOT / "outputs" / cfg.id
+        print(f"  {cfg.id}: {t.helix.nunique()} TM helices, {len(t)} positions - running A13 ...", flush=True)
         r13 = a13.analyse([t], cfg.display_name, out, cfg)
+        print(f"  {cfg.id}: boundary sensitivity ...", flush=True)
         a13.sensitivity([(df, cfg)], out)
+        print(f"  {cfg.id}: A14 ...", flush=True)
         r14 = a14.analyse([t], [variants[-1]], cfg.display_name, out, cfg)
         summary[cfg.id] = {"a13": a13.headline(r13), "a14": a14.headline(r14)}
         print(f"  {cfg.id}: {summary[cfg.id]['a13']}\n  {'':{len(cfg.id)}}  {summary[cfg.id]['a14']}")
     if len(loaded) > 1:  # pooled
+        print("  pooled analysis ...", flush=True)
         title = " + ".join(ids)
         r13 = a13.analyse(tables, title, pooled_dir)
         a13.sensitivity(loaded, pooled_dir)

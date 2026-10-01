@@ -24,7 +24,18 @@ def load_structure(path: Path, chain: str = "A"):
     return s, model, model[chain]
 
 
+_RT_CACHE: dict = {}
+
+
 def residue_table(path: Path, chain: str = "A", offset: int = 0) -> pd.DataFrame:
+    """Cached wrapper: structure features are expensive (DSSP, SASA) and reused by many analyses."""
+    key = (str(Path(path).resolve()), Path(path).stat().st_mtime, chain, offset)
+    if key not in _RT_CACHE:
+        _RT_CACHE[key] = _residue_table(path, chain, offset)
+    return _RT_CACHE[key].copy()
+
+
+def _residue_table(path: Path, chain: str = "A", offset: int = 0) -> pd.DataFrame:
     """One row per residue: pos, aa, CA xyz, pLDDT (B-factor), SS (H/E/C), RSA, contacts."""
     from Bio.PDB.Polypeptide import three_to_index, index_to_one
     s, model, ch = load_structure(path, chain)
