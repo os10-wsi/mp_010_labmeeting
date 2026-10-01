@@ -1,6 +1,5 @@
 """ESM-1v masked-marginal bookkeeping (model-free) and the A15 functional-site call."""
 import numpy as np
-import pandas as pd
 
 from mpdms.esm_score import AA20, masked_marginals, to_long, windows
 
