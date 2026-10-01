@@ -60,7 +60,7 @@ def make_config(src: Path, gene: str | None = None, offline: bool = False, datas
     local = fetch.local_files(gene)
     if not offline:
         try:
-            entry = fetch.uniprot_entry(gene)
+            entry = fetch.uniprot_entry(gene, fetch.accession_from_path(src))
             fasta = fetch.write_fasta(entry, gene)
         except Exception as e:
             notes.append(f"UniProt lookup failed ({e.__class__.__name__}: {e})")
@@ -151,6 +151,25 @@ def _tag(root: Path, src: Path) -> str:
     return m.group(1) if m else re.sub(r"\W+", "_", root.resolve().name)
 
 
+def dedupe(found: list[tuple[Path, Path]]) -> list[tuple[Path, Path]]:
+    """Drop byte-identical copies of the same gene's table (e.g. default_results/ and
+    fitness/default_results/ holding the same file); keep the shortest path."""
+    import hashlib
+    seen, out = {}, []
+    for root, src in sorted(found, key=lambda x: (len(x[1].parts), str(x[1]))):
+        try:
+            g = fetch.gene_from_path(src.parent)
+        except ValueError:
+            g = str(src)
+        h = (g, hashlib.md5(src.read_bytes()).hexdigest())
+        if h in seen:
+            print(f"same table as {seen[h]} - ignoring {src}")
+            continue
+        seen[h] = src
+        out.append((root, src))
+    return out
+
+
 def dataset_ids(found: list[tuple[Path, Path]], gene: str | None = None) -> dict:
     """Dataset id per source: the gene name, suffixed with the results-set tag when the same
     gene occurs more than once (e.g. SEC61_008 and SEC61_010)."""
@@ -163,15 +182,23 @@ def dataset_ids(found: list[tuple[Path, Path]], gene: str | None = None) -> dict
     counts = {}
     for g in genes.values():
         counts[g] = counts.get(g, 0) + 1
+    tags = {src: _tag(root, src) for root, src in found if src in genes}
+    sets = {}
+    for src, g in genes.items():
+        sets.setdefault(g, set()).add(tags[src])
     ids = {}
     for root, src in found:
         if src not in genes:
             continue
         g = genes[src]
-        ids[src] = g if counts[g] == 1 else f"{g}_{_tag(root, src)}"
-    if len(set(ids.values())) < len(ids):  # same tag twice: fall back to the full relative path
-        ids = {s: (g if counts[genes[s]] == 1 else f"{genes[s]}_{'_'.join(s.parent.parts[-3:-1])}")
-               for s, g in ids.items()}
+        # suffix with the results set only when the gene occurs in more than one set
+        ids[src] = g if counts[g] == 1 or len(sets[g]) == 1 else f"{g}_{tags[src]}"
+    seen: dict[str, int] = {}
+    for s in ids:  # same gene twice within one results set (different tables): _2, _3, ...
+        base = ids[s]
+        seen[base] = seen.get(base, 0) + 1
+        if seen[base] > 1:
+            ids[s] = f"{base}_{seen[base]}"
     return ids
 
 
@@ -185,6 +212,7 @@ def main(argv=None):
     found = [(Path(p), s) for p in a.paths for s in find_sources(Path(p))]
     if not found:
         sys.exit(f"no {SOURCE_NAMES[0]} found under {a.paths}")
+    found = dedupe(found)
     srcs = [s for _, s in found]
     ids = dataset_ids(found, a.gene if len(srcs) == 1 else None)
     for src in srcs:

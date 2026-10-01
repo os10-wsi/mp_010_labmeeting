@@ -30,15 +30,37 @@ def external_dir(gene: str) -> Path:
     return d
 
 
+ACC_RE = re.compile(r"^(?:[OPQ][0-9][A-Z0-9]{3}[0-9]|[A-NR-Z][0-9](?:[A-Z][A-Z0-9]{2}[0-9]){1,2})$")
+
+
+def _tokens(part: str) -> list[str]:
+    return [t for t in re.split(r"[_\-.\s]+", Path(part).stem) if t]
+
+
 def gene_from_path(path: Path) -> str:
-    """Nearest path component that looks like a yeast gene name / ORF id."""
+    """Yeast gene name from the path, nearest folder first. A folder may be the gene itself
+    (SEC61/) or contain it as a token (atr1_repeat_2_atr1_fitness/, default_results_010_aqr1/)."""
     for part in reversed(Path(path).resolve().parts):
         stem = Path(part).stem
         if stem[:3].lower() in NOT_GENES:
             continue
         if GENE_RE.match(stem) or ORF_RE.match(stem):
             return stem.upper()
+        for tok in _tokens(part):
+            if tok[:3].lower() in NOT_GENES:
+                continue
+            if GENE_RE.match(tok) or ORF_RE.match(tok):
+                return tok.upper()
     raise ValueError(f"no yeast gene-like folder name in {path}; pass --gene")
+
+
+def accession_from_path(path: Path) -> str | None:
+    """A UniProt accession embedded in a folder name (e.g. fen2_repeat3_fen2_P25621_fitness)."""
+    for part in reversed(Path(path).resolve().parts):
+        for tok in _tokens(part):
+            if ACC_RE.match(tok):
+                return tok
+    return None
 
 
 def _get(url: str, **kw) -> requests.Response:
@@ -47,12 +69,16 @@ def _get(url: str, **kw) -> requests.Response:
     return r
 
 
-def uniprot_entry(gene: str) -> dict:
-    """Return the UniProt JSON entry for a yeast gene (cached)."""
+def uniprot_entry(gene: str, accession: str | None = None) -> dict:
+    """Return the UniProt JSON entry for a yeast gene (cached). A known accession skips the search."""
     d = external_dir(gene)
     cached = sorted(d.glob("*.uniprot.json"))
     if cached:
         return json.loads(cached[0].read_text())
+    if accession:
+        entry = _get(f"{UNIPROT}/{accession}.json").json()
+        (d / f"{accession}.uniprot.json").write_text(json.dumps(entry))
+        return entry
     queries = [
         f"(gene_exact:{gene}) AND (organism_id:{YEAST_TAXID}) AND (reviewed:true)",
         f"(gene:{gene}) AND (organism_id:{YEAST_TAXID})",
