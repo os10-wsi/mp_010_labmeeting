@@ -26,7 +26,10 @@ ANALYSES = [
     ("a10", "a10_orthogonals"),
     ("a11", "a11_nonsense_profile"),
     ("a12", "a12_synonymous_codons"),
+    ("a13", "a13_helix_burial"),
+    ("a14", "a14_hydrophobic_facing"),
 ]
+OPT_IN = {"a13", "a14"}  # only run when named in --only
 
 
 def run_dataset(cfg_path: Path, only: set[str] | None = None, strict: bool = True) -> list[dict]:
@@ -41,7 +44,7 @@ def run_dataset(cfg_path: Path, only: set[str] | None = None, strict: bool = Tru
     outdir.mkdir(parents=True, exist_ok=True)
     results = []
     for key, mod in ANALYSES:
-        if only and key not in only:
+        if (only and key not in only) or (key in OPT_IN and not (only and key in only)):
             continue
         t0 = time.time()
         try:
@@ -72,6 +75,7 @@ def run_dataset(cfg_path: Path, only: set[str] | None = None, strict: bool = Tru
 def main(argv=None):
     warnings.filterwarnings("ignore", category=RuntimeWarning)  # all-NaN slices in sparse segments
     warnings.filterwarnings("ignore", message=".*Glyph.*")
+    warnings.filterwarnings("ignore", message=".*(singular|boundary|positive definite|No artists).*")
     ap = argparse.ArgumentParser(prog="run_all.py")
     ap.add_argument("configs", nargs="*", help="config files (default: configs/*.yaml)")
     ap.add_argument("--only", help="comma-separated analysis keys, e.g. qc,heatmap,a01")

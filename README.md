@@ -113,3 +113,35 @@ configs/_motifs.yaml extensible motif regexes for A09
   term, provide `evolution.codon_usage` (csv `codon,w`).
 - **Topology.** When UniProt has no TM annotation, TMs are predicted from hydropathy with the
   positive-inside rule, and the config and report are flagged "NOT curated".
+
+## TM helix burial analyses (A13, A14; opt-in)
+
+Run these for selected proteins only. The command below produces one output set per
+protein and one pooled across them, with protein as a stratum:
+
+```bash
+python -m mpdms helix configs/TPO3.yaml configs/FEN2.yaml configs/QDR2.yaml
+# per protein  -> outputs/<GENE>/figures/a13*, a14*
+# pooled       -> outputs/_helix_TPO3_FEN2_QDR2/
+```
+
+- **A13a: position along the helix.** Fitness is plotted against position, from −1 at the
+  cytosolic end to +1 at the lumenal end. Plots are made for all helices and for surface vs
+  core helices, using both a median split and a tertile split.
+- **A13b: surface vs core helices.** Burial is the relative solvent-accessible surface area
+  (RSA) on the AlphaFold model, with no membrane present. A helix is "surface" or "core"
+  by its median RSA. The helix is the unit of analysis: labels are permuted across helices
+  within each protein, Hedges' g is reported, and a mixed model includes a random
+  intercept per helix. Helix RSA is also compared with helix mean fitness as a continuous
+  variable.
+- **A13c: each helix independently.** Small multiples per helix, a ranking of helices, and
+  a test of each helix against the protein's other TM helices (BH-FDR corrected).
+- **A14: hydrophobic TM residues (A V L I F M W C).** Lipid-facing (RSA > 0.25) vs buried
+  (RSA < 0.10), crossed with helix class. Substitutions are split into rest, → polar,
+  → hydrophobic, → Pro and → Gly. Includes a facing × class × substitution model and
+  within-cell slopes for hydrophobicity change vs volume change.
+
+Fitness is always split into Pro, Gly and the rest (missense excluding Pro/Gly), and each
+is plotted separately. Residues with pLDDT < 70 are excluded.
+`a13_sensitivity_boundaries.csv` repeats the headline statistics with helix boundaries
+taken from DSSP instead of UniProt.

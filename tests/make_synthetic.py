@@ -69,7 +69,8 @@ def build_pdb(seq, layout, path):
         if k == "TM":
             target = np.array([0, 0, 1.0]) * (1 if ntm % 2 == 0 else -1)
             ang = 2 * np.pi * ntm / max(tm_total, 1)
-            centre = np.array([10 * np.cos(ang), 10 * np.sin(ang), 0])
+            rad = 9.5 / (2 * np.sin(np.pi / max(tm_total, 2))) if tm_total > 1 else 0.0  # ~9.5 A packing
+            centre = np.array([rad * np.cos(ang), rad * np.sin(ang), 0])
             ntm += 1
         else:
             target = np.array([1.0, 0, 0])
