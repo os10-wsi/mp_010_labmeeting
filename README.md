@@ -190,3 +190,15 @@ To use the script instead, keep the `.pml` next to its `.pdb` and in PyMOL type
 try to execute it as Python. ChimeraX: `open a15_zscore.cxc`. If PyMOL is installed in the pipeline environment (`pip install pymol-open-source-whl`),
 the `.pse` sessions and PNGs are written automatically during the run.
 
+## Assay validation and model benchmarks
+
+```bash
+python -m mpdms validate configs/QDR2.yaml configs/AQR1.yaml ...   # is this biogenesis? does it generalise?
+python -m mpdms bench    configs/*.yaml --split protein            # how well do models predict it?
+```
+
+`validate` runs a pre-registered battery of twelve directional predictions (A16) per protein
+and as a protein × test matrix, then tests leave-one-protein-out transfer using only features
+that exist for any membrane protein. `bench` evaluates models under four splits, with
+pluggable zero-shot score files and embedding heads. See `docs/validation_and_benchmarks.md`.
+

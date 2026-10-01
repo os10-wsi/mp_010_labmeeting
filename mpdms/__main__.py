@@ -3,13 +3,19 @@ import sys
 
 
 def main():
-    if len(sys.argv) < 2 or sys.argv[1] not in ("init", "run", "helix", "esm"):
+    if len(sys.argv) < 2 or sys.argv[1] not in ("init", "run", "helix", "esm", "validate", "bench"):
         sys.exit("usage: python -m mpdms init <dms_folder>... | python -m mpdms run [configs/*.yaml] [--only a01,a02]"
                  " | python -m mpdms helix configs/A.yaml configs/B.yaml ..."
-                 " | python -m mpdms esm configs/A.yaml ... [--models 1,2,3,4,5]")
+                 " | python -m mpdms esm configs/A.yaml ... [--models 1,2,3,4,5]"
+                 " | python -m mpdms validate configs/*.yaml"
+                 " | python -m mpdms bench configs/*.yaml [--split protein]")
     cmd, rest = sys.argv[1], sys.argv[2:]
     if cmd == "init":
         from .init_dataset import main as m
+    elif cmd == "validate":
+        from .validate import main as m
+    elif cmd == "bench":
+        from .validate import bench_main as m
     elif cmd == "esm":
         from .esm_score import main as m
     elif cmd == "helix":
