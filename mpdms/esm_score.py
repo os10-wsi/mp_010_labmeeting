@@ -1,4 +1,5 @@
 """`python -m mpdms esm configs/QDR2.yaml configs/AQR1.yaml [--models 1,2,3,4,5] [--device cuda]`
+`python -m mpdms esm configs/QDR2.yaml configs/AQR1.yaml --from-table all_esm1v_predictions_with_mean.csv`
 
 ESM-1v variant effect scores by the masked-marginal method (Meier et al. 2021, NeurIPS):
     score(pos, wt->mut) = log p(mut | seq masked at pos) - log p(wt | seq masked at pos)
@@ -122,6 +123,63 @@ def set_config_esm(cfg_path: Path, csv_rel: str) -> None:
     Path(cfg_path).write_text(txt)
 
 
+MUT_RE = re.compile(r"^([A-Z])(\d+)([A-Z])$")
+
+
+def read_bulk_table(path: Path) -> pd.DataFrame:
+    """Precomputed ESM-1v table covering many proteins, e.g.
+        id,mutation,delta_logp_1..5,mean     (rows may carry an extra leading row number)
+    Returns columns: acc, pos, wt, mut, esm1v (+ esm1v_model1..N when present)."""
+    t = pd.read_csv(path)
+    t = t.loc[:, [c for c in t.columns if not str(c).startswith("Unnamed")]]
+    cols = {c.lower().strip(): c for c in t.columns}
+    idc = next((cols[k] for k in ("id", "uniprot", "accession", "uniprot_id", "protein") if k in cols), None)
+    mc = next((cols[k] for k in ("mutation", "mutant", "variant", "mut") if k in cols), None)
+    sc = next((cols[k] for k in ("mean", "esm1v", "score", "esm1v_mean") if k in cols), None)
+    if not (idc and mc and sc):
+        raise ValueError(f"{path}: need id, mutation and mean/esm1v columns; found {list(t.columns)}")
+    m = t[mc].astype(str).str.extract(MUT_RE)
+    out = pd.DataFrame({"acc": t[idc].astype(str).str.strip(), "wt": m[0], "pos": pd.to_numeric(m[1]),
+                        "mut": m[2], "esm1v": pd.to_numeric(t[sc], errors="coerce")})
+    for c in t.columns:
+        k = re.match(r"^delta_logp_(\d+)$", str(c))
+        if k:
+            out[f"esm1v_model{k.group(1)}"] = pd.to_numeric(t[c], errors="coerce")
+    bad = out.pos.isna().sum()
+    if bad:
+        print(f"  note: {bad} rows with unparseable mutation strings skipped (expected like M1A)")
+    out = out.dropna(subset=["pos"])
+    out["pos"] = out.pos.astype(int)
+    return out
+
+
+def import_from_table(table: Path, cfg_path: Path, acc_override: str | None = None, bulk=None) -> None:
+    cfg = load_config(cfg_path)
+    acc = acc_override or cfg.get_path("protein.uniprot")
+    if not acc:
+        print(f"{cfg.id}: no protein.uniprot in config - pass --id ACCESSION")
+        return
+    bulk = read_bulk_table(table) if bulk is None else bulk
+    sub = bulk[bulk.acc == acc].drop(columns="acc")
+    if sub.empty:
+        print(f"{cfg.id}: accession {acc} not in {Path(table).name} "
+              f"({bulk.acc.nunique()} proteins there, e.g. {', '.join(bulk.acc.unique()[:6])}) - use --id")
+        return
+    seq = protein_sequence(cfg)
+    if seq:
+        ok = sub.apply(lambda r: r.pos <= len(seq) and seq[r.pos - 1] == r.wt, axis=1)
+        print(f"{cfg.id}: {acc}: {len(sub):,} variants, {sub.pos.nunique()} positions; "
+              f"WT matches config sequence for {ok.mean():.1%}")
+        if ok.mean() < 0.95:
+            print("  WARNING: WT residues disagree with the config sequence - different isoform/numbering?")
+    gene = cfg.get_path("protein.gene") or cfg.id
+    out = REPO_ROOT / "data" / "external" / str(gene).upper() / f"{cfg.id}_esm1v.csv"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    sub.to_csv(out, index=False)
+    set_config_esm(Path(cfg_path), str(out.relative_to(REPO_ROOT)))
+    print(f"  -> {out.relative_to(REPO_ROOT)}; evolution.esm_scores set in {cfg_path}")
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="python -m mpdms esm")
     ap.add_argument("configs", nargs="+")
@@ -129,7 +187,15 @@ def main(argv=None):
     ap.add_argument("--device", default="auto")
     ap.add_argument("--batch", type=int, default=8)
     ap.add_argument("--force", action="store_true", help="recompute even if the CSV exists")
+    ap.add_argument("--from-table", type=Path,
+                    help="take scores from a precomputed multi-protein table (id, mutation, ..., mean) instead of running ESM")
+    ap.add_argument("--id", help="UniProt accession to pick from --from-table (default: protein.uniprot in the config)")
     a = ap.parse_args(argv)
+    if a.from_table:
+        bulk = read_bulk_table(a.from_table)
+        for c in a.configs:
+            import_from_table(a.from_table, Path(c), a.id, bulk)
+        return
     models = [int(x) for x in a.models.split(",")]
     for c in a.configs:
         cfg = load_config(Path(c))

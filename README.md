@@ -156,6 +156,15 @@ python -m mpdms esm configs/QDR2.yaml --models 1                  # quicker: one
 python run_all.py configs/QDR2.yaml configs/AQR1.yaml --only a15
 ```
 
+If you already have a table of precomputed ESM-1v scores for many proteins (columns
+`id, mutation, delta_logp_1..5, mean`, keyed by UniProt accession), import from it instead
+of running ESM:
+
+```bash
+python -m mpdms esm configs/QDR2.yaml configs/AQR1.yaml --from-table ../all_esm1v_predictions_with_mean.csv
+# --id ACCESSION overrides the accession taken from protein.uniprot in the config
+```
+
 `esm` writes `data/external/<GENE>/<ID>_esm1v.csv` and sets `evolution.esm_scores` in the
 config. If you already have ESM-1v scores, point `evolution.esm_scores` at a CSV with
 columns `pos, mut` and one of `esm1v` / `llr` / `score`.
