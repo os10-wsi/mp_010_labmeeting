@@ -28,6 +28,7 @@ ANALYSES = [
     ("a12", "a12_synonymous_codons"),
     ("a13", "a13_helix_burial"),
     ("a14", "a14_hydrophobic_facing"),
+    ("a15", "a15_esm_functional"),
 ]
 OPT_IN = {"a13", "a14"}  # only run when named in --only
 

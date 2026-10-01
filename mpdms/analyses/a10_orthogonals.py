@@ -51,7 +51,7 @@ def conservation(msa: list[str]) -> pd.DataFrame:
 def read_esm(path) -> pd.Series:
     e = pd.read_csv(path)
     e.columns = [c.lower() for c in e.columns]
-    col = next(c for c in e.columns if c in ("llr", "esm_llr", "score", "esm_score"))
+    col = next(c for c in e.columns if c in ("esm1v", "llr", "esm_llr", "score", "esm_score"))
     return e.groupby("pos")[col].mean().rename("esm_llr")
 
 

@@ -145,3 +145,25 @@ Fitness is always split into Pro, Gly and the rest (missense excluding Pro/Gly),
 is plotted separately. Residues with pLDDT < 70 are excluded.
 `a13_sensitivity_boundaries.csv` repeats the headline statistics with helix boundaries
 taken from DSSP instead of UniProt.
+
+## Abundance vs ESM-1v: functional sites (A15)
+
+```bash
+pip install fair-esm torch                    # once; on a GPU node install the CUDA build of torch
+export TORCH_HOME=/lustre/.../torch_cache     # weights are ~2.6 GB per model; keep them off $HOME
+python -m mpdms esm configs/QDR2.yaml configs/AQR1.yaml          # all 5 ESM-1v models (masked marginal)
+python -m mpdms esm configs/QDR2.yaml --models 1                  # quicker: one model
+python run_all.py configs/QDR2.yaml configs/AQR1.yaml --only a15
+```
+
+`esm` writes `data/external/<GENE>/<ID>_esm1v.csv` and sets `evolution.esm_scores` in the
+config. If you already have ESM-1v scores, point `evolution.esm_scores` at a CSV with
+columns `pos, mut` and one of `esm1v` / `llr` / `score`.
+
+A15 fits a LOESS of ESM-1v against DMS abundance. A variant's residual is how far its
+ESM-1v score falls below the curve, scaled by the robust spread (MAD) of all residuals. A
+site is called functional when its variants' residuals are significantly below zero
+(one-sided Wilcoxon test, BH q < 0.05) and its median z is ≤ −1. The
+`abundance_tolerant` column marks the functional sites whose abundance itself is near
+wild type.
+
