@@ -44,7 +44,16 @@ def replicate_grid(df, cfg, reps, figdir, name="qc_replicate_correlation", label
     for i, j in itertools.product(range(n), range(n)):
         ax = axes[i, j]
         if j > i:
-            ax.axis("off")
+            # upper triangle carries the correlation as a boxed number, as in the
+            # reference figure, instead of being left blank
+            x, y = d[reps[j]], d[reps[i]]
+            ok = x.notna() & y.notna()
+            r = ss.pearsonr(x[ok], y[ok])[0] if ok.sum() > 2 else np.nan
+            ax.text(0.5, 0.5, f"r = {r:.2f}", transform=ax.transAxes, ha="center", va="center",
+                    fontsize=10, color="#2F6DB5")
+            ax.set_xticks([]); ax.set_yticks([])
+            for sp in ax.spines.values():
+                sp.set_color("#C9D3DD")
             continue
         if i == j:
             for c in P.CLASS_ORDER:
@@ -64,7 +73,7 @@ def replicate_grid(df, cfg, reps, figdir, name="qc_replicate_correlation", label
                 ax.axvline(v, color="#BBBBBB", lw=0.4, zorder=0)
             r = ss.pearsonr(x[ok], y[ok])[0] if ok.sum() > 2 else np.nan
             rho = ss.spearmanr(x[ok], y[ok])[0] if ok.sum() > 2 else np.nan
-            ax.text(0.04, 0.96, f"r = {r:.2f}\nρ = {rho:.2f}\nn = {ok.sum():,}", transform=ax.transAxes,
+            ax.text(0.04, 0.96, f"ρ = {rho:.2f}\nn = {ok.sum():,}", transform=ax.transAxes,
                     va="top", ha="left", fontsize=6.5)
             stats_rows.append({"rep_x": reps[j], "rep_y": reps[i], "pearson": r, "spearman": rho, "n": int(ok.sum())})
             ax.set_xlim(lim); ax.set_ylim(lim)
@@ -78,7 +87,8 @@ def replicate_grid(df, cfg, reps, figdir, name="qc_replicate_correlation", label
         elif i != j:
             ax.set_yticklabels([])
     if n > 1:
-        axes[0, n - 1].legend(handles=P.class_legend_handles(), loc="upper right", title="Variant class")
+        axes[0, 0].legend(handles=P.class_legend_handles(), loc="upper left", fontsize=5.5,
+                          title="Variant class", title_fontsize=5.5)
     P.title(fig, cfg, "replicate reproducibility")
     fig.tight_layout(rect=(0, 0.01, 1, 0.97))
     return P.save(fig, figdir, name, cfg, "QC"), pd.DataFrame(stats_rows)

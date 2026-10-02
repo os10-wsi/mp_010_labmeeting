@@ -131,3 +131,44 @@ def test_scatter_fit_puts_the_statistic_in_the_corner_and_the_fit_in_red():
     assert any("rho" in t.get_text() for t in ax.texts)
     assert any(ln.get_color() == P.FIT_RED for ln in ax.lines)
     plt.close(fig)
+
+
+def test_a19_density_panel_separates_published_from_the_rest(tmp_path):
+    """A19 panel (a) is the reference's annotated-vs-other density comparison."""
+    import numpy as np
+    import pandas as pd
+
+    from mpdms.analyses.a19_literature import figure, residue_table
+    P.use_style("paper")
+    rng = np.random.default_rng(0)
+    n = 300
+    sites = pd.DataFrame({"pos": np.arange(1, n + 1), "wt": "Q", "segment": "TM1", "n_variants": 18,
+                          "median_abundance": rng.uniform(-1.2, 0.2, n),
+                          "median_z": rng.normal(0, 0.8, n), "q": rng.uniform(0, 1, n)})
+    pub = [10, 20, 30, 40, 50]
+    sites.loc[sites.pos.isin(pub), "median_z"] = -2.5
+    sites["functional"] = (sites.q < 0.05) & (sites.median_z <= -1.0)
+    sites["abundance_tolerant"] = sites.median_abundance >= -0.5
+    t = residue_table([{"pos": p_, "wt": "Q", "substitution": f"Q{p_}A"} for p_ in pub], sites)
+    out = figure(Config.wrap({"id": "X", "display_name": "X"}), t, sites, tmp_path)
+    assert any(str(p_).endswith(".png") for p_ in out)
+    cap = (tmp_path / "a19_literature_caption.txt").read_text()
+    assert "(a)" in cap and "(b)" in cap          # both panels lettered and captioned
+
+
+def test_replicate_grid_fills_the_upper_triangle_with_r(tmp_path):
+    """Fig 1c idiom: correlations in the upper triangle rather than blank panels."""
+    import numpy as np
+    import pandas as pd
+
+    from mpdms.analyses.qc import replicate_grid
+    rng = np.random.default_rng(0)
+    n = 400
+    base = rng.normal(-0.4, 0.5, n)
+    df = pd.DataFrame({"pass_filter": True, "pos": np.arange(n), "vclass": "missense",
+                       "rep1": base + rng.normal(0, .1, n), "rep2": base + rng.normal(0, .1, n),
+                       "rep3": base + rng.normal(0, .1, n)})
+    figs, cor = replicate_grid(df, Config.wrap({"id": "X", "display_name": "X"}),
+                               ["rep1", "rep2", "rep3"], tmp_path)
+    assert len(cor) == 3 and cor.pearson.min() > 0.8
+    assert any(str(p_).endswith(".png") for p_ in figs)

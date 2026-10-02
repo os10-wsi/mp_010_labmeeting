@@ -122,11 +122,33 @@ def enrichment(t: pd.DataFrame, sites: pd.DataFrame) -> dict:
 
 
 def figure(cfg, t: pd.DataFrame, sites: pd.DataFrame, figdir):
-    """Published residues placed on the abundance x ESM-constraint plane."""
-    fig, ax = plt.subplots(figsize=(6.2, 4.6), layout="constrained")
-    ax.scatter(sites.median_abundance, sites.median_z, s=9, c="#C9D3DD", lw=0, label="all tested sites", zorder=1)
+    """Published residues as a distribution against all other sites, and on the plane."""
+    fig, axes = plt.subplots(1, 2, figsize=(8.6, 3.9), layout="constrained")
+
+    # (a) the Fig 3g/3h comparison: are published residues shifted relative to the rest?
+    ax = axes[0]
+    cov = t[t.tested]
+    pub = sites[sites.pos.isin(cov.pos)].median_z if len(cov) else sites.iloc[:0].median_z
+    oth = sites[~sites.pos.isin(cov.pos)].median_z
+    P.density_by_class(ax, {"published": pub.to_numpy(), "all other sites": oth.to_numpy()},
+                       colors={"published": LIT_COLOR, "all other sites": "#8899A6"})
+    for v, c in ((pub, LIT_COLOR), (oth, "#8899A6")):
+        if len(v):
+            ax.axvline(float(np.median(v)), color=c, lw=0.8, ls=(0, (2, 2)))
+    if len(pub) and len(oth):
+        u, pv = ss.mannwhitneyu(pub, oth, alternative="two-sided")
+        ax.text(0.40, 0.96, f"Mann–Whitney {fmt_p(pv)}\nn = {len(pub)} vs {len(oth):,}",
+                transform=ax.transAxes, va="top", ha="center", fontsize=6.5)
+    ax.axvline(Z_SITE, color="#D62728", lw=0.6, ls=(0, (3, 3)))
+    ax.set_xlabel("Site median ESM-1v residual z")
+    ax.legend(frameon=False, fontsize=6.5, loc="upper right")
+    ax.set_title("(a) Published residues vs the rest of the protein", loc="left", fontsize=8.5)
+
+    ax = axes[1]
+    ax.scatter(sites.median_abundance, sites.median_z, s=4, c=P.INK, alpha=0.30, lw=0,
+               label="all tested sites", zorder=1, rasterized=len(sites) > 5000)
     f = sites[sites.functional]
-    ax.scatter(f.median_abundance, f.median_z, s=11, c="#D62728", lw=0, label="A15 functional", zorder=2)
+    ax.scatter(f.median_abundance, f.median_z, s=7, c="#D62728", lw=0, label="A15 functional", zorder=2)
     cov = t[t.tested]
     ax.scatter(cov.median_abundance, cov.median_z, s=70, facecolor="none", edgecolor=LIT_COLOR,
                lw=1.6, label="published residue", zorder=3)
@@ -137,9 +159,8 @@ def figure(cfg, t: pd.DataFrame, sites: pd.DataFrame, figdir):
     ax.axvline(TOLERANT, color="#555555", lw=0.6, ls=(0, (2, 2)))
     ax.set_xlabel("median abundance (normalised fitness)")
     ax.set_ylabel("median ESM-1v residual z")
-    ax.set_title("Published functional residues against the screen\n"
-                 f"bottom-right quadrant = constrained in evolution (z ≤ {Z_SITE}) but "
-                 f"abundance-tolerant (≥ {TOLERANT})", loc="left", fontsize=9)
+    ax.set_title(f"(b) Bottom-right = constrained (z ≤ {Z_SITE}) but abundance-tolerant "
+                 f"(≥ {TOLERANT})", loc="left", fontsize=8.5)
     ax.legend(frameon=False, fontsize=8, loc="lower left")
     P.title(fig, cfg, "A19 published residues vs this screen")
     return P.save(fig, figdir, "a19_literature", cfg, "A19")

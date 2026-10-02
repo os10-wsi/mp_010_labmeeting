@@ -90,7 +90,7 @@ def run(df, cfg, outdir):
             cc = c[c.subset == name].set_index("term").reindex(TERMS)
             ax.errorbar(cc.coef, ypos + (j - 0.5) * 0.25, xerr=[cc.coef - cc.lo, cc.hi - cc.coef], fmt="o", ms=3.5,
                         color=col, lw=1, capsize=0, label=name)
-        ax.axvline(0, color=P.MUTED, lw=0.5)
+        ax.axvline(0, color=P.MUTED, lw=0.6, ls=(0, (3, 3)))
         ax.set_yticks(ypos)
         ax.set_yticklabels(["Δ hydrophobicity\n(biological)", "Δ charge", "Δ volume", "Δ helix propensity"])
         ax.invert_yaxis()
