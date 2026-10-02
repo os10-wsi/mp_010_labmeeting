@@ -42,6 +42,7 @@ FIGURE_ORDER = [
     ("a21b_local_regression", "Named sites with the regression refit on those substitutions only"),
     ("a22a_topology_classes", "Missense fitness by topology class"),
     ("a22b_helix_violins", "Missense fitness per transmembrane helix, N to C"),
+    ("a23_membrane_canon", "Canonical membrane-protein predictions, each with a declared direction"),
 ]
 
 

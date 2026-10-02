@@ -35,6 +35,7 @@ ANALYSES = [
     ("a20", "a20_variant_panel"),
     ("a21", "a21_site_substitutions"),
     ("a22", "a22_topology_violins"),
+    ("a23", "a23_membrane_canon"),
 ]
 OPT_IN = {"a13", "a14"}  # only run when named in --only
 

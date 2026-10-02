@@ -439,3 +439,88 @@ def test_a20_panel_still_uses_substitutions_only():
     from mpdms.analyses.a20_variant_panel import wanted_variants
     cfg = Config.wrap({"id": "PHO84", "display_name": "PHO84", "protein": {"gene": "PHO84"}})
     assert wanted_variants(cfg) == ["D178N", "D178E", "D358N", "K492A", "K492Q", "K492E"]
+
+
+# ---------------------------------- A23: canonical membrane-protein predictions
+def _tm_cfg(n_tm=4, start=20, helix_len=21, gap=12):
+    segs, p = [], start
+    for i in range(n_tm):
+        segs.append({"name": f"TM{i + 1}", "start": p, "end": p + helix_len - 1, "type": "TM",
+                     "orientation": "in_out" if i % 2 == 0 else "out_in"})
+        p += helix_len + gap
+    return Config.wrap({"id": "T", "display_name": "T", "topology": {"segments": segs}}), segs
+
+
+def test_a23_flank_follows_helix_orientation_not_structure_orientation():
+    """in_out means the N-terminal half is cytosolic; out_in is the mirror."""
+    from mpdms.analyses.a23_membrane_canon import flank
+    cfg, segs = _tm_cfg(n_tm=2)
+    a, b = segs[0], segs[1]
+    d = pd.DataFrame({"pos": [a["start"], a["end"], b["start"], b["end"]]})
+    f = flank(d, cfg).tolist()
+    assert f == [True, False, False, True], f
+
+
+def test_a23_snorkel_detects_a_v_in_kr_but_not_in_the_control():
+    from mpdms.analyses.a23_membrane_canon import snorkel
+    rng = np.random.default_rng(0)
+    rows = []
+    for pos in range(1, 120):
+        z = rng.uniform(0, 18)
+        for mut in "KR":                       # V shape: worst at the centre
+            rows.append({"pos": pos, "wt": "L", "mut": mut, "seg_type": "TM", "absz": z,
+                         "score_z": -1.2 + 0.006 * z ** 2 + rng.normal(0, 0.1)})
+        for mut in "LI":                       # control: flat in depth
+            rows.append({"pos": pos, "wt": "A", "mut": mut, "seg_type": "TM", "absz": z,
+                         "score_z": -0.3 + rng.normal(0, 0.1)})
+    r = snorkel(pd.DataFrame(rows))
+    assert r["testable"] and r["passed"], r
+    assert r["delta_curvature"] > 0 and r["p"] < 0.01
+
+
+def test_a23_snorkel_quiet_when_both_classes_share_the_same_depth_shape():
+    from mpdms.analyses.a23_membrane_canon import snorkel
+    rng = np.random.default_rng(1)
+    rows = []
+    for pos in range(1, 120):
+        z = rng.uniform(0, 18)
+        for mut, wt, base in (("K", "L", -1.2), ("R", "L", -1.2), ("L", "A", -0.3), ("I", "A", -0.3)):
+            rows.append({"pos": pos, "wt": wt, "mut": mut, "seg_type": "TM", "absz": z,
+                         "score_z": base + 0.006 * z ** 2 + rng.normal(0, 0.1)})
+    r = snorkel(pd.DataFrame(rows))
+    assert r["testable"] and not r["passed"], r
+
+
+def test_a23_positive_inside_reads_the_sign_of_each_prediction():
+    from mpdms.analyses.a23_membrane_canon import positive_inside
+    rng = np.random.default_rng(0)
+    rows = []
+    for pos in range(1, 120):
+        cyt = pos % 2 == 0
+        for mut in "KR":                       # K/R cheaper on the cytosolic flank
+            rows.append({"pos": pos, "wt": "L", "mut": mut, "seg_type": "TM", "cytosolic_flank": cyt,
+                         "score_z": (-0.3 if cyt else -1.1) + rng.normal(0, 0.1)})
+        for mut in "DE":                       # D/E the mirror image
+            rows.append({"pos": pos, "wt": "L", "mut": mut, "seg_type": "TM", "cytosolic_flank": cyt,
+                         "score_z": (-1.1 if cyt else -0.3) + rng.normal(0, 0.1)})
+    t = positive_inside(pd.DataFrame(rows)).set_index("mutation")
+    assert bool(t.loc["K/R", "as_predicted"]) and bool(t.loc["D/E", "as_predicted"])
+    assert t.q.max() < 0.01
+
+
+def test_a23_aromatic_belt_fires_against_the_usual_gradient():
+    from mpdms.analyses.a23_membrane_canon import aromatic_belt
+    rng = np.random.default_rng(0)
+    rows = []
+    for pos in range(1, 160):
+        z = rng.uniform(0, 18)
+        iface = z > 8.0
+        for mut in "AG":
+            # W/Y worse at the interface; hydrophobic WT shows the usual opposite gradient
+            rows.append({"pos": pos, "wt": "W", "mut": mut, "seg_type": "TM", "absz": z,
+                         "score_z": (-1.2 if iface else -0.4) + rng.normal(0, 0.1)})
+            rows.append({"pos": pos + 1000, "wt": "L", "mut": mut, "seg_type": "TM", "absz": z,
+                         "score_z": (-0.4 if iface else -1.2) + rng.normal(0, 0.1)})
+    r = aromatic_belt(pd.DataFrame(rows))
+    assert r["testable"] and r["passed"] and r["difference"] < 0
+    assert r["control_gradient"] > 0          # the control runs the other way, as it should
