@@ -202,3 +202,43 @@ and as a protein × test matrix, then tests leave-one-protein-out transfer using
 that exist for any membrane protein. `bench` evaluates models under four splits, with
 pluggable zero-shot score files and embedding heads. See `docs/validation_and_benchmarks.md`.
 
+## Transmembrane regions from TMHMM
+
+```bash
+bash scripts/install_tmhmm.sh                      # once (patches tmhmm.py for modern NumPy/Cython)
+python -m mpdms tmhmm configs/AQR1.yaml configs/QDR2.yaml
+# or, with DeepTMHMM output from https://dtu.biolib.com/DeepTMHMM :
+python -m mpdms tmhmm configs/AQR1.yaml --from-file AQR1_deeptmhmm.gff3
+```
+
+Writes the TM segments into the `topology:` block of each config, so every downstream
+analysis uses them. TMHMM labels residues inside / membrane / outside, so helix
+**orientation** comes from the prediction rather than from the positive-inside heuristic
+used by `init`. The per-residue annotation is cached at `data/external/<GENE>/<ID>.tmhmm`.
+`--dry-run` prints the prediction without editing anything.
+
+## Same-family comparison
+
+```bash
+python -m mpdms family configs/AQR1.yaml configs/QDR2.yaml
+# -> outputs/_family_AQR1_QDR2/
+```
+
+**Aligned positions** (`a17a_aligned_correlation`). Aligns the two sequences (Biopython
+global BLOSUM62 for a pair; MAFFT if installed, required for three or more) and correlates
+the mean missense effect at aligned positions, split into all aligned / both TM / both TM
+and α-helical / both loop. Each is tested against a permutation *within* the same topology
+class, which preserves the fact that TM cores are sensitive and loops are not, and destroys
+only the residue-level correspondence — so a surviving correlation is position-specific
+agreement rather than shared topology. Panel (c) does the same for each position's full
+19-substitution profile.
+
+**Helix profiles** (`a17b_helix_profiles`, `a17c_helix_small_multiples`). For TM segments
+that are at least `--helical-frac` α-helical in the AlphaFold model (default 0.7; the
+per-helix fractions are printed so you can tune it), the effect of proline, glycine and
+lysine/arginine at each position from the helix N-terminus to its C-terminus.
+
+Helices alternate orientation, so the N-terminal end is cytosolic in half of them and
+lumenal in the other half: pooling strictly N→C cancels any membrane-sided effect. Both
+views are produced — N→C as a single pool, and the same data split by orientation.
+

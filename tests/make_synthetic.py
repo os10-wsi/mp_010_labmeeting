@@ -104,16 +104,19 @@ def build_pdb(seq, layout, path):
     io.save(str(path))
 
 
-def simulate(seq, layout, rng, n_reps=3, stop_present=True, depth=150):
+def simulate(seq, layout, rng, n_reps=3, stop_present=True, depth=150, sens=None, return_sens=False):
     kinds = [k for k, n in layout for _ in range(n)]
     L = len(seq)
-    # position sensitivity: TM > helix > loop, periodic buried face in TMs
-    sens = np.array([{"TM": 0.55, "helix": 0.35, "strand": 0.35}.get(k, 0.02) for k in kinds])
-    for i, k in enumerate(kinds):
-        if k == "TM":
-            sens[i] *= 0.6 + 0.8 * (np.cos(2 * np.pi * i / 3.6) > 0)
-    sens += rng.gamma(1.0, 0.04, L)
-    sens[:3] = 0.02
+    if sens is None:
+        # position sensitivity: TM > helix > loop, periodic buried face in TMs
+        sens = np.array([{"TM": 0.55, "helix": 0.35, "strand": 0.35}.get(k, 0.02) for k in kinds])
+        for i, k in enumerate(kinds):
+            if k == "TM":
+                sens[i] *= 0.6 + 0.8 * (np.cos(2 * np.pi * i / 3.6) > 0)
+        sens += rng.gamma(1.0, 0.04, L)
+        sens[:3] = 0.02
+    else:
+        sens = np.asarray(sens, float)[:L]
     rows = []
     for p in range(1, L + 1):
         wt = seq[p - 1]
@@ -159,7 +162,7 @@ def simulate(seq, layout, rng, n_reps=3, stop_present=True, depth=150):
     reps = [f"rescaled_fitness_rep{r + 1}" for r in range(n_reps)]
     df["rescaled_fitness"] = df[reps].mean(axis=1)
     df["rescaled_sigma"] = df[reps].std(axis=1) / np.sqrt(n_reps)
-    return df
+    return (df, sens) if return_sens else df
 
 
 def to_lab_format(df, seq, rng):
@@ -207,7 +210,7 @@ def main():
     lay1 = [("loop", 30), ("TM", 21), ("loop", 12), ("TM", 20), ("loop", 25), ("helix", 18), ("loop", 10),
             ("TM", 22), ("loop", 9), ("TM", 21), ("loop", 40)]
     seq1 = make_seq(lay1, rng)
-    d1 = simulate(seq1, lay1, rng, n_reps=3)
+    d1, sens1 = simulate(seq1, lay1, rng, n_reps=3, return_sens=True)
     out1 = ROOT / "data/raw/SYN1/fitness_estimation"
     out1.mkdir(parents=True, exist_ok=True)
     to_lab_format(d1, seq1, rng).to_csv(out1 / "fitness_estimation.tsv", sep="\t", index=False)
@@ -230,7 +233,24 @@ def main():
     ext2.mkdir(parents=True, exist_ok=True)
     (ext2 / "SYN2.fasta").write_text(f">SYN2\n{seq2}\n")
     build_pdb(seq2, lay2, ext2 / "AF-SYN2-F1-model_v4.pdb")
-    print("wrote", out1, out2)
+    # SYN3: diverged homologue of SYN1 - same architecture, ~70% identity, shared per-position
+    # sensitivity. Gives the family pipeline a pair whose aligned positions really do agree.
+    seq3 = list(seq1)
+    for i in range(len(seq3)):
+        if rng.random() < 0.30:
+            pool = HYD if seq1[i] in HYD else POLAR
+            seq3[i] = str(rng.choice(list(pool)))
+    seq3[0] = "M"
+    seq3 = "".join(seq3)
+    d3 = simulate(seq3, lay1, rng, n_reps=3, sens=sens1 * rng.normal(1.0, 0.12, len(sens1)))
+    out3 = ROOT / "data/raw/SYN3/fitness_estimation"
+    out3.mkdir(parents=True, exist_ok=True)
+    to_lab_format(d3, seq3, rng).to_csv(out3 / "fitness_estimation.tsv", sep="\t", index=False)
+    ext3 = ROOT / "data/external/SYN3"
+    ext3.mkdir(parents=True, exist_ok=True)
+    (ext3 / "SYN3.fasta").write_text(f">SYN3\n{seq3}\n")
+    build_pdb(seq3, lay1, ext3 / "AF-SYN3-F1-model_v4.pdb")
+    print("wrote", out1, out2, out3)
 
 
 if __name__ == "__main__":
