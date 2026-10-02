@@ -326,3 +326,47 @@ def test_a21_site_with_no_measured_substitutions_is_dropped_not_faked():
     from mpdms.analyses.a21_site_substitutions import site_table
     t = site_table(_variant_rows({149: ("Q", {"A": -2.0, "G": -1.0})}), [149, 999], {149: "A"})
     assert list(t.pos) == [149]
+
+
+def test_a21_local_refit_absorbs_what_the_sites_share():
+    """The point of A21b: a shift common to all the sites is soaked up by the local fit."""
+    from mpdms.analyses.a21_site_substitutions import add_local_z
+    rng = np.random.default_rng(0)
+    rows = []
+    for pos in (149, 238, 504):
+        for mut in "ACDEFGHIKLMNPQRSTVW":
+            x = rng.uniform(-0.3, 0.1)
+            rows.append({"pos": pos, "wt": "Q", "mut": mut, "score_z": x,
+                         "esm1v": -4 + 2 * x - 3.0 + rng.normal(0, 0.3),   # -3.0 shared by all sites
+                         "esm_expected": -4 + 2 * x, "residual": -3.0, "z": -8.0})
+    v, how, scale = add_local_z(pd.DataFrame(rows))
+    assert "LOESS" in how and len(v) == 57
+    assert abs(v.z_local.median()) < 0.5, "shared offset should vanish in the local fit"
+    assert v.z.median() < -5, "the global z still sees it"
+    assert scale > 0
+
+
+def test_a21_local_fit_falls_back_to_a_line_when_there_are_too_few_points():
+    from mpdms.analyses.a21_site_substitutions import local_fit
+    x = np.linspace(-1, 1, 12)
+    f, how = local_fit(x, 2 * x + 1)
+    assert "linear" in how
+    assert f(np.array([0.0, 0.5])) == pytest.approx([1.0, 2.0], abs=1e-6)
+
+
+def test_a21_local_z_still_finds_a_substitution_that_stands_out_from_its_peers():
+    from mpdms.analyses.a21_site_substitutions import add_local_z, site_table
+    rng = np.random.default_rng(1)
+    rows = []
+    for pos in (149, 238, 504):
+        for mut in "ACDEFGHIKLMNPQRSTVW":
+            x = rng.uniform(-0.3, 0.1)
+            e = -4 + 2 * x + rng.normal(0, 0.2)
+            if (pos, mut) == (149, "A"):
+                e -= 3.0                                   # one genuine outlier among the 57
+            rows.append({"pos": pos, "wt": "Q", "mut": mut, "score_z": x, "esm1v": e,
+                         "segment": "TM1", "esm_expected": -4 + 2 * x,
+                         "residual": e - (-4 + 2 * x), "z": 0.0})
+    v, _, _ = add_local_z(pd.DataFrame(rows))
+    t = site_table(v, [149], {149: "A"}, zcol="z_local", rescol="residual_local").iloc[0]
+    assert t.marked_below_threshold and t.marked_z < -3

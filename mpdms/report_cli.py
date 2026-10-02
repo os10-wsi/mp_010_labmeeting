@@ -38,6 +38,7 @@ FIGURE_ORDER = [
     ("a19_literature", "Published functional residues against this screen"),
     ("a20_variant_panel", "Replicate fitness of named variants vs synonymous wild type"),
     ("a21_site_substitutions", "All substitutions at the named sites vs ESM-1v"),
+    ("a21b_local_regression", "Named sites with the regression refit on those substitutions only"),
 ]
 
 
