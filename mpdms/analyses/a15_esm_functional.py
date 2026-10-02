@@ -4,7 +4,7 @@ x = DMS normalised fitness (abundance), y = ESM-1v masked-marginal score. A LOES
 gives the ESM-1v score expected from the abundance effect. For each variant
     residual = ESM-1v - LOESS(abundance),  z = residual / (1.4826 * MAD of all residuals).
 Site-level test: one-sided Wilcoxon signed-rank of the site's variant residuals < 0, BH-FDR.
-Functional site: q < 0.05 and median z <= -1.5 (ESM-1v predicts it markedly worse than its
+Functional site: q < 0.05 and median z <= -1 (ESM-1v predicts it markedly worse than its
 abundance effect explains). Sites whose abundance is itself tolerant (median >= -0.5) are
 flagged separately: those are the cleanest "functional, not folding" candidates.
 """
@@ -22,7 +22,7 @@ from .. import plotting as P
 from ..stats import bh_fdr
 from .base import dirs, fmt_p, missense, result, skipped
 
-Z_SITE = -1.5
+Z_SITE = -1.0
 Q_SITE = 0.05
 TOLERANT = -0.5
 MIN_VARIANTS = 5
