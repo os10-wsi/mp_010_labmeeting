@@ -38,8 +38,12 @@ from .a19_literature import load_literature
 from .base import dirs, fmt_p, result, skipped
 
 SYN_COLOR, MUT_COLOR = "#1B9E77", "#2F6DB5"
+HILITE = "#B8860B"
 SYN_LABEL = "synonymous\n(WT)"
 MDE_D = 3.10  # Cohen's d detectable at 80% power, alpha 0.05 two-sided, n = 3 vs 3
+SYN_DISPLAY_N = 20   # synonymous variants drawn in the dot plot (fixed seed)
+SYN_DISPLAY_SEED = 20
+MISS_COLOR = "#2F6DB5"
 
 
 def parse_substitution(s: str) -> tuple[str, int, str] | None:
@@ -85,9 +89,26 @@ def collect(df: pd.DataFrame, cfg, labels: list[str]) -> tuple[pd.DataFrame, pd.
             if pd.notna(v):
                 rows.append({"variant": lab, "replicate": f"rep{k}", "value": float(v)})
     syn = df[(df.vclass == "synonymous") & df.pass_filter]
-    srows = [{"variant": SYN_LABEL, "replicate": f"rep{k}", "value": float(v)}
-             for k, c in enumerate(reps, 1) for v in syn[c].dropna()]
+    srows = [{"variant": SYN_LABEL, "replicate": f"rep{k}", "value": float(v), "syn_index": i}
+             for i, (_, r) in enumerate(syn.iterrows()) for k, c in enumerate(reps, 1)
+             if pd.notna(r[c]) for v in [r[c]]]
     return pd.DataFrame(rows), pd.DataFrame(srows), missing
+
+
+def sample_for_display(syn: pd.DataFrame, n: int = SYN_DISPLAY_N) -> pd.DataFrame:
+    """A fixed random subset of synonymous VARIANTS (all their replicates) to draw.
+
+    Display only. The vs-synonymous test keeps the full set: cutting the null to 20
+    would raise the empirical p floor to 1/21 = 0.048, so nothing could reach
+    significance. The figure says which number is which.
+    """
+    if not len(syn) or "syn_index" not in syn:
+        return syn
+    ids = syn.syn_index.unique()
+    if len(ids) <= n:
+        return syn
+    keep = np.random.default_rng(SYN_DISPLAY_SEED).choice(ids, n, replace=False)
+    return syn[syn.syn_index.isin(keep)]
 
 
 def stats_table(mut: pd.DataFrame, syn: pd.DataFrame, syn_means: np.ndarray) -> pd.DataFrame:
@@ -134,6 +155,8 @@ def stats_table(mut: pd.DataFrame, syn: pd.DataFrame, syn_means: np.ndarray) -> 
 
 def figure(cfg, mut: pd.DataFrame, syn: pd.DataFrame, syn_means: np.ndarray,
            st: pd.DataFrame, figdir):
+    syn_shown = sample_for_display(syn)
+    n_shown = int(syn_shown.syn_index.nunique()) if "syn_index" in syn_shown else 0
     order = [SYN_LABEL] + list(dict.fromkeys(mut.variant))
     fig, ax = plt.subplots(figsize=(1.35 * len(order) + 2.6, 4.6), layout="constrained")
     rng = np.random.default_rng(20)
@@ -147,14 +170,14 @@ def figure(cfg, mut: pd.DataFrame, syn: pd.DataFrame, syn_means: np.ndarray,
     ax.text(len(order) - 0.45, -1, "nonsense median", fontsize=6, color="#D62728", va="bottom", ha="right")
 
     for i, v in enumerate(order):
-        vals = (syn if v == SYN_LABEL else mut).query("variant == @v").value.to_numpy()
+        vals = (syn_shown if v == SYN_LABEL else mut).query("variant == @v").value.to_numpy()
         col = SYN_COLOR if v == SYN_LABEL else MUT_COLOR
         # synonymous is a distribution of many variants; the mutants are 3 replicates each
-        s, a = (6, 0.25) if v == SYN_LABEL else (42, 0.95)
+        s, a = (26, 0.55) if v == SYN_LABEL else (42, 0.95)
         ax.scatter(i + rng.uniform(-0.13, 0.13, len(vals)), vals, s=s, color=col, alpha=a,
                    lw=0.5 if v != SYN_LABEL else 0, edgecolor="white", zorder=3)
         if len(vals):
-            m = float(np.mean(vals))
+            m = float(np.mean(syn.value)) if v == SYN_LABEL else float(np.mean(vals))
             ax.plot([i - 0.26, i + 0.26], [m, m], color=P.INK, lw=1.6, zorder=4)
             if len(vals) > 1:
                 se = float(np.std(vals, ddof=1) / np.sqrt(len(vals)))
@@ -186,10 +209,67 @@ def figure(cfg, mut: pd.DataFrame, syn: pd.DataFrame, syn_means: np.ndarray,
     ax.set_ylim(lo - 0.40, max(0.45, (mut.value.max() if len(mut) else 0) + 0.3))
     ax.set_ylabel("Normalised fitness (synonymous = 0, nonsense = −1)")
     ax.set_title(f"(a) Replicate fitness per variant; green band = ±1 SD of {len(syn_means)} "
-                 f"synonymous variant means ({len(syn_vals)} measurements plotted)",
+                 f"synonymous variant means\n{n_shown} synonymous variants drawn at random "
+                 f"(display only - the test below uses all {len(syn_means)})",
                  loc="left", fontsize=8.5)
     P.title(fig, cfg, "A20 named variants vs synonymous wild type")
     return P.save(fig, figdir, "a20_variant_panel", cfg, "A20")
+
+
+def percentiles(df: pd.DataFrame, labels: list[str]) -> pd.DataFrame:
+    """Where each named variant sits in this protein's missense fitness distribution."""
+    miss = df[(df.vclass == "missense") & df.pass_filter].dropna(subset=["score_z"])
+    vals = miss.score_z.to_numpy()
+    rows = []
+    for lab in labels:
+        p = parse_substitution(lab)
+        if p is None:
+            continue
+        _, pos, mut = p
+        hit = miss[(miss.pos == pos) & (miss.mut == mut)]
+        if not len(hit):
+            continue
+        x = float(hit.score_z.iloc[0])
+        rows.append({"variant": lab, "score_z": x,
+                     "percentile": float(100 * np.mean(vals < x)),
+                     "n_missense": len(vals),
+                     "rank_from_bottom": int(np.sum(vals < x)) + 1})
+    return pd.DataFrame(rows)
+
+
+def percentile_figure(cfg, df: pd.DataFrame, pc: pd.DataFrame, figdir):
+    """Missense fitness distribution with the named variants placed in it."""
+    miss = df[(df.vclass == "missense") & df.pass_filter].dropna(subset=["score_z"])
+    syn = df[(df.vclass == "synonymous") & df.pass_filter].score_z.dropna()
+    non = df[(df.vclass == "nonsense") & df.pass_filter].score_z.dropna()
+    fig, ax = plt.subplots(figsize=(7.8, 4.4), layout="constrained")
+    ax.hist(miss.score_z, bins=60, color=MISS_COLOR, alpha=0.55, lw=0, label=f"missense (n = {len(miss)})")
+    if len(syn):
+        ax.axvline(float(syn.median()), color=SYN_COLOR, lw=1.2, label="synonymous median")
+    if len(non):
+        ax.axvline(float(non.median()), color="#D62728", lw=1.2, ls=(0, (3, 3)), label="nonsense median")
+
+    top = ax.get_ylim()[1]
+    for k, r in enumerate(pc.sort_values("score_z").itertuples()):
+        # stagger vertically, and lean the text left/right alternately: two variants a
+        # couple of percentiles apart sit almost on top of each other otherwise
+        y = top * (0.95 - 0.15 * (k % 3))
+        side = -1 if k % 2 else 1
+        ax.annotate("", xy=(r.score_z, 0), xytext=(r.score_z, y),
+                    arrowprops=dict(arrowstyle="-", color=HILITE, lw=1.3))
+        ax.scatter([r.score_z], [y], s=46, color=HILITE, zorder=5)
+        ax.annotate(f"{r.variant}  {r.score_z:.2f}\n{r.percentile:.0f}th percentile",
+                    (r.score_z, y), xytext=(8 * side, 8), textcoords="offset points",
+                    ha="left" if side > 0 else "right", fontsize=7.5, color=HILITE,
+                    fontweight="bold", zorder=6)
+    ax.set_ylim(0, top * 1.22)
+    ax.set_xlabel("Normalised fitness (synonymous = 0, nonsense = −1)")
+    ax.set_ylabel("Missense variants")
+    ax.set_title("(b) Where the named variants sit in the missense distribution; "
+                 "percentile = % of missense variants less fit", loc="left", fontsize=8.5)
+    ax.legend(frameon=False, fontsize=7.5)
+    P.title(cfg=cfg, fig=fig, text="A20b named variants in the missense distribution")
+    return P.save(fig, figdir, "a20b_missense_percentile", cfg, "A20")
 
 
 def run(df: pd.DataFrame, cfg, outdir: Path) -> dict:
@@ -208,7 +288,11 @@ def run(df: pd.DataFrame, cfg, outdir: Path) -> dict:
     st.to_csv(tp, index=False)
     dp = tabdir / "a20_variant_replicates.csv"
     pd.concat([mut, syn.assign(variant=SYN_LABEL)]).to_csv(dp, index=False)
+    pc = percentiles(df, labels)
     figs = figure(cfg, mut, syn, syn_means, st, figdir)
+    if len(pc):
+        figs = figs + percentile_figure(cfg, df, pc, figdir)
+        pc.to_csv(tabdir / "a20b_percentiles.csv", index=False)
 
     vs = st[st.kind == "vs_synonymous"]
     pair = st[st.kind == "mutant_pair"]
@@ -240,5 +324,9 @@ def run(df: pd.DataFrame, cfg, outdir: Path) -> dict:
                                      for r in vs.itertuples()],
                    "mutant_pairs": [{"comparison": r.comparison, "difference": r.difference,
                                      "p": r.p, "q": r.q} for r in pair.itertuples()],
-                   "not_plotted": missing},
-                  caveats, figs, [tp, dp])
+                   "not_plotted": missing,
+                   "missense_percentiles": [{"variant": r.variant, "score_z": r.score_z,
+                                             "percentile": r.percentile,
+                                             "rank_from_bottom": r.rank_from_bottom}
+                                            for r in pc.itertuples()]},
+                  caveats, figs, [tp, dp] + ([tabdir / "a20b_percentiles.csv"] if len(pc) else []))

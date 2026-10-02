@@ -370,3 +370,38 @@ def test_a21_local_z_still_finds_a_substitution_that_stands_out_from_its_peers()
     v, _, _ = add_local_z(pd.DataFrame(rows))
     t = site_table(v, [149], {149: "A"}, zcol="z_local", rescol="residual_local").iloc[0]
     assert t.marked_below_threshold and t.marked_z < -3
+
+
+def test_a20_samples_synonymous_for_display_without_weakening_the_test():
+    """20 drawn for the plot; the null must stay the full set or nothing can reach significance."""
+    from mpdms.analyses.a20_variant_panel import SYN_DISPLAY_N, collect, sample_for_display, stats_table
+    df = _panel_frame({(238, "Q", "A"): -0.90}, n_syn=200)
+    mut, syn, _ = collect(df, _panel_cfg(), ["Q238A"])
+    shown = sample_for_display(syn)
+    assert shown.syn_index.nunique() == SYN_DISPLAY_N
+    assert len(shown) == SYN_DISPLAY_N * 3                    # whole variants, all replicates
+    assert sample_for_display(syn).equals(shown)              # fixed seed, reproducible
+    syn_means = df[df.vclass == "synonymous"].score_z.to_numpy()
+    r = stats_table(mut, syn, syn_means)[lambda d: d.kind == "vs_synonymous"].iloc[0]
+    assert r.n_b == 200 and r.p_floor == pytest.approx(1 / 201)   # full set, not the 20
+
+
+def test_a20_sample_keeps_everything_when_there_is_little_synonymous_data():
+    from mpdms.analyses.a20_variant_panel import collect, sample_for_display
+    df = _panel_frame({(238, "Q", "A"): -0.9}, n_syn=7)
+    _, syn, _ = collect(df, _panel_cfg(), ["Q238A"])
+    assert sample_for_display(syn).syn_index.nunique() == 7
+
+
+def test_a20_percentiles_locate_variants_in_the_missense_distribution():
+    from mpdms.analyses.a20_variant_panel import percentiles
+    rng = np.random.default_rng(0)
+    rows = [{"pos": i % 400 + 1, "wt": "L", "mut": "V", "vclass": "missense",
+             "pass_filter": True, "score_z": v} for i, v in enumerate(rng.normal(-0.45, 0.38, 2000))]
+    rows += [{"pos": 238, "wt": "Q", "mut": "A", "vclass": "missense", "pass_filter": True, "score_z": -1.6},
+             {"pos": 149, "wt": "Q", "mut": "A", "vclass": "missense", "pass_filter": True, "score_z": 0.3}]
+    pc = percentiles(pd.DataFrame(rows), ["Q238A", "Q149A", "R504A"]).set_index("variant")
+    assert "R504A" not in pc.index                 # absent from the data, not invented
+    assert pc.loc["Q238A", "percentile"] < 5       # near the bottom of the missense distribution
+    assert pc.loc["Q149A", "percentile"] > 95
+    assert pc.loc["Q238A", "rank_from_bottom"] < pc.loc["Q149A", "rank_from_bottom"]

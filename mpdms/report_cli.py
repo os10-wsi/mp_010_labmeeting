@@ -37,6 +37,7 @@ FIGURE_ORDER = [
     ("a18b_rsa_vs_kr_pro", "Solvent accessibility vs Lys/Arg and vs proline effect (TM helices)"),
     ("a19_literature", "Published functional residues against this screen"),
     ("a20_variant_panel", "Replicate fitness of named variants vs synonymous wild type"),
+    ("a20b_missense_percentile", "Named variants placed in the missense fitness distribution"),
     ("a21_site_substitutions", "All substitutions at the named sites vs ESM-1v"),
     ("a21b_local_regression", "Named sites with the regression refit on those substitutions only"),
 ]
