@@ -77,3 +77,57 @@ def test_default_style_still_draws_title_and_stamp(tmp_path):
     P.save(fig, tmp_path, "f", cfg, "A15")
     assert not (tmp_path / "f_caption.txt").exists()
     assert (tmp_path / "f.png").exists() and (tmp_path / "f.pdf").exists()
+
+
+# ------------------------------------------------- journal mark idioms
+def test_density_by_class_draws_one_curve_per_class():
+    import numpy as np
+    rng = np.random.default_rng(0)
+    fig, ax = plt.subplots()
+    P.density_by_class(ax, {"missense": rng.normal(-0.5, .3, 400),
+                            "synonymous": rng.normal(0, .1, 200),
+                            "nonsense": rng.normal(-1, .2, 100)})
+    assert len(ax.lines) == 3 and ax.get_ylabel() == "Density"
+    assert all("n = " in ln.get_label() for ln in ax.lines)
+    plt.close(fig)
+
+
+def test_density_by_class_survives_degenerate_groups():
+    """A class with one value, or all-identical values, must not kill the panel."""
+    import numpy as np
+    fig, ax = plt.subplots()
+    P.density_by_class(ax, {"missense": np.array([0.2]),            # too few for a KDE
+                            "synonymous": np.zeros(50),             # zero variance
+                            "nonsense": np.random.default_rng(0).normal(-1, .2, 80)})
+    assert len(ax.lines) + len(ax.collections) >= 1
+    plt.close(fig)
+
+
+def test_violin_box_marks_every_group_with_a_median():
+    import numpy as np
+    rng = np.random.default_rng(0)
+    fig, ax = plt.subplots()
+    g = {"a": rng.normal(0, 1, 100), "b": rng.normal(1, 1, 100), "c": rng.normal(-1, 1, 100)}
+    P.violin_box(ax, g, points=10)
+    assert [t.get_text() for t in ax.get_xticklabels()] == ["a", "b", "c"]
+    white = [ln for ln in ax.lines if ln.get_marker() == "o" and ln.get_markerfacecolor() == "white"]
+    assert len(white) == 3
+    plt.close(fig)
+
+
+def test_violin_box_skips_empty_groups_without_shifting_labels():
+    import numpy as np
+    fig, ax = plt.subplots()
+    P.violin_box(ax, {"a": np.random.default_rng(0).normal(0, 1, 50), "empty": np.array([])})
+    assert [t.get_text() for t in ax.get_xticklabels()] == ["a"]
+    plt.close(fig)
+
+
+def test_scatter_fit_puts_the_statistic_in_the_corner_and_the_fit_in_red():
+    import numpy as np
+    x = np.linspace(-1, 1, 200)
+    fig, ax = plt.subplots()
+    P.scatter_fit(ax, x, 2 * x, fit=lambda q: 2 * q, stat="Spearman's rho = 0.99")
+    assert any("rho" in t.get_text() for t in ax.texts)
+    assert any(ln.get_color() == P.FIT_RED for ln in ax.lines)
+    plt.close(fig)

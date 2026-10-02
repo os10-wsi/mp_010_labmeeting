@@ -235,16 +235,18 @@ def run(df, cfg, outdir):
     fig = plt.figure(figsize=(10.5, 7.2 + list_h * 7.2))
     gs = fig.add_gridspec(3, 2, height_ratios=[1, 0.62, list_h], hspace=0.42, wspace=0.28)
     ax = fig.add_subplot(gs[0, 0])
-    nf = d[~d.functional]
-    ax.hexbin(nf.score_z, nf.esm1v, gridsize=55, cmap="Greys", bins="log", mincnt=1, linewidths=0, rasterized=True)
-    fv = d[d.functional]
-    ax.scatter(fv.score_z, fv.esm1v, s=6, color=FUNC_COLOR, lw=0, alpha=0.7, label=f"variants at functional sites (n={len(fv)})")
-    ax.fill_between(grid, np.quantile(boots, .025, 0), np.quantile(boots, .975, 0), color="#2F6DB5", alpha=0.25, lw=0)
-    ax.plot(grid, f(grid), color="#2F6DB5", lw=1.8, label="LOESS (± position bootstrap)")
+    nf, fv = d[~d.functional], d[d.functional]
+    # small black dots with the fit in red and the statistic as plain corner text
+    P.scatter_fit(ax, nf.score_z, nf.esm1v, fit=(grid, f(grid)),
+                  stat=f"Spearman's ρ = {rho:.2f}\nn = {len(d):,}", s=1.6, alpha=0.30)
+    ax.fill_between(grid, np.quantile(boots, .025, 0), np.quantile(boots, .975, 0),
+                    color=P.FIT_RED, alpha=0.18, lw=0, zorder=2)
+    ax.scatter(fv.score_z, fv.esm1v, s=5, color=FUNC_COLOR, lw=0, alpha=0.8, zorder=4,
+               label=f"functional sites (n = {len(fv):,})")
     ax.set_xlabel("Abundance (DMS normalised fitness)")
     ax.set_ylabel("ESM-1v score (masked marginal)")
     ax.legend(loc="lower right", fontsize=6.5)
-    ax.set_title(f"(a) Variants: Spearman ρ = {rho:.2f}, n = {len(d):,}", loc="left")
+    ax.set_title("(a) Variants", loc="left")
     ax = fig.add_subplot(gs[0, 1])
     sc = ax.scatter(sites.median_abundance, sites.median_esm1v, c=sites.median_z.clip(-3, 3), cmap=P.diverging_cmap(),
                     vmin=-3, vmax=3, s=14, edgecolor=P.INK, lw=0.2)

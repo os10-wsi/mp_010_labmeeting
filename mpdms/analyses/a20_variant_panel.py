@@ -200,21 +200,28 @@ def figure(cfg, mut: pd.DataFrame, syn: pd.DataFrame, syn_means: np.ndarray,
     ax.axhline(-1, color="#D62728", lw=0.6, ls=(0, (3, 3)), zorder=1)
     ax.text(len(order) - 0.45, -1, "nonsense median", fontsize=6, color="#D62728", va="bottom", ha="right")
 
+    # synonymous is a distribution over many variants, so it gets a violin; each mutant
+    # is three replicates, where a violin would be a lie - those stay as the raw points
+    # violin over every synonymous variant for the shape; the 20 sampled ones drawn on
+    # top so individual measurements stay visible without burying the mutant columns
+    P.violin_box(ax, {SYN_LABEL: syn.value.to_numpy()}, colors={SYN_LABEL: SYN_COLOR},
+                 points=0, width=0.8, show_medians=False)
+    sv = syn_shown.value.to_numpy()
+    ax.scatter(rng.uniform(-0.12, 0.12, len(sv)), sv, s=5, color=SYN_COLOR, alpha=0.75, lw=0, zorder=4)
     for i, v in enumerate(order):
-        vals = (syn_shown if v == SYN_LABEL else mut).query("variant == @v").value.to_numpy()
-        col = SYN_COLOR if v == SYN_LABEL else MUT_COLOR
-        # synonymous is a distribution of many variants; the mutants are 3 replicates each
-        s, a = (26, 0.55) if v == SYN_LABEL else (42, 0.95)
-        ax.scatter(i + rng.uniform(-0.13, 0.13, len(vals)), vals, s=s, color=col, alpha=a,
-                   lw=0.5 if v != SYN_LABEL else 0, edgecolor="white", zorder=3)
+        if v == SYN_LABEL:
+            continue
+        vals = mut.query("variant == @v").value.to_numpy()
+        ax.scatter(i + rng.uniform(-0.09, 0.09, len(vals)), vals, s=26, color=MUT_COLOR,
+                   lw=0.4, edgecolor="white", zorder=4)
         if len(vals):
-            m = float(np.mean(syn.value)) if v == SYN_LABEL else float(np.mean(vals))
-            ax.plot([i - 0.26, i + 0.26], [m, m], color=P.INK, lw=1.6, zorder=4)
+            m = float(np.mean(vals))
+            ax.plot([i - 0.22, i + 0.22], [m, m], color=P.INK, lw=1.4, zorder=5)
             if len(vals) > 1:
                 se = float(np.std(vals, ddof=1) / np.sqrt(len(vals)))
-                ax.plot([i, i], [m - se, m + se], color=P.INK, lw=1.0, zorder=4)
-            ax.annotate(f"{m:.2f}", (i, m), xytext=(0, 9), textcoords="offset points",
-                        ha="center", fontsize=7, color=P.INK, zorder=5)
+                ax.plot([i, i], [m - se, m + se], color=P.INK, lw=0.9, zorder=5)
+            ax.annotate(f"{m:.2f}", (i, m), xytext=(0, 8), textcoords="offset points",
+                        ha="center", fontsize=6.5, color=P.INK, zorder=6)
 
     vs = st[st.kind == "vs_synonymous"].set_index("a") if len(st) else pd.DataFrame()
     lo = min([syn_vals.min() if len(syn_vals) else 0, mut.value.min() if len(mut) else 0, -1.05])
@@ -240,8 +247,8 @@ def figure(cfg, mut: pd.DataFrame, syn: pd.DataFrame, syn_means: np.ndarray,
     ax.set_ylim(lo - 0.40, max(0.45, (mut.value.max() if len(mut) else 0) + 0.3))
     ax.set_ylabel("Normalised fitness (synonymous = 0, nonsense = −1)")
     ax.set_title(f"(a) Replicate fitness per variant; green band = ±1 SD of {len(syn_means)} "
-                 f"synonymous variant means\n{n_shown} synonymous variants drawn at random "
-                 f"(display only - the test below uses all {len(syn_means)})",
+                 f"synonymous variant means; violin = all synonymous variants, "
+                 f"dots = {n_shown} drawn at random",
                  loc="left", fontsize=8.5)
     P.title(fig, cfg, "A20 named variants vs synonymous wild type")
     return P.save(fig, figdir, "a20_variant_panel", cfg, "A20")
@@ -273,12 +280,12 @@ def percentile_figure(cfg, df: pd.DataFrame, pc: pd.DataFrame, figdir):
     miss = df[(df.vclass == "missense") & df.pass_filter].dropna(subset=["score_z"])
     syn = df[(df.vclass == "synonymous") & df.pass_filter].score_z.dropna()
     non = df[(df.vclass == "nonsense") & df.pass_filter].score_z.dropna()
-    fig, ax = plt.subplots(figsize=(7.8, 4.4), layout="constrained")
-    ax.hist(miss.score_z, bins=60, color=MISS_COLOR, alpha=0.55, lw=0, label=f"missense (n = {len(miss)})")
-    if len(syn):
-        ax.axvline(float(syn.median()), color=SYN_COLOR, lw=1.2, label="synonymous median")
-    if len(non):
-        ax.axvline(float(non.median()), color="#D62728", lw=1.2, ls=(0, (3, 3)), label="nonsense median")
+    fig, ax = plt.subplots(figsize=(6.6, 3.6), layout="constrained")
+    P.density_by_class(ax, {"missense": miss.score_z.to_numpy(),
+                            "synonymous": syn.to_numpy(), "nonsense": non.to_numpy()})
+    for v, c in ((syn, SYN_COLOR), (non, "#D62728")):
+        if len(v):
+            ax.axvline(float(v.median()), color=c, lw=0.7, ls=(0, (3, 3)), zorder=1)
 
     top = ax.get_ylim()[1]
     for k, r in enumerate(pc.sort_values("score_z").itertuples()):
@@ -295,8 +302,7 @@ def percentile_figure(cfg, df: pd.DataFrame, pc: pd.DataFrame, figdir):
                     fontweight="bold", zorder=6)
     ax.set_ylim(0, top * 1.22)
     ax.set_xlabel("Normalised fitness (synonymous = 0, nonsense = −1)")
-    ax.set_ylabel("Missense variants")
-    ax.set_title("(b) Where the named variants sit in the missense distribution; "
+    ax.set_title("(b) Named variants in the missense fitness distribution; "
                  "percentile = % of missense variants less fit", loc="left", fontsize=8.5)
     ax.legend(frameon=False, fontsize=7.5)
     P.title(cfg=cfg, fig=fig, text="A20b named variants in the missense distribution")

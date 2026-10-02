@@ -244,6 +244,106 @@ def save(fig, outdir: Path, name: str, cfg=None, analysis: str = "") -> list[Pat
     return paths
 
 
+# ---------------------------------------------------------------- journal marks
+# Mark idioms from the reference figures (Beltran et al., human domainome):
+# class densities as thin KDE lines rather than histograms; violins carrying an inner
+# box and a white median dot with the median printed beneath; raw scatter as small
+# black dots with the statistic as plain corner text and a single red fitted line.
+FIT_RED = "#D6273D"
+
+
+def density_by_class(ax, groups: dict, fill: float = 0.12, lw: float = 1.1, colors: dict | None = None):
+    """Overlaid KDE curves, one per variant class (Fig 1d / 4a idiom).
+
+    Falls back to a step histogram for a group too small or too degenerate to take a
+    kernel estimate, so a thin class never silently disappears from the panel.
+    """
+    from scipy import stats as _ss
+    colors = colors or CLASS_COLORS
+    lo = min((np.nanmin(v) for v in groups.values() if len(v)), default=0.0)
+    hi = max((np.nanmax(v) for v in groups.values() if len(v)), default=1.0)
+    pad = 0.05 * (hi - lo or 1.0)
+    grid = np.linspace(lo - pad, hi + pad, 400)
+    for name, vals in groups.items():
+        v = np.asarray(vals, dtype=float)
+        v = v[np.isfinite(v)]
+        if len(v) < 2:
+            continue
+        c = colors.get(name, INK)
+        label = f"{CLASS_LABELS.get(name, name)} (n = {len(v):,})"
+        if np.ptp(v) < 1e-9:
+            ax.axvline(float(v[0]), color=c, lw=lw, label=label)
+            continue
+        try:
+            d = _ss.gaussian_kde(v)(grid)
+        except Exception:
+            ax.hist(v, bins=40, histtype="step", color=c, lw=lw, density=True, label=label)
+            continue
+        ax.plot(grid, d, color=c, lw=lw, label=label)
+        if fill:
+            ax.fill_between(grid, d, color=c, alpha=fill, lw=0)
+    ax.set_ylabel("Density")
+
+
+def violin_box(ax, groups: dict, colors=None, points: int = 0, width: float = 0.72,
+               show_medians: bool = True, seed: int = 0):
+    """Violin + inner box + white median dot, medians printed beneath (Fig 3c / 5j idiom).
+
+    `points` overlays up to that many jittered observations per group, as the reference
+    panels do where n is small enough for the individual values to be worth seeing.
+    """
+    names = [k for k, v in groups.items() if len(np.asarray(v, dtype=float)) > 0]
+    data = [np.asarray(groups[k], dtype=float)[np.isfinite(groups[k])] for k in names]
+    if not data:
+        return []
+    pos = np.arange(len(names))
+    parts = ax.violinplot(data, positions=pos, widths=width, showextrema=False, showmedians=False)
+    cols = [(colors or {}).get(n, "#C2443A") for n in names]
+    for body, c in zip(parts["bodies"], cols):
+        body.set_facecolor(c); body.set_alpha(0.55); body.set_edgecolor(INK); body.set_linewidth(0.4)
+    bp = ax.boxplot(data, positions=pos, widths=0.055, showfliers=False, patch_artist=True,
+                    medianprops=dict(lw=0), whiskerprops=dict(color=INK, lw=0.6),
+                    capprops=dict(lw=0), boxprops=dict(facecolor=INK, edgecolor=INK, lw=0.4))
+    for k, d in enumerate(data):
+        ax.plot([k], [np.median(d)], marker="o", ms=2.6, mfc="white", mec="white", lw=0, zorder=5)
+    if points:
+        rng = np.random.default_rng(seed)
+        for k, d in enumerate(data):
+            sel = d if len(d) <= points else rng.choice(d, points, replace=False)
+            ax.scatter(k + rng.uniform(-0.09, 0.09, len(sel)), sel, s=4, color=INK, alpha=0.45, lw=0, zorder=4)
+    ax.set_xticks(pos)
+    ax.set_xticklabels(names)
+    if show_medians:
+        for k, d in enumerate(data):
+            ax.annotate(f"{np.median(d):.2f}", (k, 0), xytext=(0, -22), textcoords=("data", "axes points"),
+                        ha="center", va="top", fontsize=6, color=MUTED, annotation_clip=False)
+    return bp
+
+
+def scatter_fit(ax, x, y, fit=None, stat: str = "", s: float = 2.0, color=INK, alpha: float = 0.35,
+                loc: str = "upper left", fit_color: str = FIT_RED, label=None):
+    """Small black dots, one red fitted line, statistic as plain corner text (Fig 3b/3d).
+
+    `fit` is either a callable evaluated on a grid, or (xs, ys) already computed.
+    """
+    x, y = np.asarray(x, dtype=float), np.asarray(y, dtype=float)
+    ok = np.isfinite(x) & np.isfinite(y)
+    ax.scatter(x[ok], y[ok], s=s, color=color, alpha=alpha, lw=0, zorder=2, label=label,
+               rasterized=ok.sum() > 5000)
+    if fit is not None:
+        if callable(fit):
+            g = np.linspace(np.nanpercentile(x[ok], 0.5), np.nanpercentile(x[ok], 99.5), 200)
+            ax.plot(g, fit(g), color=fit_color, lw=1.3, zorder=3)
+        else:
+            ax.plot(fit[0], fit[1], color=fit_color, lw=1.3, zorder=3)
+    if stat:
+        va, ha = ("top", "left") if "upper" in loc else ("bottom", "left")
+        xy = (0.04, 0.96) if va == "top" else (0.04, 0.04)
+        if "right" in loc:
+            ha, xy = "right", (0.96, xy[1])
+        ax.text(*xy, stat, transform=ax.transAxes, ha=ha, va=va, fontsize=6.5, color=INK)
+
+
 def shade_topology(ax, cfg, ymin: float = 0.0, ymax: float = 1.0, loops: bool = True, label: bool = False):
     """Grey TM segments; faint tint for loops/soluble domains by side."""
     for s in cfg.get_path("topology.segments", []) or []:
