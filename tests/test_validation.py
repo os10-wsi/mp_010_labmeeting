@@ -222,3 +222,67 @@ def test_a19_curated_file_parses_and_qdr2_claims_nothing():
     assert aqr1 and {e["pos"] for e in aqr1["measured"]} == {149, 238, 504}
     assert all(e["confidence"] in {"verified", "unverified"} for e in aqr1["measured"])
     assert qdr2 is not None and qdr2["measured"] == []
+
+
+# ------------------------------------------- A20: named variants vs synonymous
+def _panel_frame(effects, n_syn=200, sd=0.08, seed=0):
+    """Three replicates per named variant, plus a synonymous cloud with real spread."""
+    rng = np.random.default_rng(seed)
+    rows = []
+    for (pos, wt, mut), eff in effects.items():
+        r = {"pos": pos, "wt": wt, "mut": mut, "vclass": "missense", "pass_filter": True, "score_z": eff}
+        r.update({f"rep{k}": eff + rng.normal(0, sd) for k in (1, 2, 3)})
+        rows.append(r)
+    for i in range(n_syn):
+        v = rng.normal(0, 0.15)
+        r = {"pos": i + 1, "wt": "A", "mut": "A", "vclass": "synonymous", "pass_filter": True, "score_z": v}
+        r.update({f"rep{k}": v + rng.normal(0, sd) for k in (1, 2, 3)})
+        rows.append(r)
+    return pd.DataFrame(rows)
+
+
+def _panel_cfg():
+    return Config.wrap({"id": "T", "display_name": "T", "protein": {"gene": "AQR1"}})
+
+
+def test_a20_finds_a_real_effect_and_spares_the_null_ones():
+    from mpdms.analyses.a20_variant_panel import collect, stats_table
+    df = _panel_frame({(149, "Q", "A"): -0.05, (238, "Q", "A"): -0.90, (504, "R", "A"): -0.02})
+    mut, syn, missing = collect(df, _panel_cfg(), ["Q149A", "Q238A", "R504A"])
+    assert not missing and mut.variant.nunique() == 3 and len(mut) == 9
+    st = stats_table(mut, syn, df[df.vclass == "synonymous"].score_z.to_numpy())
+    vs = st[st.kind == "vs_synonymous"].set_index("a")
+    assert vs.loc["Q238A", "q"] < 0.05, "planted 0.9-unit effect missed"
+    assert vs.loc["Q149A", "q"] > 0.05 and vs.loc["R504A", "q"] > 0.05, "null variants called"
+    assert abs(vs.loc["Q238A", "z_vs_syn_variants"]) > 4
+
+
+def test_a20_empirical_p_is_primary_and_respects_its_floor():
+    """The Welch test on correlated replicates reads too significant; p must be the empirical one."""
+    from mpdms.analyses.a20_variant_panel import collect, stats_table
+    df = _panel_frame({(238, "Q", "A"): -0.90}, n_syn=50)
+    mut, syn, _ = collect(df, _panel_cfg(), ["Q238A"])
+    st = stats_table(mut, syn, df[df.vclass == "synonymous"].score_z.to_numpy())
+    r = st[st.kind == "vs_synonymous"].iloc[0]
+    assert r.p == pytest.approx(1 / 51, rel=1e-6)        # at the floor set by 50 synonymous variants
+    assert r.p_welch_replicates < r.p                     # and the parametric one is more optimistic
+
+
+def test_a20_reports_what_it_could_not_plot():
+    from mpdms.analyses.a20_variant_panel import collect
+    df = _panel_frame({(149, "Q", "A"): -0.05})
+    mut, _, missing = collect(df, _panel_cfg(), ["Q149A", "R504A", "W149A", "rubbish"])
+    assert mut.variant.unique().tolist() == ["Q149A"]
+    assert any("not measured" in m for m in missing)                  # absent from the data
+    assert any("numbering mismatch" in m and "W149A" in m for m in missing)   # wrong wt at that position
+    assert any("not a point substitution" in m for m in missing)
+
+
+def test_a20_pairwise_reports_its_detection_limit():
+    from mpdms.analyses.a20_variant_panel import collect, stats_table
+    df = _panel_frame({(149, "Q", "A"): -0.05, (504, "R", "A"): -0.02})
+    mut, syn, _ = collect(df, _panel_cfg(), ["Q149A", "R504A"])
+    st = stats_table(mut, syn, df[df.vclass == "synonymous"].score_z.to_numpy())
+    pair = st[st.kind == "mutant_pair"]
+    assert len(pair) == 1 and pair.iloc[0].q > 0.05            # 0.03 apart: not detectable
+    assert pair.iloc[0].min_detectable_difference > 0.1        # and the figure says so

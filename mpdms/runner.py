@@ -32,6 +32,7 @@ ANALYSES = [
     ("a16", "a16_assay_validation"),
     ("a18", "a18_helix_kr_vs_pro"),
     ("a19", "a19_literature"),
+    ("a20", "a20_variant_panel"),
 ]
 OPT_IN = {"a13", "a14"}  # only run when named in --only
 
