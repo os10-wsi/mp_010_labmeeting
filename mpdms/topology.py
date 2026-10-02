@@ -11,11 +11,14 @@ profiles, where helices of opposite orientation must not be pooled naively.
 Sources, tried in this order (or pick one with --source):
   cache     data/external/<GENE>/<ID>.tmhmm written by an earlier run
   file      --from-file: DeepTMHMM .gff3, or TMHMM 2.0 long output
-  python    the `tmhmm.py` package (a reimplementation shipping the TMHMM 2.0 model)
+  biolib    run DeepTMHMM through the `pybiolib` package (needs network)
+  python    the `tmhmm.py` package (TMHMM 2.0; only builds on Python <= 3.12)
   binary    a `tmhmm` executable on PATH (the original DTU distribution)
 
-DeepTMHMM is the current successor and is usually the better choice; run it on the
-BioLib server or locally and pass its .gff3 with --from-file.
+DeepTMHMM has superseded TMHMM 2.0 and is the better choice: it needs no compilation and
+is more accurate on eukaryotic polytopic proteins. The simplest route is the web server at
+https://dtu.biolib.com/DeepTMHMM - upload a FASTA, download `TMRs.gff3`, pass it with
+--from-file. `pip install pybiolib` automates the same thing via --source biolib.
 
 TMHMM 2.0 and DeepTMHMM are free for academic use under their own licences; this module
 only reads their output.
@@ -48,6 +51,21 @@ def from_python(seq: str, name: str) -> str:
     return "".join(ann)
 
 
+def from_biolib(seq: str, name: str) -> str:
+    """Run DeepTMHMM on the BioLib server via the pybiolib package."""
+    import tempfile
+    import biolib
+    with tempfile.TemporaryDirectory() as d:
+        fa, outdir = Path(d) / "in.fa", Path(d) / "out"
+        fa.write_text(f">{name}\n{seq}\n")
+        job = biolib.load("DTU/DeepTMHMM").cli(args=f"--fasta {fa}", machine="local")
+        job.save_files(str(outdir))
+        gff = next((p for p in outdir.rglob("*.gff3")), None)
+        if gff is None:
+            raise RuntimeError(f"DeepTMHMM produced no .gff3 (files: {[p.name for p in outdir.rglob('*')]})")
+        return parse_table(gff.read_text(), len(seq))
+
+
 def from_binary(seq: str, name: str, exe: str = "tmhmm") -> str:
     import tempfile
     with tempfile.TemporaryDirectory() as d:
@@ -62,7 +80,7 @@ def parse_table(text: str, length: int) -> str:
     ann = ["i"] * length
     found = False
     for line in text.splitlines():
-        if not line.strip() or line.startswith("#"):
+        if not line.strip() or line.startswith(("#", "//")):
             continue
         f = line.split("\t") if "\t" in line else line.split()
         if len(f) < 3:
@@ -96,6 +114,16 @@ def annotation(seq: str, name: str, source: str = "auto", from_file: Path | None
             return a, "cache"
     if from_file:
         return parse_table(Path(from_file).read_text(), len(seq)), f"file:{Path(from_file).name}"
+    if source in ("auto", "biolib"):
+        try:
+            return from_biolib(seq, name), "DeepTMHMM (biolib)"
+        except ImportError:
+            if source == "biolib":
+                raise
+        except Exception as e:
+            if source == "biolib":
+                raise
+            print(f"    (DeepTMHMM via biolib unavailable: {e})")
     if source in ("auto", "python"):
         try:
             return from_python(seq, name), "tmhmm.py"
@@ -104,11 +132,14 @@ def annotation(seq: str, name: str, source: str = "auto", from_file: Path | None
                 raise
     if source in ("auto", "binary") and shutil.which("tmhmm"):
         return from_binary(seq, name), "tmhmm binary"
+    import sys as _sys
+    py = ".".join(map(str, _sys.version_info[:2]))
     raise RuntimeError(
-        "no TMHMM source available. Either install the python package:\n"
-        "    pip install 'cython<3' && pip install --no-build-isolation tmhmm.py\n"
-        "  (if it fails to build, see scripts/install_tmhmm.sh)\n"
-        "or run DeepTMHMM (https://dtu.biolib.com/DeepTMHMM) and pass its .gff3 with --from-file")
+        "no TMHMM source available. In order of least effort:\n"
+        "  1. DeepTMHMM web server - https://dtu.biolib.com/DeepTMHMM - upload the FASTA from\n"
+        "     data/external/<GENE>/, download TMRs.gff3, then rerun with --from-file <that file>\n"
+        "  2. pip install pybiolib   (runs the same model from the command line)\n"
+        f"  3. TMHMM 2.0 via `bash scripts/install_tmhmm.sh` - needs Python <= 3.12 (this is {py})")
 
 
 # ------------------------------------------------------- annotation -> segments
