@@ -413,8 +413,8 @@ def test_wanted_sites_accepts_bare_residues_and_substitutions():
     from mpdms.analyses.a20_variant_panel import wanted_sites
     cfg = Config.wrap({"id": "PHO84", "display_name": "PHO84", "protein": {"gene": "PHO84"}})
     sites, wt, marked = wanted_sites(cfg)
-    assert sites == [160, 168, 178, 358, 392, 473, 492]
-    assert wt == {160: "F", 168: "R", 178: "D", 358: "D", 392: "V", 473: "E", 492: "K"}
+    assert sites == [160, 168, 178, 179, 358, 392, 473, 492]
+    assert wt == {160: "F", 168: "R", 178: "D", 179: "Y", 358: "D", 392: "V", 473: "E", 492: "K"}
     # one allele at 358 -> marked; three at 492 and two at 178 -> no single allele to point at
     assert marked == {358: "N"}
 

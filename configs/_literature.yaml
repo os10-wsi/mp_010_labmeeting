@@ -105,6 +105,7 @@ PHO84:
     - {pos: 168, wt: R, function: unknown, abundance: unknown, source: "user-supplied, source not stated", confidence: unverified}
     - {pos: 178, wt: D, substitution: D178N, function: unknown, abundance: unknown, source: "user-supplied, source not stated", confidence: unverified}
     - {pos: 178, wt: D, substitution: D178E, function: unknown, abundance: unknown, source: "user-supplied, source not stated", confidence: unverified}
+    - {pos: 179, wt: Y, function: unknown, abundance: unknown, source: "user-supplied, source not stated", confidence: unverified}
     - {pos: 358, wt: D, substitution: D358N, function: unknown, abundance: unknown, source: "user-supplied, source not stated", confidence: unverified}
     - {pos: 392, wt: V, function: unknown, abundance: unknown, source: "user-supplied, source not stated", confidence: unverified}
     - {pos: 473, wt: E, function: unknown, abundance: unknown, source: "user-supplied, source not stated", confidence: unverified}
@@ -113,7 +114,10 @@ PHO84:
     - {pos: 492, wt: K, substitution: K492E, function: unknown, abundance: unknown, source: "user-supplied, source not stated", confidence: unverified}
   inferred: []
   note: >-
-    7 sites: F160, R168, D178, D358, V392, E473, K492. Six assayed substitutions are
-    named (D178N, D178E, D358N, K492A, K492Q, K492E); F160, R168, V392 and E473 were
-    given as residues only, so they appear in A21 (which works per site) but not in A20
-    (which needs a specific allele to plot).
+    8 sites: F160, R168, D178, Y179, D358, V392, E473, K492. Six assayed substitutions
+    are named (D178N, D178E, D358N, K492A, K492Q, K492E); F160, R168, Y179, V392 and
+    E473 were given as residues only, so they appear in A21 (which works per site) but
+    not in A20 (which needs a specific allele to plot). D178, D358 and K492 were listed
+    twice across the two batches and are recorded once. Note D178 and Y179 are adjacent,
+    which makes the wild-type check worth reading: an off-by-one in the source would put
+    D at 179 or Y at 178 and the entry would be dropped rather than silently plotted.
