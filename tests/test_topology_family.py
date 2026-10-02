@@ -81,3 +81,19 @@ def test_aligned_table_flags_tm_and_identity():
     assert at.identical.tolist() == [True, True, False, True, True]
     assert at.both_tm.tolist() == [False, True, True, True, False]
     assert at.both_helical.tolist() == [False, True, True, True, False]
+
+
+def test_from_file_beats_a_stale_cache(tmp_path):
+    """Naming a gff3 must override a cached annotation, not be silently ignored."""
+    from mpdms.topology import annotation
+    seq = "M" * 60
+    cache = tmp_path / "c.tmhmm"
+    cache.write_text("# cached\n" + "i" * 60 + "\n")          # cache says: no TM helices
+    gff = tmp_path / "TMRs.gff3"                               # the file says: one TM, 20-39
+    gff.write_text("\n".join(["# test", "p\tTMhelix\t20\t39"]) + "\n")
+    ann, src = annotation(seq, "p", source="auto", from_file=gff, cache=cache)
+    assert src.startswith("file:"), f"cache won over --from-file: {src}"
+    assert set(ann[19:39]) == {"M"} and "M" not in ann[:19]
+
+    ann2, src2 = annotation(seq, "p", source="auto", from_file=None, cache=cache)
+    assert src2 == "cache" and "M" not in ann2                 # still used when no file is given

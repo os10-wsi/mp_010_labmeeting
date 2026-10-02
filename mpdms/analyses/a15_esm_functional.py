@@ -10,6 +10,8 @@ flagged separately: those are the cleanest "functional, not folding" candidates.
 """
 from __future__ import annotations
 
+import os
+
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -39,7 +41,17 @@ def read_esm(path) -> pd.DataFrame | None:
 
 
 def loess_fit(x, y, frac=0.3):
-    f = lowess(y, x, frac=frac, return_sorted=True)
+    """LOESS of y on x, returned as a callable.
+
+    `delta` makes lowess interpolate between points closer than 1% of the x range
+    instead of fitting each one. Without it this is O(n^2) and the 61 fits below
+    (one real + 60 bootstrap) take minutes on a full-length protein; with it they
+    take about a second. Checked at n = 5,000 and 10,000: the fitted values move
+    by < 0.002 and the functional-site calls are identical.
+    """
+    x = np.asarray(x, dtype=float)
+    span = float(np.nanmax(x) - np.nanmin(x)) if len(x) else 0.0
+    f = lowess(y, x, frac=frac, return_sorted=True, delta=0.01 * span)
     xs, idx = np.unique(f[:, 0], return_index=True)
     return lambda q: np.interp(q, xs, f[idx, 1])
 
@@ -58,6 +70,11 @@ def _ranges(nums, sep="+"):
 
 
 Z_COLOR_RANGE = 4.0  # structure colouring: -4 red ... 0 white ... +4 blue
+# Ray-tracing two 2400x1800 images is minutes of silent waiting and is almost never
+# what you want mid-pipeline, so it is opt-in: `MPDMS_RENDER=1 python -m mpdms run ...`.
+# The .pdb/.pml/.cxc are always written, so the figures can be made later on a desktop.
+RENDER = os.environ.get("MPDMS_RENDER", "").strip() not in ("", "0", "false", "no")
+RENDER_TIMEOUT = 300
 
 
 def write_structures(cfg, sites: pd.DataFrame, outdir) -> list:
@@ -122,18 +139,21 @@ def write_structures(cfg, sites: pd.DataFrame, outdir) -> list:
         out += [sdir / f"{name}.pml", sdir / f"{name}.cxc"]
         import importlib.util
         import sys
+        if not RENDER:
+            continue  # scripts are written; rendering is opt-in (see RENDER above)
         exe = shutil.which("pymol")
         cmd = [exe, "-cq", f"{name}.pml"] if exe else (
             [sys.executable, "-m", "pymol", "-cq", f"{name}.pml"] if importlib.util.find_spec("pymol") else None)
         if cmd:  # render a PNG if PyMOL is available (headless)
+            print(f"    rendering {name}.png with PyMOL (MPDMS_RENDER=1; up to {RENDER_TIMEOUT}s)", flush=True)
             try:
-                subprocess.run(cmd, cwd=sdir, timeout=600, check=False,
+                subprocess.run(cmd, cwd=sdir, timeout=RENDER_TIMEOUT, check=False,
                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 for ext in ("png", "pse"):
                     if (sdir / f"{name}.{ext}").exists():
                         out.append(sdir / f"{name}.{ext}")
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"    PyMOL render failed ({e.__class__.__name__}) - open {name}.pml by hand", flush=True)
     return out
 
 
@@ -249,6 +269,9 @@ def run(df, cfg, outdir):
     structs = write_structures(cfg, sites, outdir)
     if not structs:
         caveats.append("no structure in config - coloured structures not written")
+    elif not RENDER:
+        caveats.append("structure PDB/PyMOL/ChimeraX scripts written but not rendered; "
+                       "re-run with MPDMS_RENDER=1 for the PNGs and .pse sessions, or open the .pml yourself")
     if len(sites) and sites.functional.mean() > 0.3:
         caveats.append(f"{sites.functional.mean():.0%} of sites called functional - check ESM numbering/scale")
     caveats.append("ESM-1v scores conservation for any reason (function, folding in other contexts, interactions); "

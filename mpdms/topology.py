@@ -108,12 +108,14 @@ def parse_table(text: str, length: int) -> str:
 def annotation(seq: str, name: str, source: str = "auto", from_file: Path | None = None,
                cache: Path | None = None) -> tuple[str, str]:
     """Return (per-residue i/M/o string, which source was used)."""
+    # An explicit --from-file always wins: naming a file and silently getting a stale
+    # cache instead is how the wrong TM regions end up in every topology-dependent figure.
+    if from_file:
+        return parse_table(Path(from_file).read_text(), len(seq)), f"file:{Path(from_file).name}"
     if source in ("auto", "cache") and cache and cache.exists():
         a = cache.read_text().strip().splitlines()[-1].strip()
         if len(a) == len(seq):
             return a, "cache"
-    if from_file:
-        return parse_table(Path(from_file).read_text(), len(seq)), f"file:{Path(from_file).name}"
     if source in ("auto", "biolib"):
         try:
             return from_biolib(seq, name), "DeepTMHMM (biolib)"

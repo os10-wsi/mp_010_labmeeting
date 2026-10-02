@@ -175,6 +175,14 @@ def validate(cfg: Config, df=None, strict: bool = True) -> list[str]:
         reps = [c for c in df.columns if c.startswith("rep") and c[3:].isdigit()]
         if len(reps) < 1:
             warnings.append("no replicate columns detected")
+        # Every topology-dependent analysis silently inherits whatever is in the config,
+        # so say out loud when that is still the hydropathy guess `init` wrote.
+        topo_src = str(cfg.get_path("topology.source", "") or "")
+        n_tm = len([x for x in (cfg.get_path("topology.segments") or []) if x.get("type") == "TM"])
+        if n_tm and "tmhmm" not in topo_src.lower() and "uniprot" not in topo_src.lower():
+            warnings.append(f"topology source is {topo_src or 'unset'!r}, not TMHMM/UniProt - the "
+                            f"{n_tm} TM helices used by A04-A08, A13, A14, A18 and the heatmap tracks "
+                            "are a hydropathy guess; run `python -m mpdms tmhmm <config> --from-file <gff3>`")
         if seq:
             wt = df.drop_duplicates("pos").set_index("pos")["wt"]
             bad = [(p, w, seq[p - 1] if 0 < p <= len(seq) else "?")

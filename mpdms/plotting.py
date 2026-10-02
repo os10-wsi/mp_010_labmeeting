@@ -104,7 +104,12 @@ def git_commit() -> str:
 
 
 def stamp(fig, cfg=None, analysis: str = ""):
+    # The topology source rides on every figure: a panel that shades TM helices should
+    # say where those helices came from, so a stale hydropathy guess cannot pass for TMHMM.
+    topo = str((cfg.get_path("topology.source", "") if cfg else "") or "").strip()
     txt = f"{analysis}  {cfg.id if cfg else ''}  git:{git_commit()}".strip()
+    if topo:
+        txt += f"  topology:{topo}"
     fig.text(0.995, 0.002, txt, ha="right", va="bottom", fontsize=5, color=MUTED)
 
 
