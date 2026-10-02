@@ -405,3 +405,37 @@ def test_a20_percentiles_locate_variants_in_the_missense_distribution():
     assert pc.loc["Q238A", "percentile"] < 5       # near the bottom of the missense distribution
     assert pc.loc["Q149A", "percentile"] > 95
     assert pc.loc["Q238A", "rank_from_bottom"] < pc.loc["Q149A", "rank_from_bottom"]
+
+
+# ------------------------------- A21/A20: sites named as residues, not substitutions
+def test_wanted_sites_accepts_bare_residues_and_substitutions():
+    """PHO84's list mixes Phe160 with D358N; both must contribute their position."""
+    from mpdms.analyses.a20_variant_panel import wanted_sites
+    cfg = Config.wrap({"id": "PHO84", "display_name": "PHO84", "protein": {"gene": "PHO84"}})
+    sites, wt, marked = wanted_sites(cfg)
+    assert sites == [160, 168, 178, 358, 392, 473, 492]
+    assert wt == {160: "F", 168: "R", 178: "D", 358: "D", 392: "V", 473: "E", 492: "K"}
+    # one allele at 358 -> marked; three at 492 and two at 178 -> no single allele to point at
+    assert marked == {358: "N"}
+
+
+def test_wanted_sites_leaves_the_single_allele_genes_alone():
+    from mpdms.analyses.a20_variant_panel import wanted_sites
+    cfg = Config.wrap({"id": "AQR1", "display_name": "AQR1", "protein": {"gene": "AQR1"}})
+    sites, _, marked = wanted_sites(cfg)
+    assert sites == [149, 238, 504] and marked == {149: "A", 238: "A", 504: "A"}
+
+
+def test_wanted_sites_follows_an_explicit_config_list():
+    from mpdms.analyses.a20_variant_panel import wanted_sites
+    cfg = Config.wrap({"id": "X", "display_name": "X", "protein": {"gene": "NOPE"},
+                       "report": {"variant_panel": ["D178N", "K492A"]}})
+    sites, wt, marked = wanted_sites(cfg)
+    assert sites == [178, 492] and wt == {178: "D", 492: "K"} and marked == {178: "N", 492: "A"}
+
+
+def test_a20_panel_still_uses_substitutions_only():
+    """A20 plots alleles, so bare residues cannot become columns."""
+    from mpdms.analyses.a20_variant_panel import wanted_variants
+    cfg = Config.wrap({"id": "PHO84", "display_name": "PHO84", "protein": {"gene": "PHO84"}})
+    assert wanted_variants(cfg) == ["D178N", "D178E", "D358N", "K492A", "K492Q", "K492E"]

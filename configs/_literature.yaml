@@ -89,3 +89,31 @@ QDR2:
     numbering for it - they are paralogues, not the same protein; any transfer
     has to go through the AQR1/QDR2 alignment the `family` module already
     builds, and is a prediction to be tested, not evidence.
+
+PHO84:
+  uniprot: P25297          # UNVERIFIED - confirm before use
+  measured:
+    # Supplied by the user as a list of residues and substitutions, with NO source and
+    # NO reported effects. Until those are filled in, `function` and `abundance` are
+    # honestly `unknown`, which means A19 can report where the screen puts these
+    # residues but CANNOT score them as a positive control: that needs to know what the
+    # published mutant actually did. The two `Pho84` entries in the list were the gene
+    # name, not residues, and are not recorded. Duplicates (Lys492, Asp358, D358N) were
+    # collapsed. A19/A20/A21 check every `wt` below against the PHO84 sequence and drop
+    # any entry that disagrees, so a numbering mismatch surfaces rather than propagates.
+    - {pos: 160, wt: F, function: unknown, abundance: unknown, source: "user-supplied, source not stated", confidence: unverified}
+    - {pos: 168, wt: R, function: unknown, abundance: unknown, source: "user-supplied, source not stated", confidence: unverified}
+    - {pos: 178, wt: D, substitution: D178N, function: unknown, abundance: unknown, source: "user-supplied, source not stated", confidence: unverified}
+    - {pos: 178, wt: D, substitution: D178E, function: unknown, abundance: unknown, source: "user-supplied, source not stated", confidence: unverified}
+    - {pos: 358, wt: D, substitution: D358N, function: unknown, abundance: unknown, source: "user-supplied, source not stated", confidence: unverified}
+    - {pos: 392, wt: V, function: unknown, abundance: unknown, source: "user-supplied, source not stated", confidence: unverified}
+    - {pos: 473, wt: E, function: unknown, abundance: unknown, source: "user-supplied, source not stated", confidence: unverified}
+    - {pos: 492, wt: K, substitution: K492A, function: unknown, abundance: unknown, source: "user-supplied, source not stated", confidence: unverified}
+    - {pos: 492, wt: K, substitution: K492Q, function: unknown, abundance: unknown, source: "user-supplied, source not stated", confidence: unverified}
+    - {pos: 492, wt: K, substitution: K492E, function: unknown, abundance: unknown, source: "user-supplied, source not stated", confidence: unverified}
+  inferred: []
+  note: >-
+    7 sites: F160, R168, D178, D358, V392, E473, K492. Six assayed substitutions are
+    named (D178N, D178E, D358N, K492A, K492Q, K492E); F160, R168, V392 and E473 were
+    given as residues only, so they appear in A21 (which works per site) but not in A20
+    (which needs a specific allele to plot).

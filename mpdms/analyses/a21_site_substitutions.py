@@ -25,10 +25,11 @@ from scipy import stats as ss
 from .. import plotting as P
 from ..stats import bh_fdr
 from .a15_esm_functional import Q_SITE, Z_SITE
-from .a20_variant_panel import parse_substitution, wanted_variants
+from .a20_variant_panel import wanted_sites
 from .base import dirs, fmt_p, result, skipped
 
 HILITE = "#B8860B"
+MAX_COLS = 4          # wrap the per-site panels: 7 sites in one row is a 25-inch figure
 Z_RANGE = 4.0
 
 
@@ -93,7 +94,13 @@ def add_local_z(v: pd.DataFrame) -> tuple[pd.DataFrame, str, float]:
 
 def figure(cfg, v: pd.DataFrame, t: pd.DataFrame, allv: pd.DataFrame, figdir):
     n = len(t)
-    fig, axes = plt.subplots(1, n, figsize=(3.5 * n + 0.8, 4.3), squeeze=False, sharey=True, layout="constrained")
+    nc = min(n, MAX_COLS)
+    nr = int(np.ceil(n / nc))
+    fig, axgrid = plt.subplots(nr, nc, figsize=(3.4 * nc + 0.8, 4.1 * nr), squeeze=False,
+                               sharey=True, layout="constrained")
+    axes = [axgrid.ravel()]
+    for extra in axgrid.ravel()[n:]:
+        extra.set_visible(False)
     # the global LOESS, drawn identically in every panel so the panels are comparable
     o = allv.sort_values("score_z")
     norm = plt.Normalize(-Z_RANGE, Z_RANGE)
@@ -123,7 +130,7 @@ def figure(cfg, v: pd.DataFrame, t: pd.DataFrame, allv: pd.DataFrame, figdir):
         ax.set_xlabel("Abundance (normalised fitness)")
     axes[0][0].set_ylabel("ESM-1v score (masked marginal)")
     axes[0][0].legend(loc="lower right", fontsize=6, frameon=False)
-    fig.colorbar(sc, ax=axes[0], fraction=0.02).set_label(
+    fig.colorbar(sc, ax=list(axes[0][:n]), fraction=0.02).set_label(
         f"Variant z (ESM-1v − expected); ≤ {Z_SITE} = more constrained than abundance explains", fontsize=6.5)
     P.title(fig, cfg, "A21 all substitutions at the named sites vs ESM-1v")
     return P.save(fig, figdir, "a21_site_substitutions", cfg, "A21")
@@ -132,7 +139,14 @@ def figure(cfg, v: pd.DataFrame, t: pd.DataFrame, allv: pd.DataFrame, figdir):
 def figure_local(cfg, v: pd.DataFrame, t: pd.DataFrame, how: str, figdir):
     """The same sites, but regressed on themselves: fit and MAD from these points only."""
     n = len(t)
-    fig, axes = plt.subplots(1, n + 1, figsize=(3.4 * (n + 1) + 0.6, 4.3), squeeze=False, layout="constrained")
+    nc = min(n + 1, MAX_COLS)
+    nr = int(np.ceil((n + 1) / nc))
+    fig, axgrid = plt.subplots(nr, nc, figsize=(3.4 * nc + 0.6, 4.1 * nr), squeeze=False,
+                               layout="constrained")
+    flat = list(axgrid.ravel())
+    axes = [flat[:n] + [flat[n]]]           # site panels then the comparison panel
+    for extra in flat[n + 1:]:
+        extra.set_visible(False)
     norm = plt.Normalize(-Z_RANGE, Z_RANGE)
     grid = np.linspace(v.score_z.min(), v.score_z.max(), 100)
     from .a21_site_substitutions import local_fit  # same fit the z came from
@@ -177,7 +191,7 @@ def figure_local(cfg, v: pd.DataFrame, t: pd.DataFrame, how: str, figdir):
                  loc="left", fontsize=8)
     ax.legend(frameon=False, fontsize=6.5, loc="lower right")
     # below the site panels: between them and the comparison panel it splits the row
-    fig.colorbar(sc, ax=list(axes[0][:n]), location="bottom", fraction=0.05, pad=0.12,
+    fig.colorbar(sc, ax=list(axes[0][:n]), location="bottom", fraction=0.04, pad=0.10,
                  aspect=60).set_label(f"Variant z from these sites only (threshold {Z_SITE})", fontsize=6.5)
     P.title(fig, cfg, "A21b same sites, regression refit on these substitutions only")
     return P.save(fig, figdir, "a21b_local_regression", cfg, "A21")
@@ -188,32 +202,28 @@ def run(df: pd.DataFrame, cfg, outdir: Path) -> dict:
     vp = Path(outdir) / "tables" / "a15_variants.csv"
     if not vp.exists():
         return skipped("a21", cfg, "a15_variants.csv not found - run a15 first (needs ESM-1v scores)")
-    labels = wanted_variants(cfg)
-    if not labels:
+    sites, wt_expected, marked = wanted_sites(cfg)
+    if not sites:
         return skipped("a21", cfg, f"no sites named for {cfg.get_path('protein.gene', cfg.id)} "
                                    "(set report.variant_panel, or add measured entries to _literature.yaml)")
-    marked, sites, bad = {}, [], []
-    for lab in labels:
-        p = parse_substitution(lab)
-        if p is None:
-            bad.append(f"{lab}: not a point substitution")
-            continue
-        _, pos, mut = p
-        marked[pos] = mut
-        if pos not in sites:
-            sites.append(pos)
-
+    bad = []
     allv = pd.read_csv(vp)
     v = allv[allv.pos.isin(sites)]
     if not len(v):
         return skipped("a21", cfg, f"none of positions {sites} appear in a15_variants.csv")
-    # the wild-type residue in the data must match the one the label claims
-    for lab in labels:
-        p = parse_substitution(lab)
-        if p and p[1] in set(v.pos):
-            got = v.loc[v.pos == p[1], "wt"].iloc[0]
-            if got != p[0]:
-                bad.append(f"{lab}: data has {got}{p[1]} - numbering mismatch")
+    # the wild-type residue in the data must match the one the entry claims
+    for pos, want in wt_expected.items():
+        if pos in set(v.pos):
+            got = v.loc[v.pos == pos, "wt"].iloc[0]
+            if got != want:
+                bad.append(f"{want}{pos}: data has {got}{pos} - numbering mismatch, site dropped")
+    drop = {int(b.split(":")[0][1:]) for b in bad}
+    if drop:
+        sites = [p_ for p_ in sites if p_ not in drop]
+        v = v[~v.pos.isin(drop)]
+        marked = {k: m for k, m in marked.items() if k not in drop}
+        if not len(v):
+            return skipped("a21", cfg, "every named site failed the wild-type check: " + "; ".join(bad))
 
     t = site_table(v, sites, marked)
     v, how, scale_local = add_local_z(v)

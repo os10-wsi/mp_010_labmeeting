@@ -61,6 +61,37 @@ def wanted_variants(cfg) -> list[str]:
     return [e["substitution"] for e in (lit.get("measured") or []) if e.get("substitution")]
 
 
+def wanted_sites(cfg) -> tuple[list[int], dict[int, str], dict[int, str]]:
+    """Positions to examine, their expected wild-type residue, and a substitution to mark.
+
+    Entries may name a bare residue (Phe160) or a substitution (D358N); both contribute
+    the position, which is what the per-site analysis needs. A position is only marked
+    with a specific allele when exactly one is named for it - with three (K492A/Q/E)
+    there is no single allele to point at, so the panel just shows the position.
+    """
+    named = cfg.get_path("report.variant_panel", None)
+    entries = ([{"substitution": str(x)} for x in named] if named else
+               ((load_literature(str(cfg.get_path("protein.gene", cfg.id))) or {}).get("measured") or []))
+    order, wt, muts = [], {}, {}
+    for e in entries:
+        pos, w, mut = e.get("pos"), e.get("wt"), None
+        if e.get("substitution"):
+            parsed = parse_substitution(e["substitution"])
+            if parsed:
+                w, pos, mut = parsed[0], parsed[1], parsed[2]
+        if pos is None:
+            continue
+        pos = int(pos)
+        if pos not in order:
+            order.append(pos)
+        if w:
+            wt[pos] = w
+        if mut:
+            muts.setdefault(pos, []).append(mut)
+    marked = {p_: m[0] for p_, m in muts.items() if len(set(m)) == 1}
+    return order, wt, marked
+
+
 def collect(df: pd.DataFrame, cfg, labels: list[str]) -> tuple[pd.DataFrame, pd.DataFrame, list[str]]:
     """Long replicate-level tables for the named variants and for synonymous, plus misses."""
     reps = replicate_cols(df)
