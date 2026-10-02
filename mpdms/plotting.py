@@ -1,6 +1,7 @@
 """Shared theme, colormaps and figure helpers so every slide looks the same."""
 from __future__ import annotations
 
+import re
 import subprocess
 from functools import lru_cache
 from pathlib import Path
@@ -11,6 +12,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
 from matplotlib.colors import LinearSegmentedColormap, TwoSlopeNorm  # noqa: E402
+from matplotlib.transforms import ScaledTranslation  # noqa: E402
 
 from .config import REPO_ROOT  # noqa: E402
 
@@ -56,6 +58,55 @@ def diverging_cmap():
     return LinearSegmentedColormap.from_list("div", ["#B2182B", "#F4A582", "#F7F7F7", "#92C5DE", "#2166AC"])
 
 
+STYLE = "default"          # "default" (slides) or "paper" (journal figure)
+_CAPTIONS: dict = {}       # id(fig) -> {"title": str, "panels": [(letter, text)], "stamp": str}
+
+
+def use_style(name: str) -> None:
+    """Switch the global figure style. Call before any figure is built."""
+    global STYLE
+    if name not in ("default", "paper"):
+        raise ValueError(f"unknown style {name!r}")
+    STYLE = name
+    set_theme()
+
+
+def paper() -> bool:
+    return STYLE == "paper"
+
+
+# Journal conventions, as applied here: small sans-serif type, bold lower-case panel
+# letters outside the axes, no figure title and no provenance stamp on the artwork
+# (both move to a caption file so nothing is lost), hairline spines, short outward
+# ticks, no grid, and fonts embedded so the PDF stays editable.
+PAPER_RC = {
+    "font.size": 7,
+    "axes.titlesize": 7,
+    "axes.titleweight": "normal",
+    "axes.labelsize": 7,
+    "xtick.labelsize": 6,
+    "ytick.labelsize": 6,
+    "legend.fontsize": 6,
+    "legend.handlelength": 1.2,
+    "legend.handletextpad": 0.5,
+    "legend.labelspacing": 0.3,
+    "legend.borderpad": 0.2,
+    "axes.linewidth": 0.5,
+    "xtick.major.width": 0.5,
+    "ytick.major.width": 0.5,
+    "xtick.minor.width": 0.4,
+    "ytick.minor.width": 0.4,
+    "xtick.major.size": 2.0,
+    "ytick.major.size": 2.0,
+    "xtick.direction": "out",
+    "ytick.direction": "out",
+    "axes.grid": False,
+    "lines.linewidth": 1.0,
+    "patch.linewidth": 0.5,
+    "figure.dpi": 110,
+}
+
+
 def set_theme():
     plt.rcParams.update({
         "font.family": "sans-serif",
@@ -89,6 +140,8 @@ def set_theme():
         "savefig.bbox": "tight",
         "figure.dpi": 110,
     })
+    if paper():
+        plt.rcParams.update(PAPER_RC)
 
 
 @lru_cache(maxsize=1)
@@ -110,22 +163,83 @@ def stamp(fig, cfg=None, analysis: str = ""):
     txt = f"{analysis}  {cfg.id if cfg else ''}  git:{git_commit()}".strip()
     if topo:
         txt += f"  topology:{topo}"
+    if paper():
+        # journal figures carry no provenance on the artwork; it goes in the caption file
+        _CAPTIONS.setdefault(id(fig), {}).setdefault("stamp", txt)
+        return
     fig.text(0.995, 0.002, txt, ha="right", va="bottom", fontsize=5, color=MUTED)
 
 
 def title(fig, cfg, text: str):
+    if paper():
+        _CAPTIONS.setdefault(id(fig), {})["title"] = f"{cfg.display_name} — {text}"
+        return
     fig.suptitle(f"{cfg.display_name} — {text}", x=0.01, ha="left", fontsize=10, fontweight="bold")
+
+
+_PANEL_RE = re.compile(r"^\s*\(([a-zA-Z])\)\s*")
+
+
+def _relabel_panels(fig) -> list[tuple[str, str]]:
+    """Turn '(a) Sites' axes titles into a bold 'a' outside the axes, Nature-style.
+
+    The letter comes from the analysis's own prefix rather than being re-derived, so
+    panels keep the lettering their captions and headlines already refer to, and
+    colour bars cannot be lettered by mistake. The descriptive half of the title is
+    returned for the caption instead of being thrown away.
+    """
+    panels = []
+    for ax in fig.axes:
+        if ax.get_label() == "<colorbar>":
+            continue
+        src, setter, m = "", None, None
+        for loc in ("left", "center", "right"):   # analyses set titles with loc="left"
+            cand = ax.get_title(loc=loc)
+            m = _PANEL_RE.match(cand or "")
+            if m:
+                src = cand
+                setter = (lambda txt, _l=loc: ax.set_title(txt, loc=_l))
+                break
+        if not m:                        # a panel whose label is a text artist (axis off)
+            for t in ax.texts:
+                m = _PANEL_RE.match(t.get_text() or "")
+                if m:
+                    src, setter = t.get_text(), t.set_text
+                    break
+        if not m:
+            continue
+        letter, rest = m.group(1).lower(), _PANEL_RE.sub("", src)
+        setter("")
+        ax.text(0.0, 1.0, letter, transform=ax.transAxes + ScaledTranslation(
+            -22 / 72, 10 / 72, fig.dpi_scale_trans), ha="left", va="baseline",
+            fontsize=8, fontweight="bold", color=INK)
+        panels.append((letter, rest.strip()))
+    return panels
+
+
+def write_caption(fig, path: Path, name: str, panels: list[tuple[str, str]]) -> Path:
+    """The text the figure no longer carries, as a caption stub to paste into a draft."""
+    c = _CAPTIONS.pop(id(fig), {})
+    lines = [f"Figure. {c.get('title', name)}", ""]
+    lines += [f"({letter}) {text}" for letter, text in panels if text]
+    if c.get("stamp"):
+        lines += ["", f"[provenance: {c['stamp']}]"]
+    path.write_text("\n".join(lines) + "\n")
+    return path
 
 
 def save(fig, outdir: Path, name: str, cfg=None, analysis: str = "") -> list[Path]:
     outdir = Path(outdir)
     outdir.mkdir(parents=True, exist_ok=True)
     stamp(fig, cfg, analysis)
+    panels = _relabel_panels(fig) if paper() else []
     paths = []
     for ext in ("pdf", "png"):
         p = outdir / f"{name}.{ext}"
         fig.savefig(p, dpi=300)
         paths.append(p)
+    if paper():
+        write_caption(fig, outdir / f"{name}_caption.txt", name, panels)
     plt.close(fig)
     return paths
 
