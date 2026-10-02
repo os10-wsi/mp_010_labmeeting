@@ -1,0 +1,91 @@
+# Curated, published residue-level functional evidence, keyed by gene symbol.
+#
+# SCOPE. Only residues for which a paper reports a *measured* consequence of
+# changing that residue. Residues named solely because they sit in a docking
+# pose, a predicted pocket or a family motif go in `inferred:`, never in
+# `measured:`, because they are a hypothesis and must not be scored as a
+# positive control.
+#
+# FIELDS per entry
+#   pos            residue number in the UniProt/SGD reference protein
+#   wt             expected wild-type residue (one letter) -- A19 CHECKS THIS
+#                  against the config's FASTA and refuses the entry if it
+#                  disagrees, which is how construct/numbering drift is caught
+#   substitution   the allele actually assayed, e.g. Q149A
+#   function       loss | partial | none | gain | unknown   (effect on transport)
+#   abundance      the paper's own read on expression/localisation of the
+#                  mutant: normal | reduced | increased | unknown.
+#                  `normal` + `loss` is the key positive control for this
+#                  project: a residue that kills function without costing
+#                  abundance should be ESM-constrained but DMS-tolerant.
+#   assay          what was measured
+#   source/doi     provenance
+#   confidence     verified   = primary text read and quoted
+#                  unverified = taken from a secondary source or search
+#                               snippet; the PDF has NOT been read
+#
+# Everything below marked `unverified` needs one person-hour with the PDF
+# before it is shown in a talk. See docs/literature_residues.md.
+
+AQR1:
+  uniprot: P53943          # UNVERIFIED - confirm before use
+  measured:
+    - pos: 149
+      wt: Q
+      substitution: Q149A
+      function: partial
+      abundance: increased
+      assay: threonine/homoserine excretion; GFP localisation
+      note: >-
+        Reported as reduced excretion activity while the GFP fusion was MORE
+        abundant at the cell surface than in internal membranes. If that holds,
+        this is an abundance-neutral (or better) loss-of-function residue: the
+        cleanest possible positive control for "functional, not folding".
+      source: "Frontiers in Microbiology 12:752742 (2021)"
+      doi: 10.3389/fmicb.2021.752742
+      confidence: unverified
+    - pos: 238
+      wt: Q
+      substitution: Q238A
+      function: partial
+      abundance: unknown
+      assay: threonine/homoserine excretion
+      note: >-
+        Named with Q149 and R504 as important for amino acid excretion. The
+        localisation result was quoted only for Q149A and R504A, so the
+        abundance call here is genuinely unknown.
+      source: "Frontiers in Microbiology 12:752742 (2021)"
+      doi: 10.3389/fmicb.2021.752742
+      confidence: unverified
+    - pos: 504
+      wt: R
+      substitution: R504A
+      function: partial
+      abundance: increased
+      assay: homoserine excretion; GFP localisation
+      note: >-
+        Predicted to hydrogen-bond/salt-bridge homoserine specifically. Same
+        localisation result as Q149A.
+      source: "Frontiers in Microbiology 12:752742 (2021)"
+      doi: 10.3389/fmicb.2021.752742
+      confidence: unverified
+  inferred: []             # pocket-lining residues from the paper's docking,
+                           # once read off the figures, go here - NOT above
+  helices_in_pocket: [TM1, TM2, TM4, TM5, TM6, TM7, TM11]
+  note: >-
+    The pocket is reported as shaped by TM1, 2, 4, 5, 6, 7 and 11, from a model
+    built on the E. coli MdfA template. Useful as a coarse regional prior even
+    before individual residues are confirmed.
+
+QDR2:
+  uniprot: P40474          # UNVERIFIED - confirm before use
+  measured: []
+  inferred: []
+  note: >-
+    No residue-level mutagenesis of Qdr2 was found. The published work is gene
+    level: deletion/overexpression phenotypes for quinidine, barban, bleomycin
+    and cisplatin resistance, K+ (Rb+) uptake, copper and oxidative stress.
+    Treat QDR2 as having NO positive-control residues. Do not borrow Aqr1
+    numbering for it - they are paralogues, not the same protein; any transfer
+    has to go through the AQR1/QDR2 alignment the `family` module already
+    builds, and is a prediction to be tested, not evidence.

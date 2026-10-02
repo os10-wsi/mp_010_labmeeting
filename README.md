@@ -172,7 +172,7 @@ columns `pos, mut` and one of `esm1v` / `llr` / `score`.
 A15 fits a LOESS of ESM-1v against DMS abundance. A variant's residual is how far its
 ESM-1v score falls below the curve, scaled by the robust spread (MAD) of all residuals. A
 site is called functional when its variants' residuals are significantly below zero
-(one-sided Wilcoxon test, BH q < 0.05) and its median z is ≤ −2. The
+(one-sided Wilcoxon test, BH q < 0.05) and its median z is ≤ −1.5 (`Z_SITE` in `a15_esm_functional.py`). The
 `abundance_tolerant` column marks the functional sites whose abundance itself is near
 wild type.
 

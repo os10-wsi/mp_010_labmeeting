@@ -4,7 +4,7 @@ x = DMS normalised fitness (abundance), y = ESM-1v masked-marginal score. A LOES
 gives the ESM-1v score expected from the abundance effect. For each variant
     residual = ESM-1v - LOESS(abundance),  z = residual / (1.4826 * MAD of all residuals).
 Site-level test: one-sided Wilcoxon signed-rank of the site's variant residuals < 0, BH-FDR.
-Functional site: q < 0.05 and median z <= -2 (ESM-1v predicts it markedly worse than its
+Functional site: q < 0.05 and median z <= -1.5 (ESM-1v predicts it markedly worse than its
 abundance effect explains). Sites whose abundance is itself tolerant (median >= -0.5) are
 flagged separately: those are the cleanest "functional, not folding" candidates.
 """
@@ -20,7 +20,7 @@ from .. import plotting as P
 from ..stats import bh_fdr
 from .base import dirs, fmt_p, missense, result, skipped
 
-Z_SITE = -2.0
+Z_SITE = -1.5
 Q_SITE = 0.05
 TOLERANT = -0.5
 MIN_VARIANTS = 5
@@ -174,7 +174,7 @@ def run(df, cfg, outdir):
         rows.append({"pos": pos, "wt": g.wt.iloc[0], "segment": g.segment.iloc[0], "seg_type": g.seg_type.iloc[0],
                      "n_variants": len(g), "median_abundance": g.score_z.median(), "median_esm1v": g.esm1v.median(),
                      "median_residual": g.residual.median(), "median_z": g.z.median(),
-                     "frac_variants_z_lt_-2": float((g.z < -2).mean()), "p": pv})
+                     f"frac_variants_z_lt_{Z_SITE:g}": float((g.z < Z_SITE).mean()), "p": pv})
     sites = pd.DataFrame(rows)
     sites["q"] = bh_fdr(sites.p)
     sites["functional"] = (sites.q < Q_SITE) & (sites.median_z <= Z_SITE)

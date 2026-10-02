@@ -171,3 +171,54 @@ def test_rsa_slope_difference_absent_when_slopes_match():
     from mpdms.analyses.a18_helix_kr_vs_pro import rsa_stats
     r = rsa_stats(_rsa_positions(kr_slope=0.6, pro_slope=0.6, seed=2))
     assert abs(r["interaction"]["delta"]) < 0.3 and r["interaction"]["p"] > 0.05
+
+
+# ------------------------------------------- A19: published residues vs screen
+def _sites(functional_pos, n=600, seed=0):
+    rng = np.random.default_rng(seed)
+    rows = []
+    for p in range(1, n + 1):
+        func = p in functional_pos
+        rows.append({"pos": p, "wt": "Q", "segment": "TM1", "n_variants": 18,
+                     "median_abundance": 0.1 if func else rng.uniform(-1.2, 0.2),
+                     "median_z": -2.5 if func else rng.uniform(-0.8, 0.8),
+                     "q": 0.001 if func else 0.6, "functional": func,
+                     "abundance_tolerant": True if func else False})
+    return pd.DataFrame(rows)
+
+
+def test_a19_wt_mismatch_drops_the_entry():
+    """A paper's numbering that disagrees with the sequence must be refused, not used."""
+    from mpdms.analyses.a19_literature import check_numbering
+    seq = "M" + "Q" * 50          # Q at 2..51, M at 1
+    ok, bad = check_numbering([{"pos": 10, "wt": "Q"}, {"pos": 1, "wt": "R"}, {"pos": 999, "wt": "Q"}], seq)
+    assert [e["pos"] for e in ok] == [10] and ok[0]["wt_checked"]
+    assert len(bad) == 2 and "numbering mismatch" in bad[0] and "outside" in bad[1]
+
+
+def test_a19_marks_abundance_tolerant_hits():
+    """A published residue the screen calls functional but abundance-tolerant is the gold case."""
+    from mpdms.analyses.a19_literature import residue_table
+    s = _sites({149, 504})
+    t = residue_table([{"pos": 149, "wt": "Q", "substitution": "Q149A"},
+                       {"pos": 60, "wt": "Q", "substitution": "Q60A"}], s)
+    assert t.loc[t.pos == 149, "verdict"].iloc[0] == "functional, abundance-tolerant"
+    assert t.loc[t.pos == 60, "verdict"].iloc[0] != "functional, abundance-tolerant"
+
+
+def test_a19_uncovered_residue_is_not_scored_as_a_miss():
+    from mpdms.analyses.a19_literature import enrichment, residue_table
+    s = _sites({149})
+    t = residue_table([{"pos": 149, "wt": "Q"}, {"pos": 5000, "wt": "R"}], s)
+    assert t.loc[t.pos == 5000, "verdict"].iloc[0] == "not covered by the screen"
+    e = enrichment(t, s)
+    assert e["n_published_covered"] == 1 and e["n_hit"] == 1 and e["underpowered"]
+
+
+def test_a19_curated_file_parses_and_qdr2_claims_nothing():
+    """Guard against someone inventing QDR2 residues: there is no published set."""
+    from mpdms.analyses.a19_literature import load_literature
+    aqr1, qdr2 = load_literature("AQR1"), load_literature("qdr2")
+    assert aqr1 and {e["pos"] for e in aqr1["measured"]} == {149, 238, 504}
+    assert all(e["confidence"] in {"verified", "unverified"} for e in aqr1["measured"])
+    assert qdr2 is not None and qdr2["measured"] == []

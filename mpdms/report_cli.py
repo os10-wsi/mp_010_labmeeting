@@ -35,6 +35,7 @@ FIGURE_ORDER = [
     ("ssdraw_lys_arg", "SSDraw: lysine / arginine"),
     ("a18_helix_kr_vs_pro", "Lys/Arg vs proline in each TM helix"),
     ("a18b_rsa_vs_kr_pro", "Solvent accessibility vs Lys/Arg and vs proline effect (TM helices)"),
+    ("a19_literature", "Published functional residues against this screen"),
 ]
 
 
