@@ -5,6 +5,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import statsmodels.formula.api as smf
+from scipy.stats import sem as ss_sem
 
 from .. import plotting as P
 from ..annot import segments_df
@@ -12,6 +13,7 @@ from .base import dirs, missense, result, skipped
 
 FLANK = 10
 ACID, BASE = set("DE"), set("KR")
+BREAKERS = {"proline": ("P", "#E07B39"), "glycine": ("G", "#7B5EA7")}  # distinct from the D/E red
 THIRDS = ["cyto third", "central third", "lumenal third"]
 
 
@@ -51,6 +53,11 @@ def run(df, cfg, outdir):
     d = missense(df)
     d = d[~d.wt.isin(list(ACID | BASE)) & d.mut.isin(list(ACID | BASE))].copy()
     d["charge"] = np.where(d.mut.isin(list(ACID)), "acidic", "basic")
+    br = missense(df)
+    br = br[~br.wt.isin(["P", "G"]) & br.mut.isin(["P", "G"])].copy()
+    br["breaker"] = np.where(br.mut == "P", "proline", "glycine")
+    br = annotate(br, segs) if len(br) else br
+
     a = annotate(d, segs)
     if a.empty or a.charge.nunique() < 2:
         return skipped("a06", cfg, "too few charge-introducing variants in/near TMs")
@@ -69,6 +76,17 @@ def run(df, cfg, outdir):
             rows.append({"tm": tm, "region": reg, "n_acidic": len(ac), "n_basic": len(ba),
                          "mean_acidic": np.mean(ac) if len(ac) else np.nan, "mean_basic": np.mean(ba) if len(ba) else np.nan,
                          "acid_minus_basic": diff, "ci_lo": lo, "ci_hi": hi})
+    # helix breakers go in their own table: mixing them into the charge rows would give
+    # the pooled lookups duplicate region labels and silently return Series
+    brows = []
+    for name in BREAKERS:
+        g = br[br.breaker == name] if len(br) else br
+        for reg in ["cyto flank"] + THIRDS + ["lumenal flank"]:
+            v = g[g.region == reg].score_z.to_numpy() if len(g) else np.array([])
+            brows.append({"introduced": name, "region": reg, "n": len(v),
+                          "mean": float(np.mean(v)) if len(v) else np.nan,
+                          "sem": float(ss_sem(v)) if len(v) > 1 else np.nan})
+    brtab = pd.DataFrame(brows)
     tab = pd.DataFrame(rows)
     pooled = tab[tab.tm == "pooled"].set_index("region")
     for reg in THIRDS:
@@ -125,18 +143,29 @@ def run(df, cfg, outdir):
             xc = [iv.mid for iv in m.index]
             ax.errorbar(xc, m["mean"], yerr=m["sem"], fmt="-o", ms=3, lw=1, color=col, capsize=0,
                         label=f"{'D/E' if ch == 'acidic' else 'K/R'} introduced")
+        for name, (aa, col) in BREAKERS.items():
+            s_ = br[br.orientation == o] if len(br) else br
+            s_ = s_[s_.breaker == name] if len(s_) else s_
+            if len(s_) < 6:
+                continue
+            b = pd.cut(s_.x, bins, include_lowest=True)
+            m = s_.groupby(b, observed=False).score_z.agg(["mean", "sem", "size"])
+            ax.errorbar([iv.mid for iv in m.index], m["mean"], yerr=m["sem"], fmt="--s", ms=2.5,
+                        lw=0.9, color=col, capsize=0, label=f"{aa} introduced")
         ax.axhline(0, color=P.MUTED, lw=0.5)
         ax.set_xticks([-0.25, 0, 0.5, 1, 1.25])
         ax.set_xticklabels(["cyto\nflank", "cyto\nend", "centre", "lumen\nend", "lumen\nflank"])
         ax.set_title(f"TMs oriented {o.replace('_', '→')} (n={g.tm.nunique()})", loc="left")
     axes[0, 0].set_ylabel(cfg.get_path("plotting.score_label"))
-    axes[0, 0].legend(loc="lower left")
-    P.title(fig, cfg, "A06 charge introduction across TMDs")
+    axes[0, 0].legend(loc="lower left", fontsize=5.5, ncol=2)
+    P.title(fig, cfg, "A06 charge and helix-breaker introduction across TMDs")
     fig.tight_layout(rect=(0, 0.01, 1, 0.9))
     figs = P.save(fig, figdir, "a06_charge_topology", cfg, "A06")
     t1, t2 = tabdir / "a06_charge_by_region.csv", tabdir / "a06_interaction_tests.csv"
     tab.to_csv(t1, index=False)
     tests.to_csv(t2, index=False)
+    t3 = tabdir / "a06_breaker_by_region.csv"
+    brtab.to_csv(t3, index=False)
     ip = metrics["pooled_interaction_p"]
     verdict = ("no significant charge × depth interaction" if not (np.isfinite(ip) and ip < 0.05)
                else "consistent with positive-inside" if consistent else "OPPOSITE to positive-inside")
@@ -144,4 +173,11 @@ def run(df, cfg, outdir):
     head = (f"Acidic−basic score difference is {metrics['acid_minus_basic_cyto']:+.2f} at the cytosolic third vs "
             f"{metrics['acid_minus_basic_lumenal']:+.2f} at the lumenal third "
             f"({verdict}; interaction p = {metrics['pooled_interaction_p']:.2g})")
-    return result("a06", cfg, head, metrics, caveats, figs, [t1, t2])
+    # the breaker lines carry a prediction too: proline should be worst mid-membrane
+    bp = brtab[brtab.introduced == "proline"].set_index("region")["mean"]
+    if {"central third", "cyto flank", "lumenal flank"} <= set(bp.index) and bp.notna().all():
+        edge = float(np.nanmean([bp["cyto flank"], bp["lumenal flank"]]))
+        metrics["proline_centre_minus_flank"] = float(bp["central third"] - edge)
+        head += f"; proline centre − flank = {metrics['proline_centre_minus_flank']:+.2f}"
+    metrics["breaker_profile"] = brtab.to_dict("records")
+    return result("a06", cfg, head, metrics, caveats, figs, [t1, t2, t3])
