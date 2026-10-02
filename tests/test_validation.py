@@ -142,3 +142,32 @@ def test_metrics_report_discrimination():
     assert m["spearman"] > 0.9 and m["auroc_deleterious"] > 0.9
     m0 = B.metrics(y, rng.normal(0, 1, 500))
     assert abs(m0["spearman"]) < 0.2
+
+
+# ------------------------------------------- A18: burial vs substitution cost
+def _rsa_positions(kr_slope, pro_slope, seed=0, n_helices=8, n_pos=20):
+    """Positions whose K/R and Pro effects depend on RSA with the given slopes."""
+    rng = np.random.default_rng(seed)
+    rows = []
+    for h in range(n_helices):
+        for i in range(n_pos):
+            rsa = rng.uniform(0, 0.7)
+            rows.append({"pos": h * 100 + i, "helix": f"TM{h}", "orientation": "in_out", "rsa": rsa,
+                         "mean_KR": -1.0 + kr_slope * rsa + rng.normal(0, 0.12), "n_KR": 2,
+                         "mean_Pro": -1.0 + pro_slope * rsa + rng.normal(0, 0.12), "n_Pro": 1})
+    return pd.DataFrame(rows)
+
+
+def test_rsa_slope_difference_detected():
+    """K/R relieved by exposure, proline flat: the interaction must fire."""
+    from mpdms.analyses.a18_helix_kr_vs_pro import rsa_stats
+    r = rsa_stats(_rsa_positions(kr_slope=1.2, pro_slope=0.0, seed=1))
+    assert r["mean_KR"]["slope"] > 0.8 and r["mean_KR"]["p_slope"] < 0.01
+    assert abs(r["mean_Pro"]["slope"]) < 0.3
+    assert r["interaction"]["delta"] > 0.6 and r["interaction"]["p"] < 0.01
+
+
+def test_rsa_slope_difference_absent_when_slopes_match():
+    from mpdms.analyses.a18_helix_kr_vs_pro import rsa_stats
+    r = rsa_stats(_rsa_positions(kr_slope=0.6, pro_slope=0.6, seed=2))
+    assert abs(r["interaction"]["delta"]) < 0.3 and r["interaction"]["p"] > 0.05

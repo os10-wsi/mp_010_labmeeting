@@ -22,6 +22,8 @@ from .. import plotting as P
 from ..annot import segments_df
 from ..stats import bh_fdr
 from .base import dirs, fmt_p, missense, result, skipped
+from .heatmap_structure import rsa_profile
+from .a08_depth_dependence import _lowess_curve
 
 KR_COLOR, PRO_COLOR = "#7B5EA7", "#D62728"
 MIN_N = 4
@@ -140,6 +142,96 @@ def figure(df, cfg, t: pd.DataFrame):
     return fig
 
 
+def rsa_table(df, cfg) -> pd.DataFrame:
+    """TM-helix positions with RSA and the mean effect of K/R and of proline."""
+    segs = segments_df(cfg)
+    tms = segs[segs.type == "TM"]
+    mis = missense(df)
+    rows = []
+    for s in tms.itertuples():
+        d = mis[mis.pos.between(s.start, s.end)]
+        for pos, g in d.groupby("pos"):
+            kr = g.loc[g.mut.isin(["K", "R"]), "score_z"].dropna()
+            pro = g.loc[g.mut == "P", "score_z"].dropna()
+            rows.append({"pos": pos, "helix": s.name, "orientation": s.orientation,
+                         "mean_KR": kr.mean() if len(kr) else np.nan, "n_KR": len(kr),
+                         "mean_Pro": pro.mean() if len(pro) else np.nan, "n_Pro": len(pro)})
+    t = pd.DataFrame(rows)
+    if t.empty:
+        return t
+    rsa = rsa_profile(cfg, list(t.pos))
+    t["rsa"] = t.pos.map(rsa)
+    return t
+
+
+def rsa_figure(cfg, t: pd.DataFrame, stats: dict):
+    """RSA against the mean effect of K/R (left) and of proline (right), side by side."""
+    fig, axes = plt.subplots(1, 2, figsize=(7.6, 3.5), sharey=True, sharex=True, layout="constrained")
+    ok = t.rsa.notna()
+    lo, hi = np.nanpercentile(t.loc[ok, "rsa"], [0, 100])
+    grid = np.linspace(lo, hi, 60)
+    rng = np.random.default_rng(18)
+    for ax, (col, lab, colr) in zip(axes, [("mean_KR", "Lys / Arg", KR_COLOR),
+                                           ("mean_Pro", "Proline", PRO_COLOR)]):
+        d = t[ok & t[col].notna()]
+        ax.scatter(d.rsa, d[col], s=16, color=colr, alpha=0.65, lw=0.3, edgecolor="white")
+        if len(d) >= 10:
+            ax.plot(grid, _lowess_curve(d.rsa.to_numpy(), d[col].to_numpy(), grid, frac=0.7),
+                    color=colr, lw=1.8)
+            bs = []
+            hx = d.helix.unique()
+            idx = {h: d.index[d.helix == h].to_numpy() for h in hx}
+            for _ in range(300):                       # resample whole helices
+                pick = np.concatenate([idx[h] for h in rng.choice(hx, len(hx))])
+                sub = d.loc[pick]
+                bs.append(_lowess_curve(sub.rsa.to_numpy(), sub[col].to_numpy(), grid, frac=0.7))
+            bs = np.array(bs)
+            ax.fill_between(grid, np.nanquantile(bs, .025, 0), np.nanquantile(bs, .975, 0),
+                            color=colr, alpha=0.18, lw=0)
+            k = stats.get(col, {})
+            ax.set_title(f"{lab}  ·  ρ = {k.get('spearman', np.nan):+.2f} ({fmt_p(k.get('p_spearman'))})\n"
+                         f"slope = {k.get('slope', np.nan):+.2f} per unit RSA "
+                         f"[{k.get('slope_lo', np.nan):+.2f}, {k.get('slope_hi', np.nan):+.2f}]",
+                         loc="left", fontsize=8, color=colr)
+        ax.axhline(0, color=P.MUTED, lw=0.5)
+        ax.axhline(-1, color=P.MUTED, lw=0.4, ls=(0, (2, 2)))
+        ax.set_xlabel("Relative solvent accessibility (AlphaFold monomer)")
+    axes[0].set_ylabel("Mean normalised fitness at the position")
+    inter = stats.get("interaction", {})
+    fig.suptitle(f"{cfg.display_name} — burial vs substitution cost in TM helices"
+                 + (f"   ·   slopes differ: {fmt_p(inter.get('p'))}"
+                    f" (Δslope = {inter.get('delta', np.nan):+.2f})" if inter else ""),
+                 x=0.01, ha="left", fontsize=10, fontweight="bold")
+    return fig
+
+
+def rsa_stats(t: pd.DataFrame) -> dict:
+    """Spearman and OLS slope for each class, and a test that the two slopes differ."""
+    import statsmodels.formula.api as smf
+    out = {}
+    for col in ("mean_KR", "mean_Pro"):
+        d = t.dropna(subset=["rsa", col])
+        if len(d) < 10:
+            continue
+        rho, p = ss.spearmanr(d.rsa, d[col])
+        m = smf.ols(f"{col} ~ rsa", data=d).fit(cov_type="cluster", cov_kwds={"groups": d.helix})
+        ci = m.conf_int().loc["rsa"]
+        out[col] = {"n": len(d), "spearman": float(rho), "p_spearman": float(p),
+                    "slope": float(m.params["rsa"]), "slope_lo": float(ci[0]), "slope_hi": float(ci[1]),
+                    "p_slope": float(m.pvalues["rsa"])}
+    long = pd.concat([
+        t.dropna(subset=["rsa", "mean_KR"]).assign(y=lambda x: x.mean_KR, cls="KR"),
+        t.dropna(subset=["rsa", "mean_Pro"]).assign(y=lambda x: x.mean_Pro, cls="Pro")])
+    if long.cls.nunique() == 2 and len(long) >= 24:
+        m = smf.ols("y ~ rsa * C(cls, Treatment('Pro'))", data=long).fit(
+            cov_type="cluster", cov_kwds={"groups": long.helix})
+        k = next((i for i in m.params.index if i.startswith("rsa:")), None)
+        if k:
+            out["interaction"] = {"delta": float(m.params[k]), "p": float(m.pvalues[k]),
+                                  "note": "KR slope minus Pro slope"}
+    return out
+
+
 def run(df, cfg, outdir):
     segs = segments_df(cfg)
     if segs.empty or not (segs.type == "TM").any():
@@ -152,6 +244,15 @@ def run(df, cfg, outdir):
     figs = P.save(figure(df, cfg, t), figdir, "a18_helix_kr_vs_pro", cfg, "A18")
     p = tabdir / "a18_helix_kr_vs_pro.csv"
     t.to_csv(p, index=False)
+    tabs = [p]
+    rt = rsa_table(df, cfg)
+    rstats = {}
+    if len(rt) and rt.rsa.notna().any():
+        rstats = rsa_stats(rt)
+        figs += P.save(rsa_figure(cfg, rt, rstats), figdir, "a18b_rsa_vs_kr_pro", cfg, "A18")
+        pr = tabdir / "a18b_rsa_positions.csv"
+        rt.to_csv(pr, index=False)
+        tabs.append(pr)
     sig = tested[tested.q_welch < 0.05]
     kr_worse = int((tested.diff_KR_minus_Pro < 0).sum())
     pooled_kr = missense(df)
@@ -160,7 +261,8 @@ def run(df, cfg, outdir):
     kr_all = m.loc[m.mut.isin(["K", "R"]), "score_z"].dropna()
     pro_all = m.loc[m.mut == "P", "score_z"].dropna()
     w_all = ss.ttest_ind(kr_all, pro_all, equal_var=False)
-    caveats = ["Welch's t-test is the headline; Student's assumes equal variances, which K/R and Pro "
+    caveats = [] if (len(rt) and rt.rsa.notna().any()) else ["no structure: the RSA panels were not drawn"]
+    caveats += ["Welch's t-test is the headline; Student's assumes equal variances, which K/R and Pro "
                "rarely satisfy (both are in the table)",
                "variants within a helix share positions and are not fully independent, so these p-values "
                "are mildly anticonservative; the per-helix bootstrap CI is the more robust summary"]
@@ -169,10 +271,15 @@ def run(df, cfg, outdir):
     head = (f"K/R more damaging than Pro in {kr_worse}/{len(tested)} TM helices; "
             f"{len(sig)} significant at q<0.05; pooled across TMs "
             f"ΔK/R−Pro = {kr_all.mean() - pro_all.mean():+.2f} ({fmt_p(float(w_all.pvalue))})")
+    if "interaction" in rstats:
+        head += (f"; RSA slope K/R vs Pro differs by {rstats['interaction']['delta']:+.2f} "
+                 f"({fmt_p(rstats['interaction']['p'])})")
     return result("a18", cfg, head, {
         "n_helices_tested": len(tested), "n_significant_q05": len(sig),
         "n_KR_more_damaging": kr_worse,
         "pooled_diff_KR_minus_Pro": float(kr_all.mean() - pro_all.mean()),
         "pooled_p_welch": float(w_all.pvalue),
         "mean_KR_tm": float(kr_all.mean()), "mean_Pro_tm": float(pro_all.mean()),
-    }, caveats, figs, [p])
+        **{f"rsa_{k}_{m}": v for k, d in rstats.items() if isinstance(d, dict)
+           for m, v in d.items() if isinstance(v, (int, float))},
+    }, caveats, figs, tabs)
