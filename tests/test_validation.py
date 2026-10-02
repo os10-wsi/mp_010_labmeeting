@@ -286,3 +286,43 @@ def test_a20_pairwise_reports_its_detection_limit():
     pair = st[st.kind == "mutant_pair"]
     assert len(pair) == 1 and pair.iloc[0].q > 0.05            # 0.03 apart: not detectable
     assert pair.iloc[0].min_detectable_difference > 0.1        # and the figure says so
+
+
+# ----------------------------------- A21: every substitution at a site vs ESM-1v
+def _variant_rows(spec, seed=0):
+    """spec: {pos: (wt, {mut: z})}. Builds an a15_variants-shaped frame."""
+    rng = np.random.default_rng(seed)
+    rows = []
+    for pos, (wt, muts) in spec.items():
+        for mut, z in muts.items():
+            rows.append({"pos": pos, "wt": wt, "mut": mut, "score_z": rng.normal(-0.1, 0.1),
+                         "segment": "TM1", "seg_type": "TM", "esm1v": -4 + z,
+                         "esm_expected": -4.0, "residual": z, "z": z, "functional": z <= -1.5})
+    return pd.DataFrame(rows)
+
+
+def test_a21_counts_substitutions_below_the_threshold():
+    from mpdms.analyses.a21_site_substitutions import site_table
+    spec = {149: ("Q", {"A": -2.4, "G": -1.9, "L": -0.2, "S": 0.4, "W": -1.5}),
+            504: ("R", {"A": -0.3, "G": -0.1, "L": 0.2, "S": 0.1, "W": -0.4})}
+    t = site_table(_variant_rows(spec), [149, 504], {149: "A", 504: "A"}).set_index("pos")
+    assert t.loc[149, "n_below_threshold"] == 3                 # -2.4, -1.9 and -1.5 (inclusive)
+    assert set(t.loc[149, "substitutions_below"]) == {"A", "G", "W"}
+    assert t.loc[504, "n_below_threshold"] == 0
+    assert t.loc[149, "marked_below_threshold"] and not t.loc[504, "marked_below_threshold"]
+    assert t.loc[149, "marked_z"] == pytest.approx(-2.4)
+
+
+def test_a21_separates_a_site_carried_by_one_substitution():
+    """A site whose median is flat but whose marked allele is extreme must stay visible."""
+    from mpdms.analyses.a21_site_substitutions import site_table
+    spec = {238: ("Q", {"A": -3.0, **{m: 0.1 for m in "GLSVTIFYWCNDEKRHMP"}})}
+    t = site_table(_variant_rows(spec), [238], {238: "A"}).iloc[0]
+    assert t.median_z > -0.5 and t.n_below_threshold == 1       # the site looks tolerant overall
+    assert t.marked_below_threshold and t.marked_z == pytest.approx(-3.0)
+
+
+def test_a21_site_with_no_measured_substitutions_is_dropped_not_faked():
+    from mpdms.analyses.a21_site_substitutions import site_table
+    t = site_table(_variant_rows({149: ("Q", {"A": -2.0, "G": -1.0})}), [149, 999], {149: "A"})
+    assert list(t.pos) == [149]
