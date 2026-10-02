@@ -84,11 +84,12 @@ def figure_classes(cfg, d: pd.DataFrame, t: pd.DataFrame, st: pd.DataFrame, figd
     for k, c in enumerate(order):
         n = st.loc[st.group == c]
         if len(n):
-            ax.text(k, 1.01, f"n = {int(n.n_positions.iloc[0])}", transform=ax.get_xaxis_transform(),
+            ax.text(k, 1.01, f"n = {int(n.n_variants.iloc[0]):,}", transform=ax.get_xaxis_transform(),
                     ha="center", va="bottom", fontsize=6, color=P.MUTED, clip_on=False)
     if len(t):
         bits = [f"{r.a[:3]} vs {r.b[:3]}: {fmt_p(r.p)}{'*' if r.q < 0.05 else ''}" for r in t.itertuples()]
-        ax.set_xlabel("  |  ".join(bits), fontsize=6, labelpad=14)
+        ax.set_xlabel("n above each violin = mutations drawn; Mann–Whitney on position medians\n"
+                      + "  |  ".join(bits), fontsize=6, labelpad=14)
     ax.set_ylabel("Normalised fitness (missense)")
     ax.set_title("(a) By topology class", loc="left", fontsize=8.5)
     return P.save(fig, figdir, "a22a_topology_classes", cfg, "A22")
@@ -112,11 +113,11 @@ def figure_helices(cfg, d: pd.DataFrame, st: pd.DataFrame, kw: dict, figdir):
     for k, h in enumerate(order):
         n = st.loc[st.group == h]
         if len(n):
-            ax.text(k, 1.01, f"{int(n.n_positions.iloc[0])}", transform=ax.get_xaxis_transform(),
+            ax.text(k, 1.01, f"{int(n.n_variants.iloc[0]):,}", transform=ax.get_xaxis_transform(),
                     ha="center", va="bottom", fontsize=5.5, color=P.MUTED, clip_on=False)
     ax.set_ylabel("Normalised fitness (missense)")
-    ax.set_xlabel(f"Transmembrane helix, N to C   (Kruskal–Wallis across helices: "
-                  f"{fmt_p(kw.get('p'))}; dark = out-in)", fontsize=6.5, labelpad=14)
+    ax.set_xlabel(f"Transmembrane helix, N to C   (n = mutations; Kruskal–Wallis on position "
+                  f"medians: {fmt_p(kw.get('p'))}; dark = out-in)", fontsize=6.5, labelpad=14)
     ax.set_title("(b) By transmembrane helix", loc="left", fontsize=8.5)
     return P.save(fig, figdir, "a22b_helix_violins", cfg, "A22")
 
@@ -172,8 +173,8 @@ def run(df: pd.DataFrame, cfg, outdir: Path) -> dict:
     if missing:
         caveats.append(f"not plotted (fewer than {MIN_N} missense variants): {', '.join(missing)}")
     sig = t[t.q < 0.05] if len(t) else t
-    head = ("; ".join(f"{r.group} median {r.median:.2f} (n = {int(r.n_positions)} positions)"
-                      for r in st.itertuples())
+    head = ("; ".join(f"{r.group} median {r.median:.2f} (n = {int(r.n_variants):,} mutations "
+                      f"at {int(r.n_positions)} positions)" for r in st.itertuples())
             + (" | " + ", ".join(f"{r.a} vs {r.b} q = {r.q:.3g}" for r in sig.itertuples())
                if len(sig) else " | no class difference at q<0.05")
             + (f" | helices differ: {fmt_p(kw['p'])}" if kw else ""))
