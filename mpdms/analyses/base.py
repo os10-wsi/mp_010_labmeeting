@@ -9,7 +9,11 @@ import pandas as pd
 
 
 def dirs(outdir: Path) -> tuple[Path, Path]:
-    f, t = Path(outdir) / "figures", Path(outdir) / "tables"
+    # paper-style runs write alongside the default ones so both survive; tables are
+    # identical either way, so they stay in one place rather than being duplicated
+    from .. import plotting as P
+    f = Path(outdir) / ("figures_paper" if P.paper() else "figures")
+    t = Path(outdir) / "tables"
     f.mkdir(parents=True, exist_ok=True)
     t.mkdir(parents=True, exist_ok=True)
     return f, t
