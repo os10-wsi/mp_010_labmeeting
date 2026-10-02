@@ -8,8 +8,11 @@ import numpy as np
 import pandas as pd
 from matplotlib.gridspec import GridSpec
 
+from matplotlib.colors import LinearSegmentedColormap
+
 from .. import plotting as P
 from ..annot import HEATMAP_ORDER
+from ..plotting import NA_COLOR
 from ..config import protein_sequence
 from ..io import position_matrix
 from ..ssdraw_tracks import draw_track
@@ -23,11 +26,27 @@ def position_profiles(df: pd.DataFrame) -> pd.DataFrame:
     d = df[df["pass_filter"]]
     mis = d[d.vclass == "missense"].groupby("pos")["score_z"]
     prof = pd.DataFrame({"mean_missense": mis.mean(), "median_missense": mis.median(), "n_missense": mis.size()})
-    pro = d[(d.mut == "P")].groupby("pos")["score_z"].mean()
-    prof["proline"] = pro
-    stop = d[d.vclass == "nonsense"].groupby("pos")["score_z"].mean()
-    prof["stop"] = stop
+    prof["proline"] = d[d.mut == "P"].groupby("pos")["score_z"].mean()
+    prof["glycine"] = d[d.mut == "G"].groupby("pos")["score_z"].mean()
+    prof["lys_arg"] = d[d.mut.isin(["K", "R"])].groupby("pos")["score_z"].mean()
+    prof["stop"] = d[d.vclass == "nonsense"].groupby("pos")["score_z"].mean()
     return prof
+
+
+# relative solvent accessibility strip: one hue, light = exposed, dark = buried
+RSA_CMAP = LinearSegmentedColormap.from_list("rsa", ["#144A3C", "#2E8B6F", "#8FC9B6", "#E8F3EF"])
+RSA_CMAP.set_bad(NA_COLOR)
+
+
+def rsa_profile(cfg, positions) -> pd.Series:
+    """Per-position RSA from the structure (NaN where the model has no residue)."""
+    p = cfg.resolve(cfg.get_path("structure.path"))
+    if p is None or not p.exists():
+        return pd.Series(np.nan, index=positions, dtype=float)
+    from ..structure import residue_table
+    rt = residue_table(p, cfg.get_path("structure.chain", "A"),
+                       int(cfg.get_path("structure.numbering_offset", 0) or 0))
+    return pd.Series(dict(zip(rt.pos, rt.rsa))).reindex(positions)
 
 
 def structure_ss(cfg, positions) -> tuple[str, pd.DataFrame | None]:
@@ -41,10 +60,16 @@ def structure_ss(cfg, positions) -> tuple[str, pd.DataFrame | None]:
     return "".join(ssmap.get(i, "-") for i in positions), rt
 
 
-def heatmap_figure(df, cfg, seq, ss, positions, prof, name, with_tracks=True):
+TRACKS = [("mean_missense", "Mean"), ("proline", "Pro"), ("lys_arg", "Lys/Arg")]
+
+
+def heatmap_figure(df, cfg, seq, ss, positions, prof, name, with_tracks=True, rsa=None):
     vmin = cfg.get_path("plotting.heatmap_vmin", P.VMIN)
     vmax = cfg.get_path("plotting.heatmap_vmax", P.VMAX)
     cmap, norm = P.fitness_cmap(vmin, vmax), P.fitness_norm(vmin, vmax)
+    if rsa is None:
+        rsa = pd.Series(np.nan, index=positions, dtype=float)
+    rsa_im = None
     mat = position_matrix(df).reindex(index=positions, columns=ROWS)
     per = int(cfg.get_path("plotting.residues_per_row", 100))
     chunks = [positions[i:i + per] for i in range(0, len(positions), per)]
@@ -53,7 +78,7 @@ def heatmap_figure(df, cfg, seq, ss, positions, prof, name, with_tracks=True):
     trk = 0.30
     heights = []
     for _ in chunks:
-        heights += [0.12, heat_h] + ([trk, trk] if with_tracks else []) + [0.42]
+        heights += [0.12, heat_h] + ([trk] * len(TRACKS) + [0.16] if with_tracks else []) + [0.42]
     fig = plt.figure(figsize=(cell * per + 1.4, sum(heights) + 0.5))
     gs = GridSpec(len(heights), 2, figure=fig, height_ratios=heights, width_ratios=[cell * per, 0.12],
                   hspace=0.0, wspace=0.02, left=0.085, right=0.965, top=1 - 0.35 / (sum(heights) + 0.5),
@@ -83,7 +108,7 @@ def heatmap_figure(df, cfg, seq, ss, positions, prof, name, with_tracks=True):
         for s in ax.spines.values():
             s.set_visible(False)
         if with_tracks:
-            for key, lab in (("mean_missense", "Mean"), ("proline", "Pro")):
+            for key, lab in TRACKS:
                 ax_s = fig.add_subplot(gs[row, 0]); row += 1
                 vals = prof[key].reindex(ch).to_numpy(float)
                 sschunk = "".join(ss[positions.index(p)] for p in ch)
@@ -91,6 +116,18 @@ def heatmap_figure(df, cfg, seq, ss, positions, prof, name, with_tracks=True):
                 pad = per - n
                 draw_track(ax_s, sschunk + "-" * pad, np.concatenate([vals, np.full(pad, np.nan)]),
                            cmap, norm, label=lab)
+            # solvent accessibility strip
+            ax_r = fig.add_subplot(gs[row, 0]); row += 1
+            vals = rsa.reindex(ch).to_numpy(float)   # only the real width; no padding bar
+            rsa_im = ax_r.imshow(np.ma.masked_invalid(vals)[None, :], cmap=RSA_CMAP, vmin=0, vmax=0.6,
+                                 aspect="auto", interpolation="nearest",
+                                 extent=[ch[0] - 0.5, ch[0] - 0.5 + n, 0, 1])
+            ax_r.set_xlim(ch[0] - 0.5, ch[0] - 0.5 + per)
+            ax_r.set_yticks([])
+            ax_r.set_xticks([])
+            for sp in ax_r.spines.values():
+                sp.set_visible(False)
+            ax_r.text(-0.01, 0.5, "RSA", transform=ax_r.transAxes, ha="right", va="center", fontsize=6.5)
         # residue labels
         ax_l = fig.add_subplot(gs[row, 0]); row += 1
         ax_l.set_xlim(ch[0] - 0.5, ch[0] - 0.5 + per)
@@ -108,9 +145,16 @@ def heatmap_figure(df, cfg, seq, ss, positions, prof, name, with_tracks=True):
     cb.ax.tick_params(labelsize=5.5, length=2)
     cb.outline.set_linewidth(0.4)
     cb.set_label("Normalised fitness", fontsize=6)
+    if with_tracks and rsa_im is not None and np.isfinite(rsa.to_numpy(float)).any():
+        cax2 = fig.add_subplot(gs[min(4, len(heights) - 1), 1])
+        cb2 = fig.colorbar(rsa_im, cax=cax2, extend="max")
+        cb2.set_ticks([0, 0.3, 0.6])
+        cb2.ax.tick_params(labelsize=5.5, length=2)
+        cb2.outline.set_linewidth(0.4)
+        cb2.set_label("RSA (dark = buried)", fontsize=6)
     fig.text(0.085, 1 - 0.18 / (sum(heights) + 0.5),
              f"{cfg.display_name} — normalised fitness (syn = 0, stop = −1)"
-             + ("; SSDraw tracks: mean missense effect, proline" if with_tracks else ""),
+             + ("; SSDraw tracks: mean missense, proline, Lys/Arg; RSA strip" if with_tracks else ""),
              fontsize=8.5, fontweight="bold", va="center")
     return fig
 
@@ -180,6 +224,8 @@ def run(df, cfg, outdir):
     positions = list(range(1 if seq else lo, hi + 1))
     prof = position_profiles(df)
     ss, rt = structure_ss(cfg, positions)
+    rsa = rsa_profile(cfg, positions)
+    prof["rsa"] = rsa
     prof.to_csv(tabdir / "position_profiles.csv")
     figs = []
     caveats = []
@@ -192,13 +238,16 @@ def run(df, cfg, outdir):
                 caveats.append(f"structure sequence differs from FASTA at {len(mism)} residues, e.g. {mism[:3]}")
     figs += P.save(heatmap_figure(df, cfg, seq, ss, positions, prof, "heatmap", with_tracks=False),
                    figdir, "heatmap", cfg, "heatmap")
-    figs += P.save(heatmap_figure(df, cfg, seq, ss, positions, prof, "heatmap_ssdraw", with_tracks=True),
+    figs += P.save(heatmap_figure(df, cfg, seq, ss, positions, prof, "heatmap_ssdraw", with_tracks=True, rsa=rsa),
                    figdir, "heatmap_ssdraw", cfg, "heatmap")
     figs += P.save(ssdraw_only_figure(cfg, ss, positions, prof, "mean_missense",
                                       "SSDraw: mean missense effect per position (stops excluded)"),
                    figdir, "ssdraw_mean_effect", cfg, "heatmap")
     figs += P.save(ssdraw_only_figure(cfg, ss, positions, prof, "proline", "SSDraw: proline substitution effect"),
                    figdir, "ssdraw_proline", cfg, "heatmap")
+    figs += P.save(ssdraw_only_figure(cfg, ss, positions, prof, "lys_arg",
+                                      "SSDraw: mean effect of lysine / arginine substitutions"),
+                   figdir, "ssdraw_lys_arg", cfg, "heatmap")
     tabs = [tabdir / "position_profiles.csv"] + write_structure_colouring(cfg, prof, tabdir)
     worst = prof["mean_missense"].nsmallest(5)
     head = ("Most mutation-sensitive positions (mean missense): "
@@ -208,4 +257,6 @@ def run(df, cfg, outdir):
         "n_positions": len(positions), "coverage_positions": int(prof["n_missense"].gt(0).sum()),
         "helix_frac": ss_frac["H"], "strand_frac": ss_frac["E"],
         "mean_proline_effect": float(prof["proline"].mean()),
+        "mean_lys_arg_effect": float(prof["lys_arg"].mean()),
+        "mean_rsa": float(rsa.mean()) if np.isfinite(rsa.to_numpy(float)).any() else None,
     }, caveats, figs, tabs)

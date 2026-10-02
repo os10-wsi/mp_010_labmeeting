@@ -242,3 +242,30 @@ Helices alternate orientation, so the N-terminal end is cytosolic in half of the
 lumenal in the other half: pooling strictly N→C cancels any membrane-sided effect. Both
 views are produced — N→C as a single pool, and the same data split by orientation.
 
+## Per-protein report
+
+```bash
+# 1. define TM regions (DeepTMHMM .gff3 recommended)
+python -m mpdms tmhmm configs/AQR1.yaml --from-file AQR1_TMRs.gff3
+python -m mpdms tmhmm configs/QDR2.yaml --from-file QDR2_TMRs.gff3
+# 2. build the report
+python -m mpdms report configs/AQR1.yaml configs/QDR2.yaml
+```
+
+Produces `outputs/<ID>/report/<ID>_report.pdf` (all figures in one file) and
+`reports/<ID>_report.md`:
+
+- fitness distributions by variant class, replicate QC and the read-count filter;
+- the DMS heatmap with **three** SSDraw tracks — mean missense, proline, and the mean
+  effect of lysine/arginine — plus a **solvent-accessibility strip** under them
+  (one hue, dark = buried, from the AlphaFold model);
+- standalone SSDraw figures for each track;
+- **A18**: for every TM helix, K/R substitutions against proline substitutions, with
+  Welch's and Student's t-tests, Hedges' g, a bootstrap CI on the difference, and BH-FDR
+  across helices. Below zero on the summary panel means K/R is more damaging than proline
+  in that helix.
+
+TM regions come from whatever is in the config's `topology:` block, so the heatmap tracks,
+the RSA strip and A18 all follow the TMHMM definition once step 1 has run. `--skip-run`
+rebuilds the PDF from figures already on disk.
+

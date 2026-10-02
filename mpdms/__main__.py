@@ -3,17 +3,20 @@ import sys
 
 
 def main():
-    if len(sys.argv) < 2 or sys.argv[1] not in ("init", "run", "helix", "esm", "validate", "bench", "family", "tmhmm"):
+    if len(sys.argv) < 2 or sys.argv[1] not in ("init", "run", "helix", "esm", "validate", "bench", "family", "tmhmm", "report"):
         sys.exit("usage: python -m mpdms init <dms_folder>... | python -m mpdms run [configs/*.yaml] [--only a01,a02]"
                  " | python -m mpdms helix configs/A.yaml configs/B.yaml ..."
                  " | python -m mpdms esm configs/A.yaml ... [--models 1,2,3,4,5]"
                  " | python -m mpdms validate configs/*.yaml"
                  " | python -m mpdms bench configs/*.yaml [--split protein]"
                  " | python -m mpdms family configs/AQR1.yaml configs/QDR2.yaml"
-                 " | python -m mpdms tmhmm configs/*.yaml")
+                 " | python -m mpdms tmhmm configs/*.yaml"
+                 " | python -m mpdms report configs/AQR1.yaml configs/QDR2.yaml")
     cmd, rest = sys.argv[1], sys.argv[2:]
     if cmd == "init":
         from .init_dataset import main as m
+    elif cmd == "report":
+        from .report_cli import main as m
     elif cmd == "tmhmm":
         from .topology import main as m
     elif cmd == "family":
