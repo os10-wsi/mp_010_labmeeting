@@ -77,6 +77,7 @@ outputs/<GENE>/stats.json one row per analysis: headline, metrics, caveats
 outputs/_cross/           stats.json, summary.csv, summary.pdf  (slide 1; † = caveat fired)
 reports/<GENE>.md         auto-assembled one-pager
 data/processed/<GENE>.parquet   canonical table (score_raw, score_z, rep1..N, pass_filter, topology)
+data/processed/<GENE>.csv       the same table as CSV (no pyarrow needed); <GENE>.meta.json = anchors
 ```
 
 Every figure is stamped with the dataset id and the git commit.

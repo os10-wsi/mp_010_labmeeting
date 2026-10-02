@@ -455,6 +455,8 @@ def load_dataset(cfg: Config, use_cache: bool = False) -> pd.DataFrame:
     df.attrs.update(meta)
     proc.parent.mkdir(parents=True, exist_ok=True)
     df.to_parquet(proc, index=False)
+    # plain-text twin for sessions without a parquet engine (pd.read_csv / R / Excel)
+    df.to_csv(proc.with_suffix(".csv"), index=False)
     proc.with_suffix(".meta.json").write_text(json.dumps(meta, indent=2, default=str))
     return df
 
