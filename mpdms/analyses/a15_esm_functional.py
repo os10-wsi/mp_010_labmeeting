@@ -56,6 +56,21 @@ def loess_fit(x, y, frac=0.3):
     return lambda q: np.interp(q, xs, f[idx, 1])
 
 
+def functional_list(func: pd.DataFrame, width: int = 140) -> list[str]:
+    """Every functional residue, in sequence order, wrapped to `width` characters.
+
+    Panels (b) and (c) can only label the handful with the smallest q before the text
+    collides, so the figure also carries the full set. Sequence order, not q order:
+    this list is meant to be read off against a sequence or pasted into a selection.
+    """
+    import textwrap
+    if not len(func):
+        return ["none"]
+    f = func.sort_values("pos")
+    items = [f"{r.wt}{r.pos}" + ("*" if getattr(r, "abundance_tolerant", False) else "") for r in f.itertuples()]
+    return textwrap.wrap("  ".join(items), width=width, break_long_words=False) or ["none"]
+
+
 def _ranges(nums, sep="+"):
     """[1,2,3,7,9,10] -> '1-3+7+9-10' (PyMOL) or '1-3,7,9-10' with sep=','"""
     nums = sorted(set(int(n) for n in nums))
@@ -215,8 +230,10 @@ def run(df, cfg, outdir):
         boots.append(loess_fit(dx[pick], dy[pick])(grid))
     boots = np.array(boots)
 
-    fig = plt.figure(figsize=(10.5, 7.2))
-    gs = fig.add_gridspec(2, 2, height_ratios=[1, 0.62], hspace=0.42, wspace=0.28)
+    lines = functional_list(func)
+    list_h = 0.085 + 0.034 * len(lines)         # fraction of the base figure height for the list
+    fig = plt.figure(figsize=(10.5, 7.2 + list_h * 7.2))
+    gs = fig.add_gridspec(3, 2, height_ratios=[1, 0.62, list_h], hspace=0.42, wspace=0.28)
     ax = fig.add_subplot(gs[0, 0])
     nf = d[~d.functional]
     ax.hexbin(nf.score_z, nf.esm1v, gridsize=55, cmap="Greys", bins="log", mincnt=1, linewidths=0, rasterized=True)
@@ -257,6 +274,17 @@ def run(df, cfg, outdir):
     ax.set_ylabel("Site median z")
     ax.set_title(f"(c) Residual along the sequence: red = functional (q < {Q_SITE}, median z ≤ {Z_SITE}); grey = TM",
                  loc="left")
+    axl = fig.add_subplot(gs[2, :])
+    axl.axis("off")
+    n_tol = int(func.abundance_tolerant.sum()) if len(func) else 0
+    axl.text(0, 1.0, f"(d) All {len(func)} functional residues (q < {Q_SITE}, median z ≤ {Z_SITE}), "
+                     f"in sequence order; * = abundance-tolerant (median ≥ {TOLERANT}), n = {n_tol}",
+             transform=axl.transAxes, ha="left", va="top", fontsize=8, fontweight="bold")
+    # one text artist, so matplotlib handles line spacing: a per-line offset in axes
+    # fractions overflows the panel as soon as the list runs to several lines
+    axl.text(0, 0.74, "\n".join(lines), transform=axl.transAxes, ha="left", va="top",
+             fontsize=7, family="monospace", linespacing=1.5,
+             color=FUNC_COLOR if lines != ["none"] else P.MUTED)
     P.title(fig, cfg, "A15 abundance vs ESM-1v: functional sites")
     figs = P.save(fig, figdir, "a15_esm_functional", cfg, "A15")
 

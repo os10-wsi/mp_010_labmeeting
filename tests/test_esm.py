@@ -27,3 +27,23 @@ def test_masked_marginals_relative_to_wt():
     assert np.allclose(m[seq.index("K"), AA20.index("A")], 1)    # K->A favoured
     tab = to_long(seq[:6], [m[:6]], [1])
     assert len(tab) == 6 * 19 and set(tab.columns) >= {"pos", "wt", "mut", "esm1v"}
+
+
+def test_functional_list_is_complete_wrapped_and_in_sequence_order():
+    """Panels (b)/(c) only label the top few; the list panel must carry every residue."""
+    import numpy as np
+    import pandas as pd
+
+    from mpdms.analyses.a15_esm_functional import functional_list
+    rng = np.random.default_rng(0)
+    pos = sorted(rng.choice(np.arange(1, 531), 130, replace=False))
+    f = pd.DataFrame({"pos": pos, "wt": list("ACDEFGHIKLMNPQRSTVWY") * 6 + ["A"] * 10,
+                      "abundance_tolerant": rng.random(130) < 0.4})
+    lines = functional_list(f)
+    joined = " ".join(lines)
+    assert all(f"{r.wt}{r.pos}" in joined for r in f.itertuples())        # nothing dropped
+    assert all(len(ln) <= 140 for ln in lines)                            # wrapped to width
+    order = [int(tok.rstrip("*")[1:]) for tok in joined.split()]
+    assert order == sorted(order)                                         # sequence order
+    assert joined.count("*") == int(f.abundance_tolerant.sum())           # tolerant marked
+    assert functional_list(f.iloc[:0]) == ["none"]
