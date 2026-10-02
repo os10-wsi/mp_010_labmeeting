@@ -40,6 +40,8 @@ FIGURE_ORDER = [
     ("a20b_missense_percentile", "Named variants placed in the missense fitness distribution"),
     ("a21_site_substitutions", "All substitutions at the named sites vs ESM-1v"),
     ("a21b_local_regression", "Named sites with the regression refit on those substitutions only"),
+    ("a22a_topology_classes", "Missense fitness by topology class"),
+    ("a22b_helix_violins", "Missense fitness per transmembrane helix, N to C"),
 ]
 
 

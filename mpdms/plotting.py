@@ -314,9 +314,11 @@ def violin_box(ax, groups: dict, colors=None, points: int = 0, width: float = 0.
     ax.set_xticks(pos)
     ax.set_xticklabels(names)
     if show_medians:
+        # x in data coordinates, y in axes fraction: a mixed textcoords string silently
+        # places the label far outside the axes and inflates the saved figure
         for k, d in enumerate(data):
-            ax.annotate(f"{np.median(d):.2f}", (k, 0), xytext=(0, -22), textcoords=("data", "axes points"),
-                        ha="center", va="top", fontsize=6, color=MUTED, annotation_clip=False)
+            ax.text(k, -0.085, f"{np.median(d):.2f}", transform=ax.get_xaxis_transform(),
+                    ha="center", va="top", fontsize=6, color=MUTED, clip_on=False)
     return bp
 
 
