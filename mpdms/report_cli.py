@@ -34,6 +34,7 @@ FIGURE_ORDER = [
     ("ssdraw_proline", "SSDraw: proline"),
     ("ssdraw_lys_arg", "SSDraw: lysine / arginine"),
     ("a05b_substitution_matrices", "Substitution matrices: TM vs rest of protein, and their difference"),
+    ("a28_helix_substitution_matrices", "Substitution matrices: helices in the membrane vs helices outside it"),
     ("a18_helix_kr_vs_pro", "Lys/Arg vs proline in each TM helix"),
     ("a18b_rsa_vs_kr_pro", "Solvent accessibility vs Lys/Arg and vs proline effect (TM helices)"),
     ("a19_literature", "Published functional residues against this screen"),

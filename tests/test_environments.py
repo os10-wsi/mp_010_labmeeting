@@ -196,3 +196,34 @@ def test_a05b_marginal_recovers_the_planted_tm_charge_cost():
     hydro = piv.loc[[a for a in "ILVF" if a in piv.index]]
     assert charged["TM"].mean() < hydro["TM"].mean() - 0.5      # charge is the expensive one
     assert abs(charged["non-TM"].mean() - hydro["non-TM"].mean()) < 0.2   # not so in loops
+
+
+def test_a05b_marginal_falls_back_and_says_so_when_composition_blocks_the_control():
+    """Disjoint wild types: the shared-WT marginal is impossible, so it must say so loudly."""
+    from mpdms.analyses.a05_substitution_physchem import substitution_panels
+    from mpdms.annot import HYDROPHOBICITY_ORDER
+    from mpdms.config import Config
+    import tempfile
+    from pathlib import Path
+
+    rng = np.random.default_rng(0)
+    rows = []
+    for i in range(1, 81):
+        tm = i % 2 == 0
+        wt = "ILVF"[i % 4] if tm else "GSTN"[i % 4]     # no overlap at all
+        for mut in AA:
+            if mut == wt:
+                continue
+            rows.append({"pos": i, "wt": wt, "mut": mut, "is_tm": tm,
+                         "score_z": (-0.9 if tm else -0.1) + rng.normal(0, 0.08)})
+    d = pd.DataFrame(rows)
+    with tempfile.TemporaryDirectory() as td:
+        f = t = Path(td)
+        _, tabs, st = substitution_panels(Config.wrap({"id": "T", "display_name": "T"}),
+                                          d, list(HYDROPHOBICITY_ORDER), f, t)
+        marg = pd.read_csv([p for p in tabs if "marginal" in p.name][0])
+    assert st["n_shared_wt_residues"] == 0
+    assert st["marginal_composition_controlled"] is False
+    # both subsets must still be drawn, so the panel does not look half-broken
+    assert set(marg.subset) == {"TM", "non-TM"}
+    assert (marg.composition_controlled == False).all()

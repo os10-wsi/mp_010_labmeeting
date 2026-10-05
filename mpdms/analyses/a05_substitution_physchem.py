@@ -29,23 +29,29 @@ def fit(d: pd.DataFrame, scale: str):
 MIN_CELL = 3   # a (wt, mut) cell drawn from fewer measurements than this is left blank
 
 
-def substitution_panels(cfg, d: pd.DataFrame, order: list, figdir, tabdir):
-    """TM and non-TM substitution matrices side by side with their difference.
+def substitution_panels(cfg, d: pd.DataFrame, order: list, figdir, tabdir,
+                        subs: dict | None = None, name: str = "a05b_substitution_matrices",
+                        title: str = "A05 substitution matrices, TM vs rest of protein",
+                        analysis: str = "A05"):
+    """Two labelled substitution matrices side by side, with their difference and a marginal.
 
-    The split is the topology's, so this works from a TMHMM/DeepTMHMM gff3 alone and
-    needs no structure. The difference panel is the one that answers the question: the
-    two matrices on their own mostly show that TM positions are worse at everything.
+    `subs` is {label: variants}; the default splits on the topology, which works from a
+    TMHMM/DeepTMHMM gff3 alone and needs no structure. The difference panel is the one
+    that answers the question: the two matrices on their own mostly show that one subset
+    is worse at everything.
     """
-    subs = {"TM": d[d.is_tm], "non-TM": d[~d.is_tm]}
+    if subs is None:
+        subs = {"TM": d[d.is_tm], "non-TM": d[~d.is_tm]}
+    a_name, b_name = list(subs)
     mats, counts = {}, {}
-    for name, sub in subs.items():
+    for lab, sub in subs.items():
         m = sub.pivot_table(index="wt", columns="mut", values="score_z", aggfunc="mean")
         c = sub.pivot_table(index="wt", columns="mut", values="score_z", aggfunc="size")
-        mats[name] = m.where(c >= MIN_CELL).reindex(index=order, columns=order)
-        counts[name] = c.reindex(index=order, columns=order)
-    diff = mats["TM"] - mats["non-TM"]
+        mats[lab] = m.where(c >= MIN_CELL).reindex(index=order, columns=order)
+        counts[lab] = c.reindex(index=order, columns=order)
+    diff = mats[a_name] - mats[b_name]
     ok = diff.notna().to_numpy()
-    rho = (float(ss.spearmanr(mats["TM"].to_numpy()[ok], mats["non-TM"].to_numpy()[ok])[0])
+    rho = (float(ss.spearmanr(mats[a_name].to_numpy()[ok], mats[b_name].to_numpy()[ok])[0])
            if ok.sum() > 5 else float("nan"))
 
     vmin, vmax = cfg.get_path("plotting.heatmap_vmin", P.VMIN), cfg.get_path("plotting.heatmap_vmax", P.VMAX)
@@ -53,27 +59,27 @@ def substitution_panels(cfg, d: pd.DataFrame, order: list, figdir, tabdir):
     # difference only exists where both subsets happen to share a wild-type residue.
     # Panel (d) marginalises over the SHARED wild-type residues instead, which is always
     # defined and carries the power the cell-wise difference does not.
-    common = sorted(set(subs["TM"].wt) & set(subs["non-TM"].wt))
+    common = sorted(set(subs[a_name].wt) & set(subs[b_name].wt))
     fig, axes = plt.subplots(1, 4, figsize=(13.2, 3.9), layout="constrained")
-    for ax, (k, name) in zip(axes, enumerate(["TM", "non-TM"])):
-        im = ax.imshow(np.ma.masked_invalid(mats[name].to_numpy(float)),
+    for ax, (k, lab) in zip(axes, enumerate([a_name, b_name])):
+        im = ax.imshow(np.ma.masked_invalid(mats[lab].to_numpy(float)),
                        cmap=P.fitness_cmap(vmin, vmax), norm=P.fitness_norm(vmin, vmax),
                        interpolation="nearest")
-        ax.set_title(f"({'ab'[k]}) {name} positions "
-                     f"(n = {int(subs[name].score_z.notna().sum()):,})", loc="left", fontsize=8.5)
+        ax.set_title(f"({'ab'[k]}) {lab} positions "
+                     f"(n = {int(subs[lab].score_z.notna().sum()):,})", loc="left", fontsize=8.5)
         if k == 1:
             fig.colorbar(im, ax=ax, fraction=0.046).set_label("Mean normalised fitness", fontsize=6.5)
     lim = float(np.nanmax(np.abs(diff.to_numpy(float)))) if ok.any() else 1.0
     ax = axes[2]
     im = ax.imshow(np.ma.masked_invalid(diff.to_numpy(float)), cmap=P.diverging_cmap(),
                    vmin=-lim, vmax=lim, interpolation="nearest")
-    fig.colorbar(im, ax=ax, fraction=0.046).set_label("TM − non-TM", fontsize=6.5)
+    fig.colorbar(im, ax=ax, fraction=0.046).set_label(f"{a_name} − {b_name}", fontsize=6.5)
     ax.set_title(f"(c) Difference  ({int(ok.sum())} shared cells"
                  + (f", ρ {rho:.2f}" if ok.sum() > 5 else "") + ")", loc="left", fontsize=8.5)
     if not ok.any():
-        ax.text(0.5, 0.5, "no (wt, mut) cell occurs in both subsets:\nTM and non-TM do not share "
-                          "wild-type residues", transform=ax.transAxes, ha="center", va="center",
-                fontsize=6.5, color=P.MUTED)
+        ax.text(0.5, 0.5, f"no (wt, mut) cell occurs in both subsets:\n{a_name} and {b_name} "
+                          "do not share wild-type residues", transform=ax.transAxes,
+                ha="center", va="center", fontsize=6.5, color=P.MUTED)
     for ax in axes[:3]:
         ax.set_xticks(range(len(order))); ax.set_xticklabels(order, fontsize=5, family="monospace")
         ax.set_yticks(range(len(order))); ax.set_yticklabels(order, fontsize=5, family="monospace")
@@ -83,27 +89,37 @@ def substitution_panels(cfg, d: pd.DataFrame, order: list, figdir, tabdir):
         for sp in ax.spines.values():
             sp.set_visible(False)
     ax = axes[3]
-    marg = pd.DataFrame()
-    if common:
+
+    def _marginal(wt_set):
         rows = []
-        for name, sub in subs.items():
-            g = sub[sub.wt.isin(common)]
+        for lab, sub in subs.items():
+            g = sub[sub.wt.isin(wt_set)] if wt_set is not None else sub
             for mut, gg in g.groupby("mut", observed=True):
                 pos = gg.groupby("pos").score_z.median()
                 if len(pos) >= 3:
-                    rows.append({"introduced": mut, "subset": name, "n_positions": len(pos),
+                    rows.append({"introduced": mut, "subset": lab, "n_positions": len(pos),
                                  "median": float(pos.median()),
                                  "sem": float(pos.std(ddof=1) / np.sqrt(len(pos)))})
-        marg = pd.DataFrame(rows)
+        return pd.DataFrame(rows)
+
+    # Prefer the composition-controlled marginal, over wild-type residues present in both
+    # subsets. When the subsets share too few, that leaves one series empty and the panel
+    # looks broken, so fall back to all wild types and say plainly that the comparison is
+    # then confounded by composition rather than quietly drawing half a panel.
+    marg = _marginal(common) if common else pd.DataFrame()
+    controlled = len(marg) and marg.subset.nunique() == len(subs)
+    if not controlled:
+        marg = _marginal(None)
+    marg["composition_controlled"] = bool(controlled)
     if len(marg):
         piv = marg.pivot_table(index="introduced", columns="subset", values="median")
         piv = piv.reindex([a for a in order if a in piv.index]).dropna()
         y = np.arange(len(piv))
-        for name, col in (("non-TM", "#2F6DB5"), ("TM", "#B8912F")):
-            if name in piv.columns:
-                e = marg[marg.subset == name].set_index("introduced").reindex(piv.index)
-                ax.errorbar(piv[name], y, xerr=e["sem"], fmt="o", ms=3.5, lw=0.8, capsize=0,
-                            color=col, label=name)
+        for lab, col in ((b_name, "#2F6DB5"), (a_name, "#B8912F")):
+            if lab in piv.columns:
+                e = marg[marg.subset == lab].set_index("introduced").reindex(piv.index)
+                ax.errorbar(piv[lab], y, xerr=e["sem"], fmt="o", ms=3.5, lw=0.8, capsize=0,
+                            color=col, label=lab)
         ax.set_yticks(y); ax.set_yticklabels(piv.index, fontsize=6, family="monospace")
         ax.invert_yaxis()
         ax.axvline(0, color=P.MUTED, lw=0.6, ls=(0, (3, 3)))
@@ -114,10 +130,20 @@ def substitution_panels(cfg, d: pd.DataFrame, order: list, figdir, tabdir):
         ax.set_xticks([]); ax.set_yticks([])
         ax.text(0.5, 0.5, "no wild-type residue is shared\nbetween TM and non-TM",
                 transform=ax.transAxes, ha="center", va="center", fontsize=7, color=P.MUTED)
-    ax.set_title(f"(d) Marginal, shared WT only (n = {len(common)} residues)", loc="left", fontsize=8.5)
+    ax.set_title(("(d) Marginal, shared WT only "
+                  f"(n = {len(common)} residues)") if controlled else
+                 "(d) Marginal over ALL wild types — confounded by composition",
+                 loc="left", fontsize=8.5, color=P.INK if controlled else "#D62728")
+    if not controlled and len(marg):
+        # in paper style the panel title becomes a letter and its text moves to the caption,
+        # so the warning is drawn inside the axes too: it must not leave the artwork
+        ax.text(0.02, 0.02, f"only {len(common)} shared wild-type residue"
+                            f"{'s' if len(common) != 1 else ''}:\nconfounded by composition",
+                transform=ax.transAxes, ha="left", va="bottom", fontsize=6,
+                color="#D62728", fontweight="bold")
 
-    P.title(fig, cfg, "A05 substitution matrices, TM vs rest of protein")
-    figs = P.save(fig, figdir, "a05b_substitution_matrices", cfg, "A05")
+    P.title(fig, cfg, title)
+    figs = P.save(fig, figdir, name, cfg, analysis)
 
     # melt, not stack: pandas 3 removed stack(dropna=False) and the blank cells must survive
     long = pd.concat([
@@ -127,19 +153,21 @@ def substitution_panels(cfg, d: pd.DataFrame, order: list, figdir, tabdir):
                 on=["wt", "mut"], how="left")
          .assign(subset=name)
         for name, m in mats.items()])
-    tp = tabdir / "a05b_substitution_matrices.csv"
+    tp = tabdir / f"{name}.csv"
     long.to_csv(tp, index=False)
-    dp = tabdir / "a05b_substitution_difference.csv"
+    dp = tabdir / f"{name}_difference.csv"
     diff.to_csv(dp)
-    mp = tabdir / "a05b_marginal_by_introduced.csv"
+    mp = tabdir / f"{name}_marginal.csv"
     marg.to_csv(mp, index=False)
     return figs, [tp, dp, mp], {
         "spearman_between_matrices": rho, "n_cells_compared": int(ok.sum()),
         "mean_difference": float(np.nanmean(diff.to_numpy())) if ok.any() else float("nan"),
         "min_cell": MIN_CELL, "n_shared_wt_residues": len(common),
-        "shared_wt": "".join(common),
-        "note": ("the cell-wise difference is defined only where TM and non-TM share a wild-type "
-                 "residue; panel (d) marginalises over those shared residues instead")}
+        "shared_wt": "".join(common), "marginal_composition_controlled": bool(controlled),
+        "note": ("the cell-wise difference is defined only where the two subsets share a "
+                 "wild-type residue; panel (d) marginalises over the shared residues when there "
+                 "are enough, and over all wild types otherwise, which is then confounded by "
+                 "the two subsets being built from different amino acids")}
 
 
 def run(df, cfg, outdir):
