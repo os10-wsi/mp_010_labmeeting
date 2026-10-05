@@ -44,6 +44,7 @@ FIGURE_ORDER = [
     ("a22b_helix_violins", "Missense fitness per transmembrane helix, N to C"),
     ("a23_membrane_canon", "Canonical membrane-protein predictions, each with a declared direction"),
     ("a24_structural_tolerance", "Structural determinants of tolerance: burial, facing, contact order"),
+    ("a25_soluble_comparison", "Membrane set against a soluble-protein abundance DMS"),
 ]
 
 
