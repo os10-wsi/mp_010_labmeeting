@@ -155,11 +155,16 @@ def run(df, cfg, outdir):
         ax.axhline(0, color=P.MUTED, lw=0.5)
         ax.set_xticks([-0.25, 0, 0.5, 1, 1.25])
         ax.set_xticklabels(["cyto\nflank", "cyto\nend", "centre", "lumen\nend", "lumen\nflank"])
-        ax.set_title(f"TMs oriented {o.replace('_', '→')} (n={g.tm.nunique()})", loc="left")
+        ax.set_title(f"TMs oriented {o.replace('_', '→')}", loc="left")
+        ax.text(0.99, 0.02, f"{g.tm.nunique()} helices", transform=ax.transAxes,
+                ha="right", va="bottom", fontsize=6, color=P.MUTED)
     axes[0, 0].set_ylabel(cfg.get_path("plotting.score_label"))
-    axes[0, 0].legend(loc="lower left", fontsize=5.5, ncol=2)
+    # one legend under the panels: inside the axes it sat on the cytosolic-flank points
+    h, lb = axes[0, 0].get_legend_handles_labels()
+    fig.legend(h, lb, loc="lower center", ncol=len(lb), frameon=False, fontsize=6.5,
+               bbox_to_anchor=(0.5, -0.02))
     P.title(fig, cfg, "A06 charge and helix-breaker introduction across TMDs")
-    fig.tight_layout(rect=(0, 0.01, 1, 0.9))
+    fig.tight_layout(rect=(0, 0.06, 1, 0.9))
     figs = P.save(fig, figdir, "a06_charge_topology", cfg, "A06")
     t1, t2 = tabdir / "a06_charge_by_region.csv", tabdir / "a06_interaction_tests.csv"
     tab.to_csv(t1, index=False)
