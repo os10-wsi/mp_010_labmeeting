@@ -33,6 +33,7 @@ FIGURE_ORDER = [
     ("ssdraw_mean_effect", "SSDraw: mean missense effect"),
     ("ssdraw_proline", "SSDraw: proline"),
     ("ssdraw_lys_arg", "SSDraw: lysine / arginine"),
+    ("a05b_substitution_matrices", "Substitution matrices: TM vs rest of protein, and their difference"),
     ("a18_helix_kr_vs_pro", "Lys/Arg vs proline in each TM helix"),
     ("a18b_rsa_vs_kr_pro", "Solvent accessibility vs Lys/Arg and vs proline effect (TM helices)"),
     ("a19_literature", "Published functional residues against this screen"),

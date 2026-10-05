@@ -136,3 +136,63 @@ def test_a27_neighbourhood_burial_detected_with_own_burial_in_the_model():
     assert r["testable"] and r["passed"]
     assert r["beta_neighbour"] > 0.8 and r["p_neighbour"] < 1e-6
     assert r["p_own"] > 0.05 and r["r2_both"] > r["r2_own_only"] + 0.3
+
+
+# ------------------- A05b: TM vs rest substitution matrices from the topology alone
+def _tm_rest(tm_charge_cost=-1.2, seed=0):
+    """TM helices made of hydrophobics, loops of polars, as real proteins are."""
+    rng = np.random.default_rng(seed)
+    rows = []
+    for i in range(1, 121):
+        tm = 30 <= i <= 50 or 70 <= i <= 90
+        # a few shared wild types so the composition-controlled marginal has something
+        wt = ("ILVFW" if tm else "GSTNQ")[i % 5] if i % 7 else "G"
+        for mut in AA:
+            if mut == wt:
+                continue
+            charged = mut in "DEKR"
+            y = (tm_charge_cost if (tm and charged) else -0.3 if tm else -0.05)
+            rows.append({"pos": i, "wt": wt, "mut": mut, "is_tm": tm, "seg_type": "TM" if tm else "loop",
+                         "vclass": "missense", "pass_filter": True,
+                         "score_z": y + rng.normal(0, 0.08)})
+    return pd.DataFrame(rows)
+
+
+def test_a05b_difference_matrix_is_empty_when_subsets_share_no_wild_type():
+    """TM and loops are built from different residues; the cell-wise difference may not exist."""
+    from mpdms.analyses.a05_substitution_physchem import substitution_panels
+    from mpdms.annot import HYDROPHOBICITY_ORDER
+    from mpdms.config import Config
+    import tempfile
+    from pathlib import Path
+
+    d = _tm_rest()
+    d = d[~((d.is_tm) & (d.wt == "G"))]           # remove the only shared wild type
+    with tempfile.TemporaryDirectory() as td:
+        f = t = Path(td)
+        _, _, st = substitution_panels(Config.wrap({"id": "T", "display_name": "T"}),
+                                       d, list(HYDROPHOBICITY_ORDER), f, t)
+    assert st["n_cells_compared"] == 0
+    assert "GSTNQ".count(st["shared_wt"][:1]) or st["shared_wt"] != ""   # loops-only residues remain
+
+
+def test_a05b_marginal_recovers_the_planted_tm_charge_cost():
+    """Restricted to shared wild types, introducing a charge must be much worse in TM."""
+    from mpdms.analyses.a05_substitution_physchem import substitution_panels
+    from mpdms.annot import HYDROPHOBICITY_ORDER
+    from mpdms.config import Config
+    import tempfile
+    from pathlib import Path
+
+    d = _tm_rest(tm_charge_cost=-1.2)
+    with tempfile.TemporaryDirectory() as td:
+        f = t = Path(td)
+        _, tabs, st = substitution_panels(Config.wrap({"id": "T", "display_name": "T"}),
+                                          d, list(HYDROPHOBICITY_ORDER), f, t)
+        marg = pd.read_csv([p for p in tabs if "marginal" in p.name][0])
+    assert st["n_shared_wt_residues"] >= 1
+    piv = marg.pivot_table(index="introduced", columns="subset", values="median")
+    charged = piv.loc[[a for a in "DEKR" if a in piv.index]]
+    hydro = piv.loc[[a for a in "ILVF" if a in piv.index]]
+    assert charged["TM"].mean() < hydro["TM"].mean() - 0.5      # charge is the expensive one
+    assert abs(charged["non-TM"].mean() - hydro["non-TM"].mean()) < 0.2   # not so in loops
