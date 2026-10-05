@@ -183,3 +183,37 @@ def test_a25_non_tm_group_comes_from_the_membrane_protein_itself(tmp_path):
     assert set(d[d.group == "soluble"].dataset) == {"SH3", "PDZ"}
     assert (d[d.group == "membrane, TM"].pos.between(30, 50)
             | d[d.group == "membrane, TM"].pos.between(70, 90)).all()
+
+
+def test_reference_resolution_order_and_messages(tmp_path, monkeypatch):
+    """config wins over the environment, which wins over data/external discovery."""
+    from mpdms.analyses.a25_soluble_comparison import resolve_reference
+    from mpdms.config import Config
+
+    named = tmp_path / "from_config.csv"
+    named.write_text("x\n")
+    env = tmp_path / "from_env.csv"
+    env.write_text("x\n")
+
+    cfg = Config.wrap({"id": "X", "display_name": "X",
+                       "reference": {"soluble_path": str(named)}})
+    monkeypatch.setenv("MPDMS_SOLUBLE", str(env))
+    got, how = resolve_reference(cfg)
+    assert got == named and "config" in how
+
+    bare = Config.wrap({"id": "X", "display_name": "X"})
+    got, how = resolve_reference(bare)
+    assert got == env and "MPDMS_SOLUBLE" in how
+
+    monkeypatch.setenv("MPDMS_SOLUBLE", str(tmp_path / "absent.csv"))
+    got, how = resolve_reference(bare)
+    assert got is None and "does not exist" in how
+
+
+def test_reference_resolution_reports_a_missing_config_path(tmp_path):
+    from mpdms.analyses.a25_soluble_comparison import resolve_reference
+    from mpdms.config import Config
+    cfg = Config.wrap({"id": "X", "display_name": "X",
+                       "reference": {"soluble_path": str(tmp_path / "nope.csv")}})
+    got, how = resolve_reference(cfg)
+    assert got is None and "does not exist" in how

@@ -91,10 +91,15 @@ def main(argv=None):
     ap.add_argument("--only", help="comma-separated analysis keys, e.g. qc,heatmap,a01")
     ap.add_argument("--no-strict", action="store_true", help="downgrade config validation errors to warnings")
     ap.add_argument("--no-cross", action="store_true", help="skip the cross-dataset summary")
+    ap.add_argument("--soluble", help="soluble-protein reference table for a25 "
+                                      "(overrides data/external auto-discovery)")
     ap.add_argument("--style", default="default", choices=["default", "paper"],
                     help="figure style: 'default' (slides) or 'paper' (journal figures into "
                          "outputs/<ID>/figures_paper/, with a caption stub beside each)")
     a = ap.parse_args(argv)
+    if a.soluble:
+        import os
+        os.environ["MPDMS_SOLUBLE"] = a.soluble
     from . import plotting as P
     P.use_style(a.style)
     paths = [Path(p) for p in a.configs] or sorted(p for p in (REPO_ROOT / "configs").glob("*.yaml")

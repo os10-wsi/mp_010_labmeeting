@@ -50,15 +50,25 @@ I could not download it from this container — journal and data hosts are block
 the loader takes whatever file you supply and the columns are matched by alias. Get the
 variant-level supplementary table from the paper, then:
 
-```yaml
-# configs/<ID>_fitness.yaml
-reference:
-  soluble_path: data/external/domainome_variants.csv
-```
+Three ways to point A25 at it, in the order they are tried:
 
 ```bash
+# 1. nothing to configure: drop it in data/external with "domainome" in the name
 python -m mpdms run configs/AQR1_fitness.yaml --only a25 --style paper
+
+# 2. one flag for the whole run, whatever the file is called
+python -m mpdms run configs/*_fitness.yaml --only a25 --style paper \
+  --soluble data/external/SupplementaryTable2.txt
+
+# 3. per config, when different datasets need different references
+#    configs/<ID>_fitness.yaml:
+#      reference:
+#        soluble_path: data/external/SupplementaryTable2.txt
 ```
+
+The headline names the file it used, and the metrics record both the full path and which
+of the three routes found it — auto-discovery is convenient but could otherwise pick up a
+stale table in `data/external` without anything looking wrong.
 
 ## Columns
 

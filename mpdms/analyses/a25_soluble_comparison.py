@@ -37,6 +37,42 @@ SHORT = {"soluble": "soluble", "membrane, non-TM": "non-TM", "membrane, TM": "TM
 INTRODUCED = {"proline": "P", "glycine": "G", "charged (DEKR)": "DEKR",
               "aromatic (FWY)": "FWY", "small (AGS)": "AGS"}
 MIN_N = 20
+# where data/external is searched when neither the config nor --soluble names a file
+DEFAULT_GLOBS = ["*domainome*.txt", "*domainome*.tsv", "*domainome*.csv",
+                 "*soluble*reference*.csv", "*soluble*reference*.txt"]
+
+
+def resolve_reference(cfg) -> tuple[Path | None, str]:
+    """config reference.soluble_path, then $MPDMS_SOLUBLE, then data/external by convention.
+
+    Three routes so the file does not have to be named in every config: one dataset per
+    config is fine, but eight configs sharing one reference should not need eight edits.
+    """
+    import os
+
+    from ..config import REPO_ROOT
+    named = cfg.get_path("reference.soluble_path")
+    if named:
+        p = cfg.resolve(named)
+        if p and Path(p).exists():
+            return Path(p), f"config reference.soluble_path: {named}"
+        return None, f"reference.soluble_path is set to {named}, which does not exist"
+    env = os.environ.get("MPDMS_SOLUBLE", "").strip()
+    if env:
+        p = Path(env)
+        if not p.is_absolute():
+            p = REPO_ROOT / p
+        if p.exists():
+            return p, f"$MPDMS_SOLUBLE: {env}"
+        return None, f"$MPDMS_SOLUBLE is set to {env}, which does not exist"
+    ext = REPO_ROOT / "data" / "external"
+    for g in DEFAULT_GLOBS:
+        hits = sorted(ext.glob(g))
+        if hits:
+            return hits[0], f"found by convention in data/external: {hits[0].name}"
+    return None, ("no soluble reference. Put the table in data/external (any name matching "
+                  f"{DEFAULT_GLOBS[0]}), or pass --soluble <path>, or set "
+                  "reference.soluble_path in the config - see docs/soluble_comparison.md")
 
 
 def combined(df: pd.DataFrame, cfg, sol: pd.DataFrame) -> pd.DataFrame:
@@ -256,13 +292,9 @@ def figure(cfg, d, res, figdir):
 
 def run(df: pd.DataFrame, cfg, outdir: Path) -> dict:
     figdir, tabdir = dirs(outdir)
-    path = cfg.get_path("reference.soluble_path")
-    if not path:
-        return skipped("a25", cfg, "set reference.soluble_path in the config "
-                                   "(see docs/soluble_comparison.md)")
-    p = cfg.resolve(path)
-    if p is None or not Path(p).exists():
-        return skipped("a25", cfg, f"soluble reference not found at {path}")
+    p, how = resolve_reference(cfg)
+    if p is None:
+        return skipped("a25", cfg, how)
     try:
         sol = load_soluble(p)
     except ValueError as e:
@@ -283,7 +315,8 @@ def run(df: pd.DataFrame, cfg, outdir: Path) -> dict:
     t3 = tabdir / "a25_substitution_difference.csv"; diff.to_csv(t3)
 
     hy = res["hydrophobicity"]
-    caveats = [f"reference: {sol.attrs['source']}, {sol.attrs['n_datasets_kept']} domains kept, "
+    caveats = [f"reference located via {how}",
+               f"reference: {sol.attrs['source']}, {sol.attrs['n_datasets_kept']} domains kept, "
                f"{sol.attrs['n_datasets_dropped']} dropped for lacking synonymous or nonsense controls",
                "each reference domain is normalised on its own synonymous and nonsense medians, so "
                "domains with different dynamic ranges contribute equally",
@@ -293,7 +326,9 @@ def run(df: pd.DataFrame, cfg, outdir: Path) -> dict:
                "comparisons here are of shape, of contrasts within each dataset, and of ranks"]
     if not res["burial"].get("testable"):
         caveats.append("burial comparison skipped: " + res["burial"].get("note", ""))
-    head = (f"soluble n = {int((d.group == 'soluble').sum()):,} variants over "
+    # name the file in the headline: auto-discovery could otherwise pick up a stale
+    # table in data/external and the comparison would look fine
+    head = (f"ref {Path(p).name}: n = {int((d.group == 'soluble').sum()):,} variants over "
             f"{sol.attrs['n_datasets_kept']} domains; "
             + "; ".join(f"{SHORT.get(r.a, r.a)} vs {SHORT.get(r.b, r.b)} "
                         f"Δmedian {r.difference:+.2f} ({fmt_p(r.p)})"
@@ -303,6 +338,9 @@ def run(df: pd.DataFrame, cfg, outdir: Path) -> dict:
                f"{', SIGN FLIP' if hy.get('sign_flip') else ''}" if hy.get("testable") else ""))
     return result("a25", cfg, head,
                   {"n_soluble_domains": int(sol.attrs["n_datasets_kept"]),
+                   "reference_source": str(p), "reference_resolved_by": how,
+                   "reference_modes": sol.attrs.get("mode_counts", {}),
+                   "n_multi_mutant_rows_dropped": int(sol.attrs.get("n_multi_dropped", 0)),
                    "group_tests": res["distribution_tests"].to_dict("records"),
                    "introduced": res["introduced"].to_dict("records"),
                    "hydrophobicity": hy, "volume": res["volume"], "burial": res["burial"],
