@@ -183,16 +183,24 @@ def test_dimsum_fitness_singles_columns_are_recognised():
     assert got["n_reads"] == "mean_count"
 
 
+def _frame(norm: dict):
+    """A minimal loaded frame carrying the columns validate() reads."""
+    import pandas as pd
+    df = pd.DataFrame({"pos": [1, 2], "wt": ["A", "A"], "mut": ["C", "D"],
+                       "score_raw": [0.1, -0.2], "score_z": [0.1, -0.2],
+                       "vclass": ["missense", "missense"], "pass_filter": [True, True],
+                       "n_reads": [10, 10]})
+    df.attrs["normalization"] = {"score": norm}
+    return df
+
+
 def test_missing_controls_raise_a_normalisation_warning(tmp_path):
     """No synonymous variants means the scale is anchored on missense: must be said out loud."""
     import pandas as pd
 
     from mpdms.config import Config, validate
-    df = pd.DataFrame({"pos": [1, 2], "wt": ["A", "A"], "mut": ["C", "D"],
-                       "score_z": [0.1, -0.2], "vclass": ["missense", "missense"]})
-    df.attrs["normalization"] = {"score": {"n_syn": 0, "n_stop": 3,
-                                           "syn_source": "missense_median_FALLBACK",
-                                           "stop_source": "nonsense_median"}}
+    df = _frame({"n_syn": 0, "n_stop": 3, "syn_source": "missense_median_FALLBACK",
+                 "stop_source": "nonsense_median"})
     cfg = Config.wrap({"id": "X", "display_name": "X",
                        "source": {"path": str(tmp_path / "x.tsv")},
                        "protein": {"sequence": None}, "topology": {"segments": []}})
@@ -206,11 +214,8 @@ def test_no_warning_when_both_anchors_are_real(tmp_path):
     import pandas as pd
 
     from mpdms.config import Config, validate
-    df = pd.DataFrame({"pos": [1, 2], "wt": ["A", "A"], "mut": ["C", "D"],
-                       "score_z": [0.1, -0.2], "vclass": ["missense", "missense"]})
-    df.attrs["normalization"] = {"score": {"n_syn": 40, "n_stop": 30,
-                                           "syn_source": "synonymous_median",
-                                           "stop_source": "nonsense_median"}}
+    df = _frame({"n_syn": 40, "n_stop": 30, "syn_source": "synonymous_median",
+                 "stop_source": "nonsense_median"})
     cfg = Config.wrap({"id": "X", "display_name": "X",
                        "source": {"path": str(tmp_path / "x.tsv")},
                        "protein": {"sequence": None}, "topology": {"segments": []}})

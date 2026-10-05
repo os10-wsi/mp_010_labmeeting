@@ -1,3 +1,8 @@
+# TEMPLATE, not ready to run. Built against a 10-row sample of the real table, so:
+#   source.path        -> point at the real fitness_singles_hxt2.txt
+#   protein.sequence   -> this FASTA was reconstructed from one aa_seq column; check it
+#   topology           -> python -m mpdms tmhmm configs/HXT2.yaml --from-file hxt2.gff3
+#   structure.path     -> an AlphaFold model, for every structure-dependent analysis
 id: HXT2
 display_name: HXT2
 source:
