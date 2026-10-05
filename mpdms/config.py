@@ -175,6 +175,18 @@ def validate(cfg: Config, df=None, strict: bool = True) -> list[str]:
         reps = [c for c in df.columns if c.startswith("rep") and c[3:].isdigit()]
         if len(reps) < 1:
             warnings.append("no replicate columns detected")
+        # A missing synonymous or nonsense anchor is silently replaced by one taken from the
+        # missense distribution itself. The scores are then NOT on the syn = 0 / nonsense = -1
+        # scale, so every -1 reference line and every cross-dataset comparison is wrong. This
+        # has to be visible on every run, not only in the analyses that happen to check attrs.
+        norm = (df.attrs.get("normalization") or {}).get("score", {})
+        if "FALLBACK" in str(norm.get("syn_source", "")) + str(norm.get("stop_source", "")):
+            warnings.append(
+                f"NORMALISATION FALLBACK: synonymous n={norm.get('n_syn', 0)} "
+                f"(anchor from {norm.get('syn_source')}), nonsense n={norm.get('n_stop', 0)} "
+                f"(anchor from {norm.get('stop_source')}). Scores are NOT on the "
+                "syn=0/nonsense=-1 scale; the -1 line on every figure and any comparison with "
+                "another dataset are not meaningful until real controls are supplied")
         # Every topology-dependent analysis silently inherits whatever is in the config,
         # so say out loud when that is still the hydropathy guess `init` wrote.
         topo_src = str(cfg.get_path("topology.source", "") or "")

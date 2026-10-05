@@ -1,0 +1,25 @@
+id: HXT2
+display_name: HXT2
+source:
+  path: data/raw/HXT2/fitness_singles_hxt2.txt
+  citation: ''
+  numbering: uniprot
+  numbering_offset: 0
+protein:
+  gene: HXT2
+  organism_id: 559292
+  uniprot: null
+  sequence: data/external/HXT2/HXT2.fasta
+  region: null
+assay:
+  type: abundance
+  readout: growth
+  higher_is_better: true
+columns: {position: auto, wt_aa: auto, mut_aa: auto, aa_seq: auto, score: auto, se: auto,
+          n_reads: auto, replicates: auto, input_counts: auto, output_counts: auto,
+          codon: auto, variant_class: null, aa_ham: auto, nt_ham: auto, wt_flag: auto, stop_flag: auto}
+variant_encoding: {synonymous_symbols: ['=']}
+filters: {min_reads: 0, min_replicates: 1}
+topology: {n_terminus: cytosolic, source: none, segments: []}
+structure: {path: null, chain: A, membrane_normal: none, numbering_offset: 0}
+plotting: {score_label: Normalised fitness}

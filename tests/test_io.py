@@ -168,3 +168,51 @@ def test_synonymous_recovered_without_wt_row(tmp_path):
     t = t.iloc[1:]
     df = load_dataset(_cfg(tmp_path, t))
     assert sorted(df[df.vclass == "synonymous"].pos) == [3, 4, 5, 6, 7]
+
+
+# ------------------------------------------- DiMSum fitness_singles column naming
+def test_dimsum_fitness_singles_columns_are_recognised():
+    """Pos / WT_AA / Mut / Nham_aa / STOP / mean_count / fitness / sigma, as DiMSum writes them."""
+    from mpdms.io import CANDIDATES, _find
+    cols = ["Pos", "WT_AA", "Mut", "nt_seq", "aa_seq", "Nham_nt", "Nham_aa", "Nmut_codons",
+            "STOP", "STOP_readthrough", "mean_count", "fitness", "sigma"]
+    got = {k: _find(cols, v) for k, v in CANDIDATES.items()}
+    assert got["position"] == "Pos" and got["wt_aa"] == "WT_AA" and got["mut_aa"] == "Mut"
+    assert got["score"] == "fitness" and got["se"] == "sigma"
+    assert got["aa_ham"] == "Nham_aa" and got["stop_flag"] == "STOP"
+    assert got["n_reads"] == "mean_count"
+
+
+def test_missing_controls_raise_a_normalisation_warning(tmp_path):
+    """No synonymous variants means the scale is anchored on missense: must be said out loud."""
+    import pandas as pd
+
+    from mpdms.config import Config, validate
+    df = pd.DataFrame({"pos": [1, 2], "wt": ["A", "A"], "mut": ["C", "D"],
+                       "score_z": [0.1, -0.2], "vclass": ["missense", "missense"]})
+    df.attrs["normalization"] = {"score": {"n_syn": 0, "n_stop": 3,
+                                           "syn_source": "missense_median_FALLBACK",
+                                           "stop_source": "nonsense_median"}}
+    cfg = Config.wrap({"id": "X", "display_name": "X",
+                       "source": {"path": str(tmp_path / "x.tsv")},
+                       "protein": {"sequence": None}, "topology": {"segments": []}})
+    (tmp_path / "x.tsv").write_text("pos\n1\n")
+    w = validate(cfg, df, strict=False)
+    assert any("NORMALISATION FALLBACK" in x for x in w), w
+    assert any("synonymous n=0" in x for x in w)
+
+
+def test_no_warning_when_both_anchors_are_real(tmp_path):
+    import pandas as pd
+
+    from mpdms.config import Config, validate
+    df = pd.DataFrame({"pos": [1, 2], "wt": ["A", "A"], "mut": ["C", "D"],
+                       "score_z": [0.1, -0.2], "vclass": ["missense", "missense"]})
+    df.attrs["normalization"] = {"score": {"n_syn": 40, "n_stop": 30,
+                                           "syn_source": "synonymous_median",
+                                           "stop_source": "nonsense_median"}}
+    cfg = Config.wrap({"id": "X", "display_name": "X",
+                       "source": {"path": str(tmp_path / "x.tsv")},
+                       "protein": {"sequence": None}, "topology": {"segments": []}})
+    (tmp_path / "x.tsv").write_text("pos\n1\n")
+    assert not any("FALLBACK" in x for x in validate(cfg, df, strict=False))
