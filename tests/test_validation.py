@@ -524,3 +524,66 @@ def test_a23_aromatic_belt_fires_against_the_usual_gradient():
     r = aromatic_belt(pd.DataFrame(rows))
     assert r["testable"] and r["passed"] and r["difference"] < 0
     assert r["control_gradient"] > 0          # the control runs the other way, as it should
+
+
+# ------------------------------- A24: structural determinants of tolerance
+def test_a24_contact_order_helper_averages_sequence_separation():
+    from mpdms.structure import contact_order
+    pairs = pd.DataFrame({"pos_i": [10, 10, 20], "pos_j": [15, 60, 25]})
+    co = contact_order(pairs, pd.Index([10, 15, 20, 25, 60, 99]))
+    assert co[10] == pytest.approx((5 + 50) / 2)
+    assert co[15] == pytest.approx(5) and co[60] == pytest.approx(50)
+    assert np.isnan(co[99])                       # no contacts -> NaN, not zero
+
+
+def _struct_variants(n_pos=120, seed=0, cavity_tolerant=True):
+    """Positions in a membrane slab with a face label and a planted effect per face."""
+    rng = np.random.default_rng(seed)
+    rows = []
+    for i in range(n_pos):
+        face = ["protein-facing", "lipid-facing", "cavity-lining"][i % 3]
+        base = {"protein-facing": -1.0, "lipid-facing": -0.15,
+                "cavity-lining": -0.1 if cavity_tolerant else -1.0}[face]
+        for mut in "KRAVLG":
+            charged = mut in "KR"
+            rows.append({"pos": i + 1, "wt": "L", "mut": mut, "vclass": "missense", "pass_filter": True,
+                         "seg_type": "TM", "in_slab": True, "face": face, "absz": rng.uniform(0, 14),
+                         "contacts": 20 if face == "protein-facing" else 8,
+                         "contact_order": rng.uniform(20, 110),
+                         "dvol": 0.0, "score_z": base - (0.4 if charged else 0.0) + rng.normal(0, 0.08)})
+    d = pd.DataFrame(rows)
+    d["sub_class"] = np.where(d.mut.isin(list("KR")), "to charged", "to hydrophobic")
+    return d
+
+
+def test_a24_facing_classes_separate_as_planted():
+    from mpdms.analyses.a24_structural_tolerance import facing_table, facing_tests
+    d = _struct_variants()
+    t = facing_table(d).set_index(["face", "sub_class"])
+    assert t.loc[("protein-facing", "to hydrophobic"), "median"] < -0.8
+    assert t.loc[("lipid-facing", "to hydrophobic"), "median"] > -0.4
+    ft = facing_tests(d)
+    sig = ft[(ft.sub_class == "to hydrophobic") & (ft.a == "lipid-facing") & (ft.b == "protein-facing")]
+    assert len(sig) and sig.iloc[0].q < 0.01 and sig.iloc[0].difference > 0
+
+
+def test_a24_charge_penalty_applies_in_every_facing_class():
+    """The planted charge cost is face-independent, so no facing contrast should invent one."""
+    from mpdms.analyses.a24_structural_tolerance import facing_table
+    t = facing_table(_struct_variants()).set_index(["face", "sub_class"])
+    for face in ("protein-facing", "lipid-facing", "cavity-lining"):
+        d = t.loc[(face, "to charged"), "median"] - t.loc[(face, "to hydrophobic"), "median"]
+        assert d == pytest.approx(-0.4, abs=0.1), (face, d)
+
+
+def test_a24_interface_matrix_is_symmetric_and_skips_self_pairs():
+    from mpdms.analyses.a24_structural_tolerance import interface_matrix
+    cfg = Config.wrap({"id": "T", "display_name": "T", "topology": {"segments": [
+        {"name": "TM1", "start": 1, "end": 20, "type": "TM"},
+        {"name": "TM2", "start": 30, "end": 50, "type": "TM"}]}})
+    pairs = pd.DataFrame({"pos_i": [5, 6, 7, 8, 9], "pos_j": [35, 36, 37, 38, 39]})
+    d = pd.DataFrame({"pos": list(range(1, 51)), "score_z": -0.5, "in_slab": True})
+    t, mat = interface_matrix(d, pairs, cfg)
+    assert list(t.helix_a) == ["TM1"] and list(t.helix_b) == ["TM2"]
+    assert mat.loc["TM1", "TM2"] == mat.loc["TM2", "TM1"]
+    assert np.isnan(mat.loc["TM1", "TM1"])        # a helix is not its own interface

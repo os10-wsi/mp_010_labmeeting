@@ -145,6 +145,41 @@ def contact_number(chain, cutoff: float = 8.0, exclude: int = 4) -> list[int]:
     return cnt.tolist()
 
 
+def contact_pairs(path: Path, chain: str = "A", offset: int = 0,
+                  cutoff: float = 8.0, exclude: int = 4) -> pd.DataFrame:
+    """Residue pairs in contact, as (pos_i, pos_j) in config numbering.
+
+    Same definition as contact_number (heavy atoms within cutoff, |i-j| > exclude), so
+    contact order and helix-helix interfaces are consistent with the contact counts.
+    """
+    from scipy.spatial import cKDTree
+    _, _, ch = load_structure(path, chain)
+    residues = [r for r in ch if r.id[0] == " " and "CA" in r]
+    atoms, owner = [], []
+    for k, res in enumerate(residues):
+        for a in res:
+            if a.element != "H":
+                atoms.append(a.coord); owner.append(k)
+    tree = cKDTree(np.array(atoms))
+    pr = tree.query_pairs(cutoff, output_type="ndarray")
+    owner = np.array(owner)
+    ri, rj = owner[pr[:, 0]], owner[pr[:, 1]]
+    keep = np.abs(ri - rj) > exclude
+    uniq = {(min(a, b), max(a, b)) for a, b in zip(ri[keep], rj[keep])}
+    idx = np.array([res.id[1] + offset for res in residues])
+    return pd.DataFrame([{"pos_i": int(idx[a]), "pos_j": int(idx[b])} for a, b in sorted(uniq)])
+
+
+def contact_order(pairs: pd.DataFrame, positions) -> pd.Series:
+    """Mean sequence separation of each position's structural contacts."""
+    if not len(pairs):
+        return pd.Series(np.nan, index=positions)
+    sep = (pairs.pos_j - pairs.pos_i).abs()
+    long = pd.concat([pairs.assign(pos=pairs.pos_i, sep=sep),
+                      pairs.assign(pos=pairs.pos_j, sep=sep)])
+    return long.groupby("pos").sep.mean().reindex(positions)
+
+
 def membrane_frame(rt: pd.DataFrame, cfg) -> tuple[pd.DataFrame, dict]:
     """Add columns zdepth (signed, A) and radial (A) given structure.membrane_normal."""
     method = cfg.get_path("structure.membrane_normal", "pca_tm_axes")
