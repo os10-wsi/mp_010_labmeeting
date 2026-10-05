@@ -2,6 +2,7 @@
 import numpy as np
 import pandas as pd
 import pytest
+from scipy import stats as ss
 
 from mpdms import benchmark as B
 from mpdms.analyses.a16_assay_validation import k12_pseudosymmetry
@@ -587,3 +588,53 @@ def test_a24_interface_matrix_is_symmetric_and_skips_self_pairs():
     assert list(t.helix_a) == ["TM1"] and list(t.helix_b) == ["TM2"]
     assert mat.loc["TM1", "TM2"] == mat.loc["TM2", "TM1"]
     assert np.isnan(mat.loc["TM1", "TM1"])        # a helix is not its own interface
+
+
+# ------------------- A26: hydrophobicity preference vs solvent accessibility
+def _slope_frame(tm_slope, nontm_slope, rsa_effect=0.0, seed=0, n=60):
+    """Per-position slopes for two classes, optionally with a real RSA gradient."""
+    rng = np.random.default_rng(seed)
+    rows = []
+    for cls, base in (("TM", tm_slope), ("non-TM", nontm_slope)):
+        for i in range(n):
+            # TM positions are a little less accessible, as in a real membrane protein
+            rsa = rng.uniform(0.0, 0.6) if cls == "TM" else rng.uniform(0.2, 0.9)
+            rows.append({"pos": len(rows) + 1, "cls": cls, "rsa": rsa,
+                         "slope": base + rsa_effect * rsa + rng.normal(0, 0.03),
+                         "slope_se": 0.02, "surface": rsa >= 0.25})
+    return pd.DataFrame(rows)
+
+
+def test_a26_flags_a_pooled_correlation_that_is_only_the_class_split():
+    """TM and non-TM differ on both axes, so pooling invents a correlation. Must be flagged."""
+    from mpdms.analyses.a26_hydrophobicity_burial import confounded, fit
+    t = _slope_frame(tm_slope=0.30, nontm_slope=0.0, rsa_effect=0.0)
+    st = fit(t)
+    assert st["all"]["p"] < 0.05                      # pooled looks significant
+    assert st["TM"]["p"] > 0.05 and st["non-TM"]["p"] > 0.05   # neither class is
+    assert confounded(st)
+
+
+def test_a26_does_not_flag_a_real_within_class_gradient():
+    from mpdms.analyses.a26_hydrophobicity_burial import confounded, fit
+    t = _slope_frame(tm_slope=0.30, nontm_slope=0.0, rsa_effect=-0.5)
+    st = fit(t)
+    assert st["TM"]["p"] < 0.05 and st["TM"]["spearman"] < 0
+    assert not confounded(st)
+
+
+def test_a26_slope_sign_means_more_hydrophobic_is_better():
+    """A position where greasier substitutions score higher must get a positive slope."""
+    from mpdms.analyses.a26_hydrophobicity_burial import position_slopes
+    from mpdms.annot import BIOLOGICAL
+    rng = np.random.default_rng(0)
+    rows = []
+    for mut in "ACDEFGHIKLMNPQRSTVWY":
+        if mut == "L":
+            continue
+        rows.append({"pos": 10, "wt": "L", "mut": mut, "vclass": "missense", "pass_filter": True,
+                     "score_z": 0.3 * (BIOLOGICAL[mut] - BIOLOGICAL["L"]) + rng.normal(0, 0.05)})
+    d = pd.DataFrame(rows)
+    d["dhyd"] = d.mut.map(BIOLOGICAL) - d.wt.map(BIOLOGICAL)
+    r = ss.linregress(d.dhyd, d.score_z)
+    assert r.slope > 0.2 and r.pvalue < 1e-6
