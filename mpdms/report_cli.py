@@ -46,6 +46,7 @@ FIGURE_ORDER = [
     ("a24_structural_tolerance", "Structural determinants of tolerance: burial, facing, contact order"),
     ("a25_soluble_comparison", "Membrane set against a soluble-protein abundance DMS"),
     ("a26_hydrophobicity_burial", "Hydrophobicity preference per position vs solvent accessibility"),
+    ("a27_environment_systematic", "Six systematic comparisons across structural environments"),
 ]
 
 

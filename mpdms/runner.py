@@ -39,6 +39,7 @@ ANALYSES = [
     ("a24", "a24_structural_tolerance"),
     ("a25", "a25_soluble_comparison"),
     ("a26", "a26_hydrophobicity_burial"),
+    ("a27", "a27_environment_systematic"),
 ]
 OPT_IN = {"a13", "a14"}  # only run when named in --only
 
