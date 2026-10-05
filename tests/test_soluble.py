@@ -55,10 +55,61 @@ def test_load_soluble_normalises_each_domain_on_its_own_controls():
         assert d.attrs["n_datasets_kept"] == 2
 
 
-def test_load_soluble_drops_domains_without_controls(tmp_path):
+def test_load_soluble_drops_domains_with_no_lower_anchor(tmp_path):
+    """No nonsense variants at all means nothing separates a dead variant from a neutral one."""
     p = _reference(tmp_path, controls=False)
-    with pytest.raises(ValueError, match="synonymous and nonsense"):
+    with pytest.raises(ValueError, match="nonsense = -1 scale"):
         load_soluble(p)
+
+
+def _stop_only(tmp_path, stop_median=-1.5, sep=",", seed=3):
+    """A table with nonsense but no synonymous, zero already at the wild type."""
+    rng = np.random.default_rng(seed)
+    rows = []
+    for dom in ("D1", "D2"):
+        for i in range(1, 31):
+            for mut in AA:
+                if mut == "L":          # would be synonymous, and this fixture has none
+                    continue
+                rows.append({"domain_ID": dom, "position": i, "wt_aa": "L", "mut_aa": mut,
+                             "normalized_fitness": rng.normal(-0.2, 0.2)})
+        for i in range(1, 16):
+            rows.append({"domain_ID": dom, "position": i, "wt_aa": "L", "mut_aa": "*",
+                         "normalized_fitness": rng.normal(stop_median, 0.1)})
+    p = tmp_path / ("ref.tsv" if sep == "\t" else "ref.csv")
+    pd.DataFrame(rows).to_csv(p, index=False, sep=sep)
+    return p
+
+
+def test_load_soluble_rescales_on_nonsense_when_there_are_no_synonymous(tmp_path):
+    """Stops at -1.5 must be brought to -1 rather than the domain being discarded."""
+    d = load_soluble(_stop_only(tmp_path, stop_median=-1.5))
+    assert d.attrs["mode_counts"] == {"rescaled on nonsense": 2}
+    med = d[d.vclass == "nonsense"].groupby("dataset").score_z.median()
+    assert np.allclose(med.to_numpy(), -1.0, atol=1e-9)
+
+
+def test_load_soluble_reads_tab_delimited_tables(tmp_path):
+    d = load_soluble(_stop_only(tmp_path, sep="\t"))
+    assert d.dataset.nunique() == 2 and len(d) > 100
+
+
+def test_load_soluble_drops_a_domain_whose_stops_are_not_deleterious(tmp_path):
+    with pytest.raises(ValueError, match="no usable lower anchor"):
+        load_soluble(_stop_only(tmp_path, stop_median=-0.02))
+
+
+def test_load_soluble_keeps_only_single_variants(tmp_path):
+    """Multi-mutant rows carry no single (position, wt, mut) and must be counted out."""
+    base = pd.read_csv(_stop_only(tmp_path))
+    multi = pd.DataFrame({"domain_ID": ["D1"] * 40, "position": [np.nan] * 40,
+                          "wt_aa": [np.nan] * 40, "mut_aa": [np.nan] * 40,
+                          "normalized_fitness": np.linspace(-1, 0, 40)})
+    p = tmp_path / "mixed.csv"
+    pd.concat([base, multi]).to_csv(p, index=False)
+    d = load_soluble(p)
+    assert d.attrs["n_multi_dropped"] == 40
+    assert d.pos.notna().all()
 
 
 def test_load_soluble_names_the_missing_column(tmp_path):

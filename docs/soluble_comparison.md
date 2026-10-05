@@ -22,6 +22,22 @@ normalisation with the TM group, so:
 Without that control, every soluble-vs-membrane difference is confounded with the fact
 that two different labs ran two different screens.
 
+## The reference as actually supplied
+
+Supplementary Table 2 of the domainome paper needed three things the first version of the
+loader did not do, all now handled:
+
+1. **Tab-delimited**, with a `.txt` extension. The delimiter is sniffed from the header.
+2. **Multi-mutant rows.** Of 601,597 rows only 71,940 are single variants; the rest carry
+   no single (position, wt, mut) and are multiples or wild-type replicates. Only singles
+   are kept, and the number dropped is reported.
+3. **No synonymous variants at all.** Its zero is the wild type, not a synonymous median.
+   Dropping domains for want of synonymous controls would have discarded every one, so a
+   domain with nonsense but no synonymous is rescaled on the anchor it has.
+
+With those, all 50 domains load — 65,197 missense and 3,364 nonsense singles — each with
+a nonsense median of exactly −1.000.
+
 ## The reference dataset
 
 The natural comparator is an **aPCA abundance screen of soluble domains**, because aPCA
@@ -81,11 +97,17 @@ medians.
 - **(b) Introduced residue classes.** Proline, glycine, charged, aromatic, small, each
   with a bootstrap CI, in all three groups. `tm_minus_soluble` in the table is the
   quantity of interest.
-- **(c) Hydrophobicity — the best panel.** Regress effect on Δhydrophobicity (von Heijne
-  biological scale) in each group, cluster-robust by position, and test the interaction.
-  Making a residue greasier is mildly *bad* in solution and *good* in a bilayer, so the
-  slope should **change sign**, not merely weaken. A sign flip is far harder to produce
-  by artefact than a difference in magnitude, which is why it is the headline.
+- **(c) Hydrophobicity.** Regress effect on Δhydrophobicity (von Heijne biological
+  scale) in each group, cluster-robust by position, and test the interaction.
+
+  I expected the soluble slope to be mildly *negative* — greasier is bad in solution,
+  aggregation-prone — so that the comparison would be a **sign flip**. On the real
+  domainome reference it is **slightly positive** (about +0.04): across folded soluble
+  domains, replacing a residue with a more hydrophobic one is on average mildly
+  tolerated. So the sign-flip framing does not hold for this comparator, and the
+  statistic to quote is the **interaction** — how much steeper the TM slope is — not a
+  change of sign. `sign_flip` is still reported, and should be read as a bonus rather
+  than the expectation.
 - **(d–f) Substitution matrices.** 20×20 mean effect in each group and their difference.
   Cells with fewer than three variants are left blank rather than drawn from one
   measurement.
