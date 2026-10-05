@@ -15,6 +15,31 @@ plus the three QC PDFs) through these steps:
 4. **The prompt-pack analyses A01–A12**, each with one figure, one tidy table and one
    `stats.json` row, then a Markdown one-pager per dataset and a cross-dataset summary slide.
 
+## Start here
+
+One file plus its DeepTMHMM gff3, one command:
+
+```bash
+python -m mpdms quickstart /path/to/fitness_singles_hxt2.txt --gff3 /path/to/hxt2.gff3
+```
+
+That infers the gene from the filename, recovers the wild-type sequence from the table's
+own `aa_seq` column (so nothing is fetched and no FASTA is needed), writes the config,
+reads the topology from the gff3, runs every analysis, and builds the report. It finishes
+by listing what ran, what skipped, and what would unlock each skip.
+
+Add a structure when you have one — it is what most of the skips are waiting for:
+
+```bash
+python -m mpdms quickstart fitness_singles_hxt2.txt --gff3 hxt2.gff3 --structure hxt2.pdb
+```
+
+Useful flags: `--gene NAME` to override the inferred name, `--no-run` to write the config
+and stop, `--only a05,a22` to run a subset, `--style default` for slide-style figures.
+
+Everything below is the longer route, for when a dataset needs something the one-liner
+cannot guess.
+
 ## Quick start
 
 ```bash

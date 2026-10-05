@@ -1,12 +1,8 @@
-# TEMPLATE, not ready to run. Built against a 10-row sample of the real table, so:
-#   source.path        -> point at the real fitness_singles_hxt2.txt
-#   protein.sequence   -> this FASTA was reconstructed from one aa_seq column; check it
-#   topology           -> python -m mpdms tmhmm configs/HXT2.yaml --from-file hxt2.gff3
-#   structure.path     -> an AlphaFold model, for every structure-dependent analysis
+# written by `python -m mpdms quickstart`
 id: HXT2
 display_name: HXT2
 source:
-  path: data/raw/HXT2/fitness_singles_hxt2.txt
+  path: /home/user/mp_010_labmeeting/data/raw/HXT2/fitness_singles_hxt2.txt
   citation: ''
   numbering: uniprot
   numbering_offset: 0
@@ -14,17 +10,68 @@ protein:
   gene: HXT2
   organism_id: 559292
   uniprot: null
-  sequence: data/external/HXT2/HXT2.fasta
+  sequence: /home/user/mp_010_labmeeting/data/external/HXT2/HXT2.fasta
   region: null
 assay:
   type: abundance
   readout: growth
   higher_is_better: true
-columns: {position: auto, wt_aa: auto, mut_aa: auto, aa_seq: auto, score: auto, se: auto,
-          n_reads: auto, replicates: auto, input_counts: auto, output_counts: auto,
-          codon: auto, variant_class: null, aa_ham: auto, nt_ham: auto, wt_flag: auto, stop_flag: auto}
-variant_encoding: {synonymous_symbols: ['=']}
-filters: {min_reads: 0, min_replicates: 1}
-topology: {n_terminus: cytosolic, source: none, segments: []}
-structure: {path: null, chain: A, membrane_normal: none, numbering_offset: 0}
-plotting: {score_label: Normalised fitness}
+  n_bins: null
+columns:
+  position: auto
+  wt_aa: auto
+  mut_aa: auto
+  aa_seq: auto
+  score: auto
+  se: auto
+  n_reads: auto
+  replicates: auto
+  input_counts: auto
+  output_counts: auto
+  codon: auto
+  variant_class: null
+  aa_ham: auto
+  nt_ham: auto
+  wt_flag: auto
+  stop_flag: auto
+variant_encoding:
+  synonymous_symbols: ['=']
+filters:
+  min_reads: 0
+  min_replicates: 1
+topology:
+  n_terminus: cytosolic
+  source: TMHMM (file:hxt2.gff3)
+  segments:
+  - {name: Nterm, start: 1, end: 70, type: soluble, side: cytosolic}
+  - {name: TM1, start: 71, end: 91, type: TM, orientation: in_out}
+  - {name: L1, start: 92, end: 105, type: loop, side: lumenal}
+  - {name: TM2, start: 106, end: 126, type: TM, orientation: out_in}
+  - {name: L2, start: 127, end: 140, type: loop, side: cytosolic}
+  - {name: TM3, start: 141, end: 161, type: TM, orientation: in_out}
+  - {name: L3, start: 162, end: 175, type: loop, side: lumenal}
+  - {name: TM4, start: 176, end: 196, type: TM, orientation: out_in}
+  - {name: L4, start: 197, end: 210, type: loop, side: cytosolic}
+  - {name: TM5, start: 211, end: 231, type: TM, orientation: in_out}
+  - {name: L5, start: 232, end: 245, type: loop, side: lumenal}
+  - {name: TM6, start: 246, end: 266, type: TM, orientation: out_in}
+  - {name: L6, start: 267, end: 280, type: loop, side: cytosolic}
+  - {name: TM7, start: 281, end: 301, type: TM, orientation: in_out}
+  - {name: L7, start: 302, end: 315, type: loop, side: lumenal}
+  - {name: TM8, start: 316, end: 336, type: TM, orientation: out_in}
+  - {name: L8, start: 337, end: 350, type: loop, side: cytosolic}
+  - {name: TM9, start: 351, end: 371, type: TM, orientation: in_out}
+  - {name: L9, start: 372, end: 385, type: loop, side: lumenal}
+  - {name: TM10, start: 386, end: 406, type: TM, orientation: out_in}
+  - {name: L10, start: 407, end: 420, type: loop, side: cytosolic}
+  - {name: TM11, start: 421, end: 441, type: TM, orientation: in_out}
+  - {name: L11, start: 442, end: 455, type: loop, side: lumenal}
+  - {name: TM12, start: 456, end: 476, type: TM, orientation: out_in}
+  - {name: Cterm, start: 477, end: 541, type: soluble, side: cytosolic}
+structure:
+  path: null
+  chain: A
+  membrane_normal: none
+  numbering_offset: 0
+plotting:
+  score_label: Normalised fitness
