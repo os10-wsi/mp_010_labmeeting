@@ -1,4 +1,5 @@
 """ESM-1v masked-marginal bookkeeping (model-free) and the A15 functional-site call."""
+import pytest
 import numpy as np
 
 from mpdms.esm_score import AA20, masked_marginals, to_long, windows
@@ -113,3 +114,45 @@ def test_match_ignores_accessions_covering_too_few_positions(tmp_path):
     pd.concat([t, tiny]).to_csv(p, index=False)
     acc, info = match_accession(read_bulk_table(p), seq)
     assert acc == "Q12345"
+
+
+def test_streaming_match_agrees_with_the_in_memory_one(tmp_path):
+    """Streaming is only worth having if it gives the same answer as loading the table."""
+    from mpdms.esm_score import match_accession, match_accession_streaming, read_bulk_table
+    seq = _seq()
+    p = tmp_path / "proteome.csv"
+    _proteome(seq, target_acc="Q12345", n_decoys=6).to_csv(p, index=False)
+    whole, winfo = match_accession(read_bulk_table(p), seq)
+    for chunk in (7, 101, 10_000):                    # chunk boundaries must not matter
+        acc, info = match_accession_streaming(p, seq, chunksize=chunk)
+        assert acc == whole == "Q12345"
+        assert info["positions"] == winfo["positions"]
+        assert info["agreement"] == pytest.approx(winfo["agreement"])
+        assert info["n_variants"] == winfo["n_variants"]
+
+
+def test_streaming_extract_returns_only_that_protein(tmp_path):
+    from mpdms.esm_score import read_bulk_table, rows_for_accession
+    seq = _seq()
+    p = tmp_path / "proteome.csv"
+    _proteome(seq, target_acc="Q12345", n_decoys=4).to_csv(p, index=False)
+    want = read_bulk_table(p).query("acc == 'Q12345'").reset_index(drop=True)
+    got = rows_for_accession(p, "Q12345", chunksize=137)
+    assert set(got.acc) == {"Q12345"}
+    assert len(got) == len(want)
+    assert got.sort_values(["pos", "mut"]).esm1v.tolist() == \
+           want.sort_values(["pos", "mut"]).esm1v.tolist()
+
+
+def test_mutation_parsing_matches_the_regex_it_replaced():
+    """Slicing is quicker than the regex, so it must agree with it, junk rows included."""
+    import pandas as pd
+    from mpdms.esm_score import MUT_RE, parse_mutations
+    s = pd.Series(["M1A", "K123R", "W1000Y", "", "x", "nonsense", "M1", "1A2", "A12b", "QQ3R"])
+    ref = s.str.extract(MUT_RE)
+    got = parse_mutations(s)
+    assert got.pos.notna().tolist() == pd.to_numeric(ref[1]).notna().tolist()
+    keep = got.pos.notna()
+    assert got.loc[keep, "wt"].tolist() == ref.loc[keep, 0].tolist()
+    assert got.loc[keep, "mut"].tolist() == ref.loc[keep, 2].tolist()
+    assert got.loc[keep, "pos"].tolist() == pd.to_numeric(ref.loc[keep, 1]).tolist()

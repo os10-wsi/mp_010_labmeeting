@@ -190,6 +190,12 @@ python -m mpdms esm configs/QDR2.yaml configs/AQR1.yaml --from-table ../all_esm1
 # --id ACCESSION overrides the accession taken from protein.uniprot in the config
 ```
 
+The table is streamed in chunks, so a proteome-wide one (tens of millions of rows) costs a
+scan rather than its full size in memory. If the config names no accession, one extra pass
+over the accession and mutation columns identifies the protein from its sequence — the
+mutation strings carry their wild-type residues — and the answer is written back to
+`protein.uniprot`, so every later run is a single filtering pass.
+
 `esm` writes `data/external/<GENE>/<ID>_esm1v.csv` and sets `evolution.esm_scores` in the
 config. If you already have ESM-1v scores, point `evolution.esm_scores` at a CSV with
 columns `pos, mut` and one of `esm1v` / `llr` / `score`.
