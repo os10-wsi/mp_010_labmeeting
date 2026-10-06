@@ -92,3 +92,29 @@ def test_quickstart_writes_a_config_and_fasta_without_a_network(tmp_path, monkey
     assert cfg.id == "TEST1"
     fasta = tmp_path / "data" / "external" / "TEST1" / "TEST1.fasta"
     assert fasta.exists() and fasta.read_text().split("\n")[1] == WT
+
+
+def test_hxt2_sites_load_with_wild_types_for_the_numbering_check():
+    """The nine sites must come through with wt residues so A19/A21 can verify numbering."""
+    from mpdms.analyses.a20_variant_panel import wanted_sites
+    from mpdms.config import Config
+    cfg = Config.wrap({"id": "HXT2", "display_name": "HXT2", "protein": {"gene": "HXT2"}})
+    sites, wt, marked = wanted_sites(cfg)
+    assert sites == [59, 61, 198, 201, 316, 331, 363, 366, 368]
+    assert wt == {59: "L", 61: "L", 198: "F", 201: "L", 316: "V",
+                  331: "N", 363: "A", 366: "F", 368: "A"}
+    assert marked == {}          # positions only: no allele to ring in A21
+
+
+def test_hxt2_wild_types_match_the_recovered_sequence():
+    """Guards the numbering: these came off the sequence recovered from the DMS table."""
+    from pathlib import Path
+
+    from mpdms.analyses.a19_literature import check_numbering, load_literature
+    f = Path("data/external/HXT2/HXT2.fasta")
+    if not f.exists():
+        pytest.skip("HXT2 fasta not present in this checkout")
+    seq = f.read_text().split("\n")[1]
+    entries = load_literature("HXT2")["measured"]
+    ok, bad = check_numbering(entries, seq)
+    assert not bad and len(ok) == 9

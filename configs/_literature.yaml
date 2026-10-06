@@ -121,3 +121,28 @@ PHO84:
     twice across the two batches and are recorded once. Note D178 and Y179 are adjacent,
     which makes the wild-type check worth reading: an off-by-one in the source would put
     D at 179 or Y at 178 and the entry would be dropped rather than silently plotted.
+
+HXT2:
+  uniprot: P23585          # UNVERIFIED - confirm before use
+  measured:
+    # Positions supplied by the user as sites of interest for the ESM regression, with no
+    # source and no reported effects, so function and abundance stay `unknown` and A19
+    # reports where the screen puts them but must NOT score them as a positive control.
+    # The wild-type residues below were read off the wild-type sequence recovered from the
+    # DMS table's own aa_seq column, so A19/A21 will check them against the data and drop
+    # any that disagree.
+    - {pos: 59,  wt: L, function: unknown, abundance: unknown, source: "user-supplied, source not stated", confidence: unverified}
+    - {pos: 61,  wt: L, function: unknown, abundance: unknown, source: "user-supplied, source not stated", confidence: unverified}
+    - {pos: 198, wt: F, function: unknown, abundance: unknown, source: "user-supplied, source not stated", confidence: unverified}
+    - {pos: 201, wt: L, function: unknown, abundance: unknown, source: "user-supplied, source not stated", confidence: unverified}
+    - {pos: 316, wt: V, function: unknown, abundance: unknown, source: "user-supplied, source not stated", confidence: unverified}
+    - {pos: 331, wt: N, function: unknown, abundance: unknown, source: "user-supplied, source not stated", confidence: unverified}
+    - {pos: 363, wt: A, function: unknown, abundance: unknown, source: "user-supplied, source not stated", confidence: unverified}
+    - {pos: 366, wt: F, function: unknown, abundance: unknown, source: "user-supplied, source not stated", confidence: unverified}
+    - {pos: 368, wt: A, function: unknown, abundance: unknown, source: "user-supplied, source not stated", confidence: unverified}
+  inferred: []
+  note: >-
+    9 sites: L59, L61, F198, L201, V316, N331, A363, F366, A368. Eight are hydrophobic or
+    aromatic and one is an asparagine, which is the composition a sugar-binding pocket
+    tends to have. No substitutions were named, so these appear in A19 and A21, which work
+    per site, but not in A20, which needs a specific allele to plot.

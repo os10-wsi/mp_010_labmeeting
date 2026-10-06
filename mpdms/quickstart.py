@@ -225,6 +225,11 @@ def main(argv=None):
     ap.add_argument("--structure", help="AlphaFold/PDB model; without it the structural "
                                         "analyses skip and everything else still runs")
     ap.add_argument("--min-reads", type=int, default=0)
+    ap.add_argument("--esm-table", help="a bulk ESM-1v CSV to import scores from "
+                                        "(needs --uniprot, or protein.uniprot in the config)")
+    ap.add_argument("--uniprot", help="accession to pick out of --esm-table")
+    ap.add_argument("--esm-compute", action="store_true",
+                    help="compute ESM-1v here instead; needs torch and the model weights")
     ap.add_argument("--style", default="paper", choices=["default", "paper"])
     ap.add_argument("--only", help="comma-separated analysis keys, default: all")
     ap.add_argument("--no-run", action="store_true", help="write the config and stop")
@@ -247,6 +252,25 @@ def main(argv=None):
         tmhmm_main([str(cfg_path), "--from-file", str(g)])
     else:
         say(WARN, "no --gff3: the topology is empty, so every TM-aware analysis will skip")
+
+    if a.uniprot:
+        txt = cfg_path.read_text().replace("  uniprot: null", f"  uniprot: {a.uniprot}")
+        cfg_path.write_text(txt)
+        say(TICK, f"uniprot set to {a.uniprot}")
+
+    if a.esm_table or a.esm_compute:
+        from .esm_score import main as esm_main
+        print()
+        argv_esm = [str(cfg_path)]
+        if a.esm_table:
+            argv_esm += ["--from-table", str(Path(a.esm_table).expanduser())]
+            if a.uniprot:
+                argv_esm += ["--id", a.uniprot]
+        try:
+            esm_main(argv_esm)
+        except Exception as e:                       # never lose the rest of the run to this
+            say(WARN, f"ESM step failed ({e.__class__.__name__}: {e}); "
+                      "A15 and A21 will skip and everything else still runs")
 
     if a.no_run:
         print(f"\n{TICK}config ready. To run:\n"
