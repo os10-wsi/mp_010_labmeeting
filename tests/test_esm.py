@@ -47,3 +47,69 @@ def test_functional_list_is_complete_wrapped_and_in_sequence_order():
     assert order == sorted(order)                                         # sequence order
     assert joined.count("*") == int(f.abundance_tolerant.sum())           # tolerant marked
     assert functional_list(f.iloc[:0]) == ["none"]
+
+
+# ------------------------------- finding the right protein in a proteome-wide table
+AA20 = "ACDEFGHIKLMNPQRSTVWY"
+
+
+def _proteome(target_seq, target_acc="TARGET", n_decoys=60, seed=0):
+    """A table of many proteins, one of which is the target, as a whole-proteome file is."""
+    import numpy as np
+    import pandas as pd
+    rng = np.random.default_rng(seed)
+    rows = []
+    for k in range(n_decoys):
+        acc = f"DECOY{k:03d}"
+        seq = "".join(rng.choice(list(AA20), rng.integers(150, 400)))
+        for pos in range(1, len(seq) + 1, 5):
+            for mut in rng.choice(list(AA20), 3, replace=False):
+                rows.append({"id": acc, "mutation": f"{seq[pos - 1]}{pos}{mut}",
+                             "mean": float(rng.normal(-5, 2))})
+    for pos in range(1, len(target_seq) + 1):
+        for mut in rng.choice(list(AA20), 4, replace=False):
+            rows.append({"id": target_acc, "mutation": f"{target_seq[pos - 1]}{pos}{mut}",
+                         "mean": float(rng.normal(-5, 2))})
+    return pd.DataFrame(rows)
+
+
+def _seq(n=320, seed=7):
+    import numpy as np
+    return "".join(np.random.default_rng(seed).choice(list(AA20), n))
+
+
+def test_accession_found_by_sequence_in_a_proteome_table(tmp_path):
+    """The accession need not be known: the mutation strings carry the wild-type residues."""
+    from mpdms.esm_score import match_accession, read_bulk_table
+    seq = _seq()
+    p = tmp_path / "proteome.csv"
+    _proteome(seq, target_acc="Q12345").to_csv(p, index=False)
+    acc, info = match_accession(read_bulk_table(p), seq)
+    assert acc == "Q12345"
+    assert info["agreement"] == 1.0 and info["positions"] == len(seq)
+    assert info["runner_up_agreement"] < 0.5          # chance agreement for the decoys
+
+
+def test_no_accession_returned_when_the_protein_is_absent(tmp_path):
+    """Importing another protein's scores would look normal downstream, so refuse instead."""
+    from mpdms.esm_score import match_accession, read_bulk_table
+    seq = _seq()
+    p = tmp_path / "proteome.csv"
+    t = _proteome(seq, target_acc="Q12345")
+    t[t.id != "Q12345"].to_csv(p, index=False)
+    acc, info = match_accession(read_bulk_table(p), seq)
+    assert acc is None and "below" in info["reason"]
+
+
+def test_match_ignores_accessions_covering_too_few_positions(tmp_path):
+    """A tiny entry can agree perfectly by luck; it must not outrank the real protein."""
+    import pandas as pd
+    from mpdms.esm_score import match_accession, read_bulk_table
+    seq = _seq()
+    t = _proteome(seq, target_acc="Q12345", n_decoys=5)
+    tiny = pd.DataFrame([{"id": "TINY", "mutation": f"{seq[i]}{i + 1}A", "mean": -5.0}
+                         for i in range(4)])          # 4 positions, all correct
+    p = tmp_path / "proteome.csv"
+    pd.concat([t, tiny]).to_csv(p, index=False)
+    acc, info = match_accession(read_bulk_table(p), seq)
+    assert acc == "Q12345"

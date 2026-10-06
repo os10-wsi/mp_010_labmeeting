@@ -123,7 +123,7 @@ PHO84:
     D at 179 or Y at 178 and the entry would be dropped rather than silently plotted.
 
 HXT2:
-  uniprot: P23585          # UNVERIFIED - confirm before use
+  uniprot: null            # found by sequence match against the ESM table
   measured:
     # Positions supplied by the user as sites of interest for the ESM regression, with no
     # source and no reported effects, so function and abundance stay `unknown` and A19

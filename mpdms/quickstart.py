@@ -225,9 +225,11 @@ def main(argv=None):
     ap.add_argument("--structure", help="AlphaFold/PDB model; without it the structural "
                                         "analyses skip and everything else still runs")
     ap.add_argument("--min-reads", type=int, default=0)
-    ap.add_argument("--esm-table", help="a bulk ESM-1v CSV to import scores from "
-                                        "(needs --uniprot, or protein.uniprot in the config)")
-    ap.add_argument("--uniprot", help="accession to pick out of --esm-table")
+    ap.add_argument("--esm-table", help="a bulk ESM-1v CSV to import scores from; the right "
+                                        "protein is found by matching the sequence, so no "
+                                        "accession is needed")
+    ap.add_argument("--uniprot", help="accession to pick out of --esm-table, if the "
+                                      "sequence match picks the wrong one")
     ap.add_argument("--esm-compute", action="store_true",
                     help="compute ESM-1v here instead; needs torch and the model weights")
     ap.add_argument("--style", default="paper", choices=["default", "paper"])

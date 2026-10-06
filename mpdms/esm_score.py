@@ -153,19 +153,70 @@ def read_bulk_table(path: Path) -> pd.DataFrame:
     return out
 
 
+def match_accession(bulk: pd.DataFrame, seq: str, min_agreement: float = 0.9,
+                    min_positions: int = 20) -> tuple[str | None, dict]:
+    """Find which accession in a proteome-wide table is this protein, from the sequence.
+
+    Every mutation string carries the wild-type residue it was made from, so an accession
+    can be identified by how well those residues agree with the sequence at the same
+    positions. That is more reliable than guessing an accession and silently importing
+    another protein's scores, which would look perfectly normal downstream.
+    """
+    target = np.array(list(seq))
+    b = bulk[(bulk.pos >= 1) & (bulk.pos <= len(seq))].dropna(subset=["pos", "wt"])
+    if not len(b):
+        return None, {"reason": "no rows fall inside the sequence"}
+    agree = target[b.pos.to_numpy(int) - 1] == b.wt.to_numpy()
+    g = (pd.DataFrame({"acc": b.acc.to_numpy(), "ok": agree, "pos": b.pos.to_numpy(int)})
+         .groupby("acc").agg(agreement=("ok", "mean"), n=("ok", "size"),
+                             positions=("pos", "nunique")))
+    g = g[g.positions >= min_positions].sort_values("agreement", ascending=False)
+    if not len(g):
+        return None, {"reason": f"no accession covers {min_positions}+ positions in range"}
+    best = g.index[0]
+    info = {"accession": best, "agreement": float(g.agreement.iloc[0]),
+            "n_variants": int(g.n.iloc[0]), "positions": int(g.positions.iloc[0]),
+            "runner_up": (str(g.index[1]) if len(g) > 1 else None),
+            "runner_up_agreement": (float(g.agreement.iloc[1]) if len(g) > 1 else None),
+            "n_accessions_searched": int(bulk.acc.nunique())}
+    if info["agreement"] < min_agreement:
+        info["reason"] = (f"best match {best} agrees at only {info['agreement']:.1%}, "
+                          f"below {min_agreement:.0%}")
+        return None, info
+    return best, info
+
+
 def import_from_table(table: Path, cfg_path: Path, acc_override: str | None = None, bulk=None) -> None:
     cfg = load_config(cfg_path)
     acc = acc_override or cfg.get_path("protein.uniprot")
-    if not acc:
-        print(f"{cfg.id}: no protein.uniprot in config - pass --id ACCESSION")
-        return
     bulk = read_bulk_table(table) if bulk is None else bulk
+    seq = protein_sequence(cfg)
+    if (not acc or acc not in set(bulk.acc)) and seq:
+        why = "none given" if not acc else f"{acc} is not in the table"
+        found, info = match_accession(bulk, seq)
+        if found:
+            acc = found
+            print(f"{cfg.id}: accession {why}; matched {found} by sequence "
+                  f"({info['agreement']:.1%} of {info['n_variants']:,} wild-type residues agree "
+                  f"over {info['positions']} positions, searched {info['n_accessions_searched']:,})")
+            if info.get("runner_up_agreement") is not None:
+                print(f"  next best {info['runner_up']} at {info['runner_up_agreement']:.1%}")
+        else:
+            print(f"{cfg.id}: accession {why} and no sequence match "
+                  f"({info.get('reason', '')}) - pass --id ACCESSION")
+            return
+    if not acc:
+        print(f"{cfg.id}: no protein.uniprot in config and no sequence to match on "
+              "- pass --id ACCESSION")
+        return
     sub = bulk[bulk.acc == acc].drop(columns="acc")
+    if not len(sub):
+        print(f"{cfg.id}: {acc} has no rows in {Path(table).name}")
+        return
     if sub.empty:
         print(f"{cfg.id}: accession {acc} not in {Path(table).name} "
               f"({bulk.acc.nunique()} proteins there, e.g. {', '.join(bulk.acc.unique()[:6])}) - use --id")
         return
-    seq = protein_sequence(cfg)
     if seq:
         ok = sub.apply(lambda r: r.pos <= len(seq) and seq[r.pos - 1] == r.wt, axis=1)
         print(f"{cfg.id}: {acc}: {len(sub):,} variants, {sub.pos.nunique()} positions; "
