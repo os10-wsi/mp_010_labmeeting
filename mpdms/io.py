@@ -318,6 +318,24 @@ def normalise(x: pd.Series, syn_med: float, stop_med: float,
     return syn_anchor + (x - syn_med) * scale
 
 
+LOWER_ANCHOR_RE = re.compile(r"^missense_(min|p([0-9.]+))$")
+
+
+def lower_anchor(mis: pd.Series, how: str) -> float:
+    """The value that the -1 end of the scale is pinned to, taken from the missense spread.
+
+    `missense_min` is the single worst-measured variant, so it moves with the noise in one
+    well; `missense_p1` and friends are the same idea read off a percentile and are steadier.
+    """
+    if not len(mis):
+        return float("nan")
+    m = LOWER_ANCHOR_RE.match(how)
+    if not m:
+        raise ValueError(f"normalization.lower_anchor: expected nonsense, missense_min or "
+                         f"missense_pN, got {how!r}")
+    return float(mis.min()) if m.group(1) == "min" else float(np.nanpercentile(mis, float(m.group(2))))
+
+
 def anchors(df: pd.DataFrame, col: str, cfg: Config) -> dict:
     ok = df["pass_filter"] & df[col].notna()
     syn = df.loc[ok & (df.vclass == "synonymous"), col]
@@ -326,12 +344,19 @@ def anchors(df: pd.DataFrame, col: str, cfg: Config) -> dict:
     if n_excl > 0:
         stop_mask &= df["pos"] <= df["pos"].max() - n_excl
     stop = df.loc[stop_mask, col]
+    how = str(cfg.get_path("normalization.lower_anchor", "nonsense") or "nonsense")
     info = {"column": col, "syn_median": float(syn.median()) if len(syn) else np.nan,
             "n_syn": int(len(syn)), "n_stop": int(len(stop)), "stop_source": "nonsense"}
-    if len(stop) >= 5:
+    mis = df.loc[ok & (df.vclass == "missense"), col]
+    if how != "nonsense":
+        # Asked for on purpose: the floor of the scale is the worst missense variant rather
+        # than the nonsense median. Not a fallback, so it must not raise the FALLBACK alarm.
+        info["stop_median"] = lower_anchor(mis, how)
+        info["stop_source"] = how
+        info["n_lower"] = int(len(mis))
+    elif len(stop) >= 5:
         info["stop_median"] = float(stop.median())
     else:
-        mis = df.loc[ok & (df.vclass == "missense"), col]
         info["stop_median"] = float(np.nanpercentile(mis, 1)) if len(mis) else np.nan
         info["stop_source"] = "missense_p1_FALLBACK"
     if len(syn) < 5:
@@ -439,7 +464,18 @@ def load_dataset(cfg: Config, use_cache: bool = False) -> pd.DataFrame:
     df.insert(0, "dataset_id", cfg.id)
     df = df.sort_values(["pos", "vclass", "mut"]).reset_index(drop=True)
 
+    # Dropped only after the anchors are computed: the controls still set the scale even when
+    # the figures are not to show them.
+    keep = cfg.get_path("filters.keep_classes") or None
+    n_dropped = 0
+    if keep:
+        keep = [str(k) for k in keep]
+        n_dropped = int((~df.vclass.isin(keep)).sum())
+        df = df[df.vclass.isin(keep)].reset_index(drop=True)
+
     meta = {
+        "keep_classes": keep,
+        "n_dropped_by_class": n_dropped,
         "dataset_id": cfg.id,
         "columns_detected": {k: v for k, v in colmap.items()},
         "n_source_rows": int(n_in),

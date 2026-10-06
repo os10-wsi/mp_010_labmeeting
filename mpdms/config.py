@@ -194,6 +194,17 @@ def validate(cfg: Config, df=None, strict: bool = True) -> list[str]:
                 f"(anchor from {norm.get('stop_source')}). Scores are NOT on the "
                 "syn=0/nonsense=-1 scale; the -1 line on every figure and any comparison with "
                 "another dataset are not meaningful until real controls are supplied")
+        src = str(norm.get("stop_source", ""))
+        if src.startswith("missense") and "FALLBACK" not in src:
+            warnings.append(
+                f"lower anchor is {src}, not the nonsense median: -1 now means "
+                f"'as bad as the worst missense variant seen here'. Ranks and correlations are "
+                "unchanged (it is a linear rescale), but the -1 line, the heatmap colour range "
+                "and any comparison with another dataset are on a different scale")
+        kc = cfg.get_path("filters.keep_classes")
+        if kc:
+            warnings.append(f"showing {', '.join(kc)} variants only; the controls still set the "
+                            "scale but will not appear in any figure")
         # Every topology-dependent analysis silently inherits whatever is in the config,
         # so say out loud when that is still the hydropathy guess `init` wrote.
         topo_src = str(cfg.get_path("topology.source", "") or "")

@@ -196,6 +196,26 @@ over the accession and mutation columns identifies the protein from its sequence
 mutation strings carry their wild-type residues — and the answer is written back to
 `protein.uniprot`, so every later run is a single filtering pass.
 
+### Where the -1 end of the scale comes from
+
+By default `score_z = (x - median(syn)) / (median(syn) - median(nonsense))`, so a stop codon
+sits at -1. `normalization.lower_anchor` moves that floor:
+
+| value | -1 means |
+|---|---|
+| `nonsense` (default) | the median nonsense variant |
+| `missense_min` | the single worst missense variant measured |
+| `missense_p1` | the 1st percentile of missense, the same idea but not hostage to one well |
+
+It is a linear rescale, so ranks, correlations, the ESM regressions and the LOESS-residual z
+are all identical. What changes is every statement in absolute units: the -1 reference line,
+the heatmap colour range, "fraction of variants as bad as a stop", and comparability with
+another dataset. With `missense_min` nothing can fall below -1 by construction, so the
+stop-like fraction stops being a meaningful quantity.
+
+`filters.keep_classes: [missense]` drops the controls from the figures *after* they have set
+the scale, so the scores are unchanged and only the rows shown differ.
+
 `esm` writes `data/external/<GENE>/<ID>_esm1v.csv` and sets `evolution.esm_scores` in the
 config. If you already have ESM-1v scores, point `evolution.esm_scores` at a CSV with
 columns `pos, mut` and one of `esm1v` / `llr` / `score`.

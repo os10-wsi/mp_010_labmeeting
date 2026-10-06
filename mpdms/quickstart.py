@@ -72,8 +72,8 @@ def classify_counts(df: pd.DataFrame, cols: dict) -> dict:
 
 
 CONFIG = """# written by `python -m mpdms quickstart`
-id: {gene}
-display_name: {gene}
+id: {ident}
+display_name: {ident}
 source:
   path: {source}
   citation: ''
@@ -112,6 +112,9 @@ variant_encoding:
 filters:
   min_reads: {min_reads}
   min_replicates: 1
+  keep_classes: {keep_classes}
+normalization:
+  lower_anchor: {lower_anchor}
 topology:
   n_terminus: cytosolic
   source: none
@@ -126,7 +129,9 @@ plotting:
 """
 
 
-def build(src: Path, gene: str, structure: Path | None, min_reads: int) -> tuple[Path, dict]:
+def build(src: Path, gene: str, structure: Path | None, min_reads: int,
+          lower_anchor: str = "nonsense", keep_classes: list[str] | None = None,
+          ident: str | None = None) -> tuple[Path, dict]:
     raw = read_source(src)
     cols = {k: _find(list(raw.columns), v) for k, v in CANDIDATES.items()}
     need = [k for k in ("position", "wt_aa", "mut_aa", "score") if not cols.get(k)]
@@ -164,11 +169,14 @@ def build(src: Path, gene: str, structure: Path | None, min_reads: int) -> tuple
         fasta = None
         say(WARN, "no aa_seq column, so no sequence; set protein.sequence by hand")
 
-    cfg_path = REPO_ROOT / "configs" / f"{gene}.yaml"
+    ident = ident or gene
+    cfg_path = REPO_ROOT / "configs" / f"{ident}.yaml"
     cfg_path.write_text(CONFIG.format(
-        gene=gene, source=src.resolve(), fasta=(fasta.resolve() if fasta else "null"),
+        gene=gene, ident=ident, source=src.resolve(), fasta=(fasta.resolve() if fasta else "null"),
         structure=(Path(structure).resolve() if structure else "null"),
-        membrane_normal=("pca_tm_axes" if structure else "none"), min_reads=min_reads))
+        membrane_normal=("pca_tm_axes" if structure else "none"), min_reads=min_reads,
+        lower_anchor=lower_anchor,
+        keep_classes=("null" if not keep_classes else "[" + ", ".join(keep_classes) + "]")))
     say(TICK, f"config written: {cfg_path}")
     return cfg_path, counts
 
@@ -222,9 +230,18 @@ def main(argv=None):
     ap.add_argument("fitness", help="fitness_singles_<gene>.txt (or any DiMSum variant table)")
     ap.add_argument("--gff3", help="DeepTMHMM .gff3 for the same protein")
     ap.add_argument("--gene", help="override the name inferred from the filename")
+    ap.add_argument("--id", dest="ident",
+                    help="name this run separately from the gene, so two settings can be "
+                         "compared side by side without overwriting each other")
     ap.add_argument("--structure", help="AlphaFold/PDB model; without it the structural "
                                         "analyses skip and everything else still runs")
     ap.add_argument("--min-reads", type=int, default=0)
+    ap.add_argument("--lower-anchor", default="nonsense",
+                    help="what the -1 end of the scale is pinned to: nonsense (default), "
+                         "missense_min (the single worst missense variant) or missense_pN "
+                         "(e.g. missense_p1, the same idea but steadier)")
+    ap.add_argument("--missense-only", action="store_true",
+                    help="show missense variants only; the controls still set the scale")
     ap.add_argument("--esm-table", help="a bulk ESM-1v CSV to import scores from; the right "
                                         "protein is found by matching the sequence, so no "
                                         "accession is needed")
@@ -243,7 +260,9 @@ def main(argv=None):
     gene = (a.gene or gene_from_filename(src)).upper()
     print(f"\n== quickstart: {gene}\n")
 
-    cfg_path, _ = build(src, gene, a.structure, a.min_reads)
+    ident = (a.ident or gene).upper()
+    cfg_path, _ = build(src, gene, a.structure, a.min_reads, a.lower_anchor,
+                        ["missense"] if a.missense_only else None, ident)
 
     if a.gff3:
         g = Path(a.gff3).expanduser()
@@ -289,7 +308,7 @@ def main(argv=None):
     from .report_cli import main as report_main
     print()
     report_main([str(cfg_path)])
-    summarise(gene, a.style, bool(a.structure))
+    summarise(ident, a.style, bool(a.structure))
 
 
 if __name__ == "__main__":

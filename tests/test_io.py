@@ -221,3 +221,51 @@ def test_no_warning_when_both_anchors_are_real(tmp_path):
                        "protein": {"sequence": None}, "topology": {"segments": []}})
     (tmp_path / "x.tsv").write_text("pos\n1\n")
     assert not any("FALLBACK" in x for x in validate(cfg, df, strict=False))
+
+
+def test_lower_anchor_from_the_worst_missense(tmp_path):
+    """Pinning -1 to the worst missense variant instead of the nonsense median."""
+    rng = np.random.default_rng(4)
+    t = _toy(rng)
+    cfg = _cfg(tmp_path, t, normalization={"lower_anchor": "missense_min"})
+    df = load_dataset(cfg)
+    ok = df.pass_filter & (df.vclass == "missense")
+    assert df.attrs["normalization"]["score"]["stop_source"] == "missense_min"
+    assert abs(df.loc[ok, "score_z"].min() + 1) < 1e-9       # the floor is now a missense variant
+    assert (df.loc[ok, "score_z"] >= -1 - 1e-9).all()        # and nothing sits below it
+    # the nonsense median was -2.0 raw, well below the worst missense, so it overshoots -1
+    assert df.loc[df.vclass == "nonsense", "score_z"].median() < -1
+
+
+def test_lower_anchor_is_a_linear_rescale(tmp_path):
+    """Only the units change, so every rank and every correlation must be untouched."""
+    rng = np.random.default_rng(5)
+    t = _toy(rng)
+    a = load_dataset(_cfg(tmp_path, t))
+    b = load_dataset(_cfg(tmp_path, t, normalization={"lower_anchor": "missense_p1"}))
+    m = a.merge(b, on=["pos", "mut"], suffixes=("_a", "_b")).dropna(subset=["score_z_a", "score_z_b"])
+    assert len(m) > 50
+    assert np.corrcoef(m.score_z_a, m.score_z_b)[0, 1] == pytest.approx(1.0)
+    slope, intercept = np.polyfit(m.score_z_a, m.score_z_b, 1)
+    assert slope > 1                                          # a higher floor compresses the scale
+    assert intercept == pytest.approx(0, abs=1e-9)
+
+
+def test_lower_anchor_rejects_nonsense_spellings(tmp_path):
+    rng = np.random.default_rng(6)
+    with pytest.raises(ValueError, match="missense_min"):
+        load_dataset(_cfg(tmp_path, _toy(rng), normalization={"lower_anchor": "lowest"}))
+
+
+def test_keep_classes_drops_controls_only_after_they_set_the_scale(tmp_path):
+    """Missense-only figures must still be on the scale the controls defined."""
+    rng = np.random.default_rng(7)
+    t = _toy(rng)
+    full = load_dataset(_cfg(tmp_path, t))
+    mis = load_dataset(_cfg(tmp_path, t, filters={"keep_classes": ["missense"]}))
+    assert set(mis.vclass) == {"missense"}
+    assert mis.attrs["n_dropped_by_class"] == len(full) - len(mis) > 0
+    assert mis.attrs["normalization"]["score"]["stop_source"] == "nonsense"
+    a = full.query("vclass == 'missense'").set_index(["pos", "mut"]).score_z
+    b = mis.set_index(["pos", "mut"]).score_z
+    assert (a.reindex(b.index) - b).abs().max() < 1e-12       # scores identical, rows fewer
