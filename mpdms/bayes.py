@@ -371,9 +371,18 @@ def main(argv=None):
     out = {}
     for spec in a.family:
         name, _, members = spec.partition("=")
-        members = [m for m in members.split(",") if m]
-        if not members:
-            raise SystemExit(f"{spec}: expected NAME=cfg1,cfg2,...")
+        members = [m.strip() for m in members.split(",") if m.strip()]
+        if not name or not members:
+            raise SystemExit(f"--family {spec}: expected NAME=cfg1.yaml,cfg2.yaml,...")
+        # say which entry is wrong, rather than failing deep inside the loader on it
+        bad = [m for m in members if not Path(m).is_file()]
+        if bad:
+            raise SystemExit(
+                f"--family {name}: not a config file: {', '.join(bad)}\n"
+                f"        each member must be a path to one .yaml, e.g. configs/HXT1.yaml")
+        dup = sorted({m for m in members if members.count(m) > 1})
+        if dup:
+            raise SystemExit(f"--family {name}: listed twice: {', '.join(dup)}")
         print(f"\n== {name}: {len(members)} proteins", flush=True)
         try:
             r = run_family(name, members, outdir, a.min_proteins)

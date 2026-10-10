@@ -166,3 +166,18 @@ def test_a_column_with_too_few_proteins_is_not_pooled():
     long = long[~((long.col == 1) & (long.protein != "P1"))]
     cols = pool_columns(long, min_proteins=4)
     assert 1 not in set(cols.col) and 2 in set(cols.col)
+
+
+def test_a_bad_family_member_is_named_rather_than_crashing_in_the_loader(tmp_path, capsys):
+    """A stray directory or typo in the list should say which entry is wrong."""
+    from mpdms.bayes import main
+    good = tmp_path / "ok.yaml"
+    good.write_text("id: X\n")
+    for spec, needle in (
+            (f"F={tmp_path},{good}", str(tmp_path)),       # a directory
+            (f"F={good},missing.yaml", "missing.yaml"),    # a typo
+            ("F=", "expected NAME="),                      # no members
+            (f"F={good},{good}", "listed twice")):
+        with pytest.raises(SystemExit) as e:
+            main(["--family", spec, "--outdir", str(tmp_path / "out")])
+        assert needle in str(e.value)
