@@ -215,6 +215,29 @@ a feature *adds*. And when the per-protein correlations disagree (high I2 in
 coefficient is drawn with its per-protein refits beside it and a sign-agreement warning
 when they do not point the same way.
 
+### Does the yeast signal predict human clinical variants?
+
+```bash
+wget https://ftp.ncbi.nlm.nih.gov/pub/clinvar/tab_delimited/variant_summary.txt.gz
+
+python -m mpdms clinvar \
+  --family hexose=configs/HXT1.yaml,configs/HXT2.yaml,configs/HXT3.yaml,configs/HXT7.yaml \
+  --human SLC2A1=P11166 --human SLC2A2=P11168 --human SLC2A10=O95528 --human SLC2A9=Q9NRM0 \
+  --table variant_summary.txt.gz
+```
+
+The human protein is aligned into the same frame as the measured family, each ClinVar
+missense variant is mapped to its alignment column, and pathogenic and benign variants are
+compared by the constraint the yeast data assigns to that column. Reported as an AUROC with
+a bootstrap interval, overall and per gene.
+
+Only unambiguous calls are used: anything uncertain or conflicting is dropped rather than
+counted as benign, which is the usual way a predictor is flattered on ClinVar. Variants
+whose wild-type residue disagrees with the UniProt sequence (a different transcript) are
+dropped and counted. The run also prints variants per position, because this is a position
+score: two substitutions at one residue get the same prediction, and that ratio is the
+ceiling on what the comparison can resolve.
+
 ### Bayesian pooling across a family
 
 ```bash
