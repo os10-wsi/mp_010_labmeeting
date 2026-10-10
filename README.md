@@ -196,6 +196,28 @@ over the accession and mutation columns identifies the protein from its sequence
 mutation strings carry their wild-type residues — and the answer is written back to
 `protein.uniprot`, so every later run is a single filtering pass.
 
+### A whole folder at once
+
+A folder of DiMSum output, straight from the pipeline:
+
+```
+fitness_singles_aqr1_003.txt  aqr1.gff3  aqr1.cif
+fitness_singles_hxt2.txt      hxt2.gff3  hxt2.cif   ...
+```
+
+```bash
+python -m mpdms batch /path/to/dimsum_default --esm-table all_esm1v_predictions_with_mean.csv
+python -m mpdms batch /path/to/dimsum_default --dry-run     # check the pairing first
+```
+
+Each fitness table is paired with the gff3 and structure whose names match it, allowing for a
+run or replicate suffix on the fitness file: `fitness_singles_aqr1_003.txt` pairs with
+`aqr1.gff3` and `aqr1.cif`, and the gene stays `AQR1` so the sites in `configs/_literature.yaml`
+still find it. A suffix is only trimmed when the companions agree, so `hxt2_2` with its own
+`hxt2_2.gff3` stays a separate protein. Proteins missing a gff3 are listed and skipped rather
+than run on a hydropathy guess; `--require-structure` does the same for the structure. One
+protein failing does not stop the rest.
+
 ### Where the -1 end of the scale comes from
 
 By default `score_z = (x - median(syn)) / (median(syn) - median(nonsense))`, so a stop codon

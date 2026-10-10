@@ -64,9 +64,34 @@ def merge_pdfs(paths, out: Path) -> bool:
     for p in paths:
         with pymupdf.open(p) as src:
             doc.insert_pdf(src)
+    if not len(doc):
+        # No figures to bind - a --only subset, or every analysis skipped. The markdown
+        # summary below still says what ran, so this is a note rather than a failure.
+        doc.close()
+        return False
     doc.save(out)
     doc.close()
     return True
+
+
+def figure_dir(outdir: Path) -> Path:
+    """The directory holding the figures this report should bind.
+
+    Paper-style runs write to figures_paper/, so a report that always looked in figures/
+    would bind the previous default-style artwork, or nothing at all. Falls back to the
+    other directory when the preferred one is empty, so `report --skip-run` still works
+    against whichever style was last produced.
+    """
+    from . import plotting as P
+    want, other = ("figures_paper", "figures") if P.paper() else ("figures", "figures_paper")
+    pref = Path(outdir) / want
+    if pref.is_dir() and any(pref.glob("*.pdf")):
+        return pref
+    alt = Path(outdir) / other
+    if alt.is_dir() and any(alt.glob("*.pdf")):
+        print(f"  note: no figures in {want}/, binding {other}/ instead")
+        return alt
+    return pref
 
 
 def main(argv=None):
@@ -74,11 +99,17 @@ def main(argv=None):
     warnings.filterwarnings("ignore", message=".*(Glyph|singular|boundary|No artists|invalid value).*")
     ap = argparse.ArgumentParser(prog="python -m mpdms report")
     ap.add_argument("configs", nargs="+")
+    ap.add_argument("--style", default=None, choices=["default", "paper"],
+                    help="which figure style to produce and bind (default: whatever the "
+                         "process is already set to)")
     ap.add_argument("--skip-run", action="store_true",
                     help="reuse figures already in outputs/<ID>/figures instead of recomputing")
     a = ap.parse_args(argv)
 
     import importlib
+    if a.style:
+        from . import plotting as P
+        P.use_style(a.style)
     for c in a.configs:
         cfg = load_config(Path(c))
         validate_cfg(cfg)
@@ -100,7 +131,8 @@ def main(argv=None):
 
         rep = outdir / "report"
         rep.mkdir(parents=True, exist_ok=True)
-        figs = [(outdir / "figures" / f"{n}.pdf", t) for n, t in FIGURE_ORDER]
+        figroot = figure_dir(outdir)
+        figs = [(figroot / f"{n}.pdf", t) for n, t in FIGURE_ORDER]
         have = [(p, t) for p, t in figs if p.exists()]
         pdf = rep / f"{cfg.id}_report.pdf"
         merged = merge_pdfs([p for p, _ in have], pdf)
@@ -129,7 +161,9 @@ def main(argv=None):
         (REPO_ROOT / "reports" / f"{cfg.id}_report.md").write_text("\n".join(md))
         (rep / "summary.json").write_text(json.dumps(jsonable(results), indent=2))
         print(f"  {len(have)}/{len(figs)} figures; "
-              + (f"PDF -> {pdf.relative_to(REPO_ROOT)}" if merged else "PDF merge needs `pip install pymupdf`")
+              + (f"PDF -> {pdf.relative_to(REPO_ROOT)}" if merged else
+                 "no figures to bind into a PDF" if not have else
+                 "PDF merge needs `pip install pymupdf`")
               + f"; markdown -> reports/{cfg.id}_report.md", flush=True)
 
 
