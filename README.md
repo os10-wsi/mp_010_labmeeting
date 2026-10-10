@@ -196,6 +196,23 @@ over the accession and mutation columns identifies the protein from its sequence
 mutation strings carry their wild-type residues — and the answer is written back to
 `protein.uniprot`, so every later run is a single filtering pass.
 
+### What does each feature predict on its own?
+
+Before any model combines them:
+
+```bash
+python -m mpdms univariate configs/*.yaml
+```
+
+One figure per protein ranking every feature by its rank correlation with the measured
+effect, and one figure putting all the proteins together: the pooled ranking beside a
+feature x protein grid. A feature strong in one protein and absent in the others is a fact
+about that protein, not about membrane proteins, and the grid is where that shows.
+
+Intervals come from resampling **positions**, not variants. Nineteen substitutions at one
+site are nineteen measurements of that site, so a variant-level interval is roughly three
+times too narrow and every feature looks significant.
+
 ### All proteins in one figure
 
 ```bash
