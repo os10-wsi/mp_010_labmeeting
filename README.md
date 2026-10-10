@@ -215,6 +215,23 @@ a feature *adds*. And when the per-protein correlations disagree (high I2 in
 coefficient is drawn with its per-protein refits beside it and a sign-agreement warning
 when they do not point the same way.
 
+### How related are the proteins?
+
+```bash
+python -m mpdms identity configs/*.yaml --human SLC2A1=P11166 --human SLC2A2=P11168
+```
+
+A pairwise identity heatmap, clustered so relatives sit together, with a second panel
+placing each unmeasured query against the measured set.
+
+This is the context for every pooled result. A hierarchical family model borrows strength
+between its members, which helps while they share constraint and hurts once they do not:
+a distant relative raises the between-protein spread at every column, the pooled mean is
+shrunk toward the family average, and the contrast a predictor needs is flattened. The
+`clinvar` and `bayes` runs print median τ against the spread of μ for exactly this reason
+- when that ratio approaches 1, the family is disagreeing about as much as its columns
+differ, and a tighter family will separate better.
+
 ### Does the yeast signal predict human clinical variants?
 
 ```bash

@@ -380,8 +380,20 @@ def run_one(name, members, seqs, cv, min_proteins, outdir):
         print(f"  AUROC {res['auroc']:.3f}  [{res['auroc_lo']:.3f}, {res['auroc_hi']:.3f}]"
               f"   {res['n_pathogenic']:,} pathogenic vs {res['n_benign']:,} benign"
               f"   p = {res['p_mannwhitney']:.2g}")
+        gap = res["median_benign"] - res["median_pathogenic"]
         print(f"  median constraint: pathogenic {res['median_pathogenic']:+.3f}, "
-              f"benign {res['median_benign']:+.3f}")
+              f"benign {res['median_benign']:+.3f}   (gap {gap:+.3f})")
+        tau = float(cols.tau.median())
+        spread = float(cols.mu.std(ddof=1))
+        print(f"  pooled columns: median τ {tau:.3f}, SD of μ {spread:.3f}, "
+              f"ratio τ/SD(μ) {tau / spread:.2f}")
+        if tau / spread > 0.6:
+            print("    the family disagrees about as much as the columns differ, so μ is "
+                  "shrunk hard toward the family average and the contrast above is "
+                  "flattened; a tighter family will separate better")
+        res["median_tau"] = tau
+        res["sd_mu"] = spread
+        res["gap"] = gap
         print(f"  {res['n_positions']:,} distinct positions carry these "
               f"{res['n']:,} variants ({res['variants_per_position']:.1f} per position): "
               "this is a position score, so that ratio is the ceiling on what it can "

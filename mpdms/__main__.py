@@ -3,7 +3,7 @@ import sys
 
 
 def main():
-    if len(sys.argv) < 2 or sys.argv[1] not in ("init", "run", "helix", "esm", "validate", "bench", "family", "tmhmm", "report", "quickstart", "batch", "panel", "aggregate", "univariate", "bayes", "ladder", "clinvar"):
+    if len(sys.argv) < 2 or sys.argv[1] not in ("init", "run", "helix", "esm", "validate", "bench", "family", "tmhmm", "report", "quickstart", "batch", "panel", "aggregate", "univariate", "bayes", "ladder", "clinvar", "identity"):
         sys.exit("usage: python -m mpdms quickstart <fitness_file> --gff3 <file>   (start here)"
                  " | python -m mpdms batch <folder_of_dimsum_output>"
                  " | python -m mpdms panel configs/*.yaml --only a01,a15"
@@ -34,6 +34,8 @@ def main():
         from .ladder import main as m
     elif cmd == "clinvar":
         from .clinvar import main as m
+    elif cmd == "identity":
+        from .identity import main as m
     elif cmd == "init":
         from .init_dataset import main as m
     elif cmd == "report":
