@@ -18,6 +18,8 @@ Splits decide what question is being asked:
   protein   - leave one protein out; the only split that tests extrapolation to a protein
               the model has never seen, and therefore the one that supports any claim
               about other membrane proteins
+  family    - leave one family of paralogs out; `protein` leaks when close paralogs are in
+              the set, because the held-out protein is nearly present in training
   segment   - train on loops/soluble, test on TM (and the reverse); tests whether the
               model has learnt membrane-specific physics or just generic constraint
 """
@@ -55,6 +57,16 @@ def split_folds(df: pd.DataFrame, how: str = "protein", n_folds: int = 5, seed: 
         f = rng.integers(0, n_folds, len(df))
         for k in range(n_folds):
             yield f"fold{k + 1}", df.index[f != k], df.index[f == k]
+    elif how == "family":
+        # Close paralogs are not independent: training on HXT1/2/3 and testing HXT7 asks the
+        # model to recognise a protein it has nearly seen. Holding out the whole family is
+        # the split that supports a claim about a protein the model has not met.
+        if "family" not in df.columns:
+            raise ValueError("split 'family' needs a 'family' column (see assign_families)")
+        for g in sorted(df.family.unique()):
+            m = df.family == g
+            if m.sum() and (~m).sum():
+                yield str(g), df.index[~m], df.index[m]
     elif how == "segment":
         tm = df.seg_type == "TM"
         yield "train_nonTM_test_TM", df.index[~tm], df.index[tm]
@@ -252,3 +264,82 @@ def default_models(df: pd.DataFrame) -> list:
         ms.append(ScoreColumn("esm1v", sign="auto"))
         ms.append(Baseline("gbm", features=list(FEATURES) + ["esm1v"], name="features+esm1v_gbm"))
     return ms
+
+
+# -------------------------------------------------------------- paralog groups
+def assign_families(seqs: dict[str, str], threshold: float = 0.40) -> dict[str, str]:
+    """Group datasets whose sequences are at least `threshold` identical.
+
+    Leave-one-protein-out quietly becomes leave-nothing-out when the set contains close
+    paralogs, so the groups are derived from the sequences rather than from the names:
+    a name can be misleading, and 40% identity over a global alignment is comfortably
+    above what unrelated membrane transporters reach by chance.
+    """
+    from Bio import Align
+    ids = sorted(seqs)
+    al = Align.PairwiseAligner(scoring="blastp", mode="global")
+    parent = {i: i for i in ids}
+
+    def find(a):
+        while parent[a] != a:
+            parent[a] = parent[parent[a]]
+            a = parent[a]
+        return a
+
+    ident = {}
+    for i, a in enumerate(ids):
+        for b in ids[i + 1:]:
+            sa, sb = seqs[a], seqs[b]
+            if not sa or not sb:
+                continue
+            aln = al.align(sa, sb)[0]
+            same = sum(x == y for x, y in zip(*[str(r) for r in (aln[0], aln[1])]) if x != "-")
+            frac = same / max(1, min(len(sa), len(sb)))
+            ident[(a, b)] = frac
+            if frac >= threshold:
+                parent[find(a)] = find(b)
+    groups: dict[str, list] = {}
+    for i in ids:
+        groups.setdefault(find(i), []).append(i)
+    out = {}
+    for members in groups.values():
+        label = "+".join(sorted(members)) if len(members) > 1 else members[0]
+        for m in members:
+            out[m] = label
+    return out, ident
+
+
+def learning_curve(df: pd.DataFrame, model_factory, group: str = "family",
+                   repeats: int = 5, seed: int = 0) -> pd.DataFrame:
+    """How much does another training protein buy? Held-out group, growing training set.
+
+    For each held-out group and each training size k, k other groups are drawn at random,
+    the model is fitted on them and scored on the held-out one. This is the number that
+    says whether measuring a twelfth protein would help or whether the curve has flattened.
+    """
+    rng = np.random.default_rng(seed)
+    d = df.reset_index(drop=True)
+    if group not in d.columns:
+        raise ValueError(f"learning_curve needs a {group!r} column")
+    groups = sorted(d[group].unique())
+    rows = []
+    for held in groups:
+        others = [g for g in groups if g != held]
+        test = d[d[group] == held]
+        if len(test) < 50 or not others:
+            continue
+        for k in range(1, len(others) + 1):
+            draws = 1 if k == len(others) else repeats
+            for r in range(draws):
+                pick = list(rng.choice(others, size=k, replace=False))
+                train = d[d[group].isin(pick)]
+                m = model_factory()
+                try:
+                    m.fit(train)
+                    met = metrics(test.score_z, np.asarray(m.predict(test), float))
+                except Exception as e:
+                    met = {"error": f"{type(e).__name__}: {e}"[:80]}
+                met.update(held_out=held, k_train_groups=k, repeat=r,
+                           n_train=len(train), model=getattr(m, "name", "model"))
+                rows.append(met)
+    return pd.DataFrame(rows)

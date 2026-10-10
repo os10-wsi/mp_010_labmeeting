@@ -170,7 +170,13 @@ def bench_main(argv=None):
     warnings.filterwarnings("ignore", message=".*(Glyph|singular|boundary|No artists).*")
     ap = argparse.ArgumentParser(prog="python -m mpdms bench")
     ap.add_argument("configs", nargs="+")
-    ap.add_argument("--split", default="protein", choices=["protein", "position", "random", "segment"])
+    ap.add_argument("--split", default="protein",
+                    choices=["protein", "family", "position", "random", "segment"])
+    ap.add_argument("--family-threshold", type=float, default=0.40,
+                    help="sequence identity at or above which two datasets are one family "
+                         "(leave-one-protein-out leaks when close paralogs are present)")
+    ap.add_argument("--learning-curve", action="store_true",
+                    help="also ask how performance grows with the number of training families")
     ap.add_argument("--folds", type=int, default=5)
     ap.add_argument("--scores", action="append", default=[],
                     help="NAME=path.csv with columns uniprot|gene,pos,mut,score (repeatable)")
@@ -182,7 +188,20 @@ def bench_main(argv=None):
     ap.add_argument("--outdir", default=None)
     a = ap.parse_args(argv)
 
-    feats = build(_load(a.configs))
+    loaded = _load(a.configs)
+    feats = build(loaded)
+    from .config import protein_sequence
+    seqs = {cfg.id: (protein_sequence(cfg) or "") for _, cfg in loaded}
+    fam, ident = B.assign_families(seqs, a.family_threshold)
+    feats["family"] = feats.dataset_id.map(fam).fillna(feats.dataset_id)
+    shared = {k: v for k, v in fam.items() if v != k}
+    if shared:
+        print("paralog groups (>= {:.0%} identity):".format(a.family_threshold))
+        for lab in sorted(set(shared.values())):
+            print(f"  {lab}")
+        if a.split == "protein":
+            print("  NOTE: --split protein holds out one of these at a time while its "
+                  "relatives stay in training, which flatters the score. Use --split family.")
     models = B.default_models(feats)
     sign = a.scores_sign if a.scores_sign == "auto" else float(a.scores_sign)
     for spec in a.scores:
@@ -208,6 +227,29 @@ def bench_main(argv=None):
     print(f"\n{a.split} split:")
     print(summ[["model", "spearman_mean", "spearman_std"]
                + [c for c in ("auroc_deleterious_mean",) if c in summ]].to_string(index=False))
+
+    if a.learning_curve:
+        import matplotlib.pyplot as plt
+        # the curve is about how much training data helps, so it needs a model that learns
+        fitted = [m for m in models if isinstance(m, B.Baseline)]
+        best = max(fitted, key=lambda m: ("esm1v" in m.name, m.kind == "gbm"))
+        lc = B.learning_curve(
+            feats, lambda: B.Baseline(best.kind, features=list(best.features), name=best.name),
+            group="family")
+        lc.to_csv(out / "tables" / "learning_curve.csv", index=False)
+        if "spearman" in lc:
+            g = lc.groupby("k_train_groups").spearman.agg(["mean", "std", "size"]).reset_index()
+            fig, ax = plt.subplots(figsize=(4.6, 3.2), layout="constrained")
+            ax.errorbar(g.k_train_groups, g["mean"], yerr=g["std"], fmt="-o", ms=4,
+                        lw=1.3, color=P.INK, capsize=0)
+            ax.set_xlabel("Training families")
+            ax.set_ylabel("Spearman on the held-out family")
+            ax.set_xticks(g.k_train_groups)
+            ax.set_title(f"Does another protein help? ({best.name})", loc="left", fontsize=9)
+            P.save(fig, out, "learning_curve", None, "BENCH")
+            plt.close(fig)
+            print("\nlearning curve (held-out family):")
+            print(g.to_string(index=False))
 
     for ext in a.external:  # transfer to DMS the models never saw
         cfg_path, _, csv = ext.partition("=")
