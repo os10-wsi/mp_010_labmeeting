@@ -252,11 +252,16 @@ def save(fig, outdir: Path, name: str, cfg=None, analysis: str = "") -> list[Pat
 FIT_RED = "#D6273D"
 
 
-def density_by_class(ax, groups: dict, fill: float = 0.12, lw: float = 1.1, colors: dict | None = None):
+def density_by_class(ax, groups: dict, fill: float = 0.12, lw: float = 1.1, colors: dict | None = None,
+                     counts: bool = True):
     """Overlaid KDE curves, one per variant class (Fig 1d / 4a idiom).
 
     Falls back to a step histogram for a group too small or too degenerate to take a
     kernel estimate, so a thin class never silently disappears from the panel.
+
+    `counts=False` leaves the n out of the labels, for a figure whose panels share one
+    legend: a count drawn from whichever panel supplied the handles would misdescribe
+    the other seven.
     """
     from scipy import stats as _ss
     colors = colors or CLASS_COLORS
@@ -270,7 +275,7 @@ def density_by_class(ax, groups: dict, fill: float = 0.12, lw: float = 1.1, colo
         if len(v) < 2:
             continue
         c = colors.get(name, INK)
-        label = f"{CLASS_LABELS.get(name, name)} (n = {len(v):,})"
+        label = CLASS_LABELS.get(name, name) + (f" (n = {len(v):,})" if counts else "")
         if np.ptp(v) < 1e-9:
             ax.axvline(float(v[0]), color=c, lw=lw, label=label)
             continue

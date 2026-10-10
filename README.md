@@ -196,6 +196,31 @@ over the accession and mutation columns identifies the protein from its sequence
 mutation strings carry their wild-type residues — and the answer is written back to
 `protein.uniprot`, so every later run is a single filtering pass.
 
+### All proteins in one figure
+
+```bash
+python -m mpdms panel configs/AQR1_fitness.yaml configs/HXT1.yaml ... --only a01,a05,a05b,a06,a15,a22a,a22b
+```
+
+One figure per analysis with one panel per protein, in `outputs/_panels/`. Each panel is
+drawn by the analysis's own code, so a panel here and the single-protein figure cannot
+drift apart. Axis limits, colour scales and the legend are shared across the panels of a
+figure — eight panels that each auto-scaled to their own data are the fastest way to read
+a difference that is not there. A protein that cannot supply an analysis (no ESM table, no
+topology) gets a panel saying so and keeps its place in the grid.
+
+| key | one panel per protein shows |
+|---|---|
+| `a01` | score distributions by variant class |
+| `a05` | standardised physicochemical coefficients, TM vs rest |
+| `a05b` | the TM − rest substitution matrix, on one colour scale |
+| `a06` | charge introduced across the membrane, both orientations pooled |
+| `a15` | abundance vs ESM-1v with the functional sites picked out |
+| `a22a` | missense fitness by topology class |
+| `a22b` | missense fitness per transmembrane helix |
+
+`--ncols` overrides the layout and `--style default` adds the figure title back.
+
 ### A whole folder at once
 
 A folder of DiMSum output, straight from the pipeline:

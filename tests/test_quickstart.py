@@ -118,3 +118,27 @@ def test_hxt2_wild_types_match_the_recovered_sequence():
     entries = load_literature("HXT2")["measured"]
     ok, bad = check_numbering(entries, seq)
     assert not bad and len(ok) == 9
+
+
+def test_a_different_sequence_for_the_same_gene_is_not_swapped_in_silently(tmp_path, monkeypatch, capsys):
+    """Every config for a gene points at one fasta; replacing it renumbers finished work."""
+    import pandas as pd
+    import mpdms.quickstart as Q
+
+    monkeypatch.setattr(Q, "REPO_ROOT", tmp_path)
+    ext = tmp_path / "data" / "external" / "GENEX"
+    ext.mkdir(parents=True)
+    (ext / "GENEX.fasta").write_text(">GENEX\nMKKKKKKKKKKKKKKKKKKKK\n")
+    (tmp_path / "configs").mkdir()
+
+    seq = "MAAAAAAAAAAAAAAAAAAAA"
+    rows = [{"Pos": p, "WT_AA": seq[p - 1], "Mut": "G", "aa_seq": seq[:p - 1] + "G" + seq[p:],
+             "fitness": -0.3, "sigma": 0.1} for p in range(2, len(seq) + 1)]
+    src = tmp_path / "fitness_singles_genex.txt"
+    pd.DataFrame(rows).to_csv(src, sep="\t", index=False)
+
+    Q.build(src, "GENEX", None, 0)
+    out = capsys.readouterr().out
+    assert "already held a DIFFERENT sequence" in out
+    assert (ext / "GENEX.fasta.previous").read_text().split("\n")[1].startswith("MKKK")
+    assert (ext / "GENEX.fasta").read_text().split("\n")[1] == seq

@@ -156,6 +156,20 @@ def build(src: Path, gene: str, structure: Path | None, min_reads: int,
     if cols.get("aa_seq"):
         seq, info = wt_sequence(raw, cols["position"], cols["wt_aa"], cols["mut_aa"], cols["aa_seq"])
         if info["ok"]:
+            # Every config for this gene points at this one file, and the literature sites
+            # are checked against it. Replacing it with a different sequence would silently
+            # renumber work that is already done, so say so and keep a copy of the old one.
+            if fasta.exists():
+                was = "".join(fasta.read_text().split("\n")[1:]).strip()
+                if was and was != seq:
+                    bak = fasta.with_suffix(".fasta.previous")
+                    bak.write_text(f">{gene}\n{was}\n")
+                    same = sum(a == b for a, b in zip(was, seq))
+                    say(WARN, f"{fasta.name} already held a DIFFERENT sequence "
+                              f"({len(was)} residues, {same / max(len(was), 1):.0%} identical to the "
+                              f"new {len(seq)}). Overwriting it; the old one is in {bak.name}. "
+                              f"Any existing {gene} config and its residue numbering now refer "
+                              "to the new sequence")
             fasta.write_text(f">{gene}\n{seq}\n")
             say(TICK, f"wild-type sequence recovered from aa_seq: {info['length']} residues, "
                       f"{info['agreement']:.0%} of {info['rows_checked']} rows agree")

@@ -3,9 +3,10 @@ import sys
 
 
 def main():
-    if len(sys.argv) < 2 or sys.argv[1] not in ("init", "run", "helix", "esm", "validate", "bench", "family", "tmhmm", "report", "quickstart", "batch"):
+    if len(sys.argv) < 2 or sys.argv[1] not in ("init", "run", "helix", "esm", "validate", "bench", "family", "tmhmm", "report", "quickstart", "batch", "panel"):
         sys.exit("usage: python -m mpdms quickstart <fitness_file> --gff3 <file>   (start here)"
                  " | python -m mpdms batch <folder_of_dimsum_output>"
+                 " | python -m mpdms panel configs/*.yaml --only a01,a15"
                  " | python -m mpdms init <dms_folder>... | python -m mpdms run [configs/*.yaml] [--only a01,a02]"
                  " | python -m mpdms helix configs/A.yaml configs/B.yaml ..."
                  " | python -m mpdms esm configs/A.yaml ... [--models 1,2,3,4,5]"
@@ -19,6 +20,8 @@ def main():
         from .quickstart import main as m
     elif cmd == "batch":
         from .batch import main as m
+    elif cmd == "panel":
+        from .multipanel import main as m
     elif cmd == "init":
         from .init_dataset import main as m
     elif cmd == "report":
