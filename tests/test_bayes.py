@@ -5,6 +5,7 @@ matplotlib.use("Agg")
 import numpy as np
 import pandas as pd
 import pytest
+from scipy import stats as ss
 
 from mpdms.bayes import (column_frame, coverage, hierarchical_normal,
                          log_predictive_density, pool_columns, predict_held_out,
@@ -181,3 +182,59 @@ def test_a_bad_family_member_is_named_rather_than_crashing_in_the_loader(tmp_pat
         with pytest.raises(SystemExit) as e:
             main(["--family", spec, "--outdir", str(tmp_path / "out")])
         assert needle in str(e.value)
+
+
+def _long_seg(n_col=80, seed=0, squash=1.0):
+    """Four proteins; `squash` shrinks what the first three see, so the pooled prediction
+    is systematically compressed relative to the held-out fourth."""
+    r = np.random.default_rng(seed)
+    truth = r.normal(0, 0.6, n_col)
+    seg = np.where(np.arange(n_col) % 3 == 0, "TM", "loop")
+    rows = []
+    for i, p in enumerate(("P1", "P2", "P3", "P4")):
+        t = truth if p == "P4" else truth * squash
+        for c in range(n_col):
+            rows.append({"col": c + 1, "protein": p, "pos": c + 1, "seg_type": seg[c],
+                         "y": t[c] + r.normal(0, 0.08), "s": 0.08, "n": 19})
+    return pd.DataFrame(rows)
+
+
+def test_calibration_slope_is_one_when_the_family_predicts_the_scale_too():
+    long = _long_seg(seed=5, squash=1.0)
+    sc = score_predictions(predict_held_out(long, "P4"), float(long.y.mean()))
+    assert sc["calibration_slope"] == pytest.approx(1.0, abs=0.15)
+
+
+def test_calibration_slope_catches_compressed_predictions():
+    """The failure that leaves the rank correlation high and the predictive density flat."""
+    long = _long_seg(seed=5, squash=0.4)
+    sc = score_predictions(predict_held_out(long, "P4"), float(long.y.mean()))
+    assert sc["spearman"] > 0.9                 # the ordering is still right
+    assert sc["calibration_slope"] > 1.5        # but the scale is wrong, and it shows
+    assert sc["pred_spread"] < sc["obs_spread"]
+
+
+def test_the_segment_baseline_is_harder_than_one_number():
+    """Knowing only TM-or-not already predicts something, so the alignment must beat it."""
+    long = _long_seg(seed=6)
+    pr = predict_held_out(long, "P4")
+    assert "pred_segment" in pr and pr.pred_segment.nunique() > 1
+    sc = score_predictions(pr, float(long.y.mean()))
+    assert "elpd_gain_over_segment" in sc
+    assert sc["elpd_gain_over_segment"] <= sc["elpd_gain"] + 1e-9
+
+
+def test_standardising_rescales_without_changing_the_ranking():
+    import pandas as _pd
+    from mpdms.bayes import position_estimates
+    r = np.random.default_rng(0)
+    df = _pd.DataFrame({"pos": np.repeat(np.arange(1, 41), 10),
+                        "mut": list("ACDEFGHIKL") * 40,
+                        "wt": "M", "vclass": "missense", "pass_filter": True,
+                        "seg_type": "TM",
+                        "score_z": r.normal(0, 0.5, 400)})
+    raw = position_estimates(df)
+    std = position_estimates(df, standardise=True)
+    assert np.allclose(ss.rankdata(raw.y), ss.rankdata(std.y))
+    assert np.std(std.y, ddof=1) == pytest.approx(1.0, abs=1e-6)
+    assert std.attrs["scale"] == pytest.approx(float(np.std(raw.y, ddof=1)))

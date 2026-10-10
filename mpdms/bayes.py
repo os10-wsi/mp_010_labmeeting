@@ -156,14 +156,29 @@ MIN_VARIANTS = 6          # per position, before its mean is worth a standard er
 MIN_PROTEINS = 3          # per alignment column, before the family can be pooled
 
 
-def position_estimates(df: pd.DataFrame) -> pd.DataFrame:
-    """Each position's mean missense effect and the standard error of that mean."""
+def position_estimates(df: pd.DataFrame, standardise: bool = False) -> pd.DataFrame:
+    """Each position's mean missense effect, its standard error, and its segment type.
+
+    `standardise` divides a protein's position effects by their own spread before pooling.
+    Proteins measured on assays of different dynamic range otherwise enter the family model
+    on different scales, and the pooled mean ends up between them rather than describing
+    any of them.
+    """
     d = missense(df).dropna(subset=["score_z"])
     g = d.groupby("pos").score_z.agg(["mean", "std", "size"])
     g = g[g["size"] >= MIN_VARIANTS]
-    return pd.DataFrame({"pos": g.index, "y": g["mean"].to_numpy(),
-                         "s": (g["std"] / np.sqrt(g["size"])).to_numpy(),
-                         "n": g["size"].to_numpy()}).query("s > 0")
+    seg = (d.groupby("pos").seg_type.agg(lambda v: v.mode().iloc[0] if len(v.mode()) else None)
+           if "seg_type" in d.columns else pd.Series(index=g.index, dtype=object))
+    y = g["mean"].to_numpy()
+    se = (g["std"] / np.sqrt(g["size"])).to_numpy()
+    scale = 1.0
+    if standardise:
+        scale = float(np.nanstd(y, ddof=1)) or 1.0
+        y, se = y / scale, se / scale
+    out = pd.DataFrame({"pos": g.index, "y": y, "s": se, "n": g["size"].to_numpy(),
+                        "seg_type": seg.reindex(g.index).to_numpy()})
+    out.attrs["scale"] = scale
+    return out.query("s > 0")
 
 
 def column_frame(aln: pd.DataFrame, est: dict) -> pd.DataFrame:
@@ -176,7 +191,9 @@ def column_frame(aln: pd.DataFrame, est: dict) -> pd.DataFrame:
         m = aln[["col", c]].dropna()
         m = m.assign(pos=m[c].astype(int)).merge(e, on="pos", how="inner")
         m["protein"] = g
-        rows.append(m[["col", "protein", "pos", "y", "s", "n"]])
+        if "seg_type" not in m:
+            m["seg_type"] = None
+        rows.append(m[["col", "protein", "pos", "y", "s", "n", "seg_type"]])
     return pd.concat(rows, ignore_index=True) if rows else pd.DataFrame()
 
 
@@ -187,7 +204,9 @@ def pool_columns(long: pd.DataFrame, min_proteins: int = MIN_PROTEINS) -> pd.Dat
         if len(g) < min_proteins:
             continue
         r = hierarchical_normal(g.y.to_numpy(), g.s.to_numpy(), seed=int(col))
-        rows.append({"col": int(col), "J": r["J"], "mu": r["mu_mean"], "mu_sd": r["mu_sd"],
+        seg = g.seg_type.dropna() if "seg_type" in g else pd.Series(dtype=object)
+        rows.append({"col": int(col), "seg_type": (seg.mode().iloc[0] if len(seg) else None),
+                     "J": r["J"], "mu": r["mu_mean"], "mu_sd": r["mu_sd"],
                      "mu_lo": r["mu_lo"], "mu_hi": r["mu_hi"], "tau": r["tau_median"],
                      "tau_hi": r.get("tau_hi", np.nan), "pred_sd": r["pred_sd"],
                      "shrinkage": r.get("shrinkage", np.nan),
@@ -212,22 +231,49 @@ def predict_held_out(long: pd.DataFrame, held: str, min_proteins: int = 2) -> pd
         r = hierarchical_normal(g.y.to_numpy(), g.s.to_numpy(), seed=int(col))
         rows.append({"col": int(col), "pos": int(t.pos), "observed": float(t.y),
                      "obs_se": float(t.s), "pred": r["mu_mean"], "mu_sd": r["mu_sd"],
-                     "tau": r["tau_median"], "n_train": r["J"]})
+                     "tau": r["tau_median"], "n_train": r["J"],
+                     "seg_type": (t.seg_type if "seg_type" in t.index else None)})
     out = pd.DataFrame(rows)
     if len(out):
         out["lpd"] = log_predictive_density(out.observed, out.obs_se, out.pred,
                                             out.mu_sd, out.tau)
+        # what the rest of the family says about this column's segment type alone: knowing
+        # only "transmembrane or not" is a much harder baseline than one number, and it is
+        # the one that decides whether the alignment carries POSITIONAL information.
+        # Topology is not always in the config, so this baseline is optional.
+        if "seg_type" in rest and rest.seg_type.notna().any():
+            seg_mu = rest.dropna(subset=["seg_type"]).groupby("seg_type").y.mean()
+            out["pred_segment"] = out.seg_type.map(seg_mu).fillna(float(rest.y.mean()))
     return out
 
 
 def score_predictions(pred: pd.DataFrame, baseline: float) -> dict:
-    """Correlation, density and calibration, against predicting one number for everything."""
+    """Correlation, density, calibration, and whether the predictions are compressed.
+
+    The slope of observed on predicted is the diagnostic that separates two very different
+    failures. A slope near 1 with a low correlation means the model is simply uncertain. A
+    slope well below 1 means it ranks positions correctly but squashes them toward the
+    family average, which is what shrinkage does when the per-position measurements are
+    noisy, and it destroys the predictive density while leaving the rank correlation
+    looking respectable.
+    """
     if len(pred) < 10:
         return {"n": int(len(pred))}
-    base_lpd = log_predictive_density(
-        pred.observed, pred.obs_se, baseline,
-        0.0, float(np.std(pred.observed, ddof=1)))
-    return {"n": int(len(pred)),
+    spread = float(np.std(pred.observed, ddof=1))
+    base_lpd = log_predictive_density(pred.observed, pred.obs_se, baseline, 0.0, spread)
+    slope = np.nan
+    if np.ptp(pred.pred) > 0:
+        slope = float(np.polyfit(pred.pred, pred.observed, 1)[0])
+    seg = {}
+    if "pred_segment" in pred and pred.pred_segment.notna().any():
+        seg_lpd = log_predictive_density(pred.observed, pred.obs_se, pred.pred_segment,
+                                         0.0, spread)
+        seg["elpd_segment"] = float(np.mean(seg_lpd))
+        seg["elpd_gain_over_segment"] = float(pred.lpd.mean() - np.mean(seg_lpd))
+        if np.ptp(pred.pred_segment) > 0:
+            seg["spearman_segment"] = float(ss.spearmanr(pred.observed, pred.pred_segment)[0])
+    return {"n": int(len(pred)), "calibration_slope": slope,
+            "pred_spread": float(np.std(pred.pred, ddof=1)), "obs_spread": spread, **seg,
             "spearman": float(ss.spearmanr(pred.observed, pred.pred)[0]),
             "pearson": float(ss.pearsonr(pred.observed, pred.pred)[0]),
             "elpd": float(pred.lpd.mean()),
@@ -245,6 +291,11 @@ def figure_family(name: str, cols: pd.DataFrame, long: pd.DataFrame, outdir: Pat
     fig, axes = plt.subplots(3, 1, figsize=(10.0, 6.2), sharex=True, layout="constrained",
                              gridspec_kw={"height_ratios": [1.5, 0.8, 0.5]})
     c = cols.sort_values("col")
+    for ax in axes:
+        if "seg_type" in c and c.seg_type.notna().any():   # the membrane, on every panel
+            tm = (c.seg_type == "TM").to_numpy()
+            ax.fill_between(c.col, 0, 1, where=tm, transform=ax.get_xaxis_transform(),
+                            color=P.TM_GREY, lw=0, zorder=0, step="mid")
     ax = axes[0]
     ax.fill_between(c.col, c.mu_lo, c.mu_hi, color="#2F6DB5", alpha=0.25, lw=0,
                     label="95% credible interval for the family mean")
@@ -252,8 +303,8 @@ def figure_family(name: str, cols: pd.DataFrame, long: pd.DataFrame, outdir: Pat
     ax.axhline(0, color=P.MUTED, lw=0.6)
     ax.set_ylabel("Pooled position effect")
     ax.legend(frameon=False, fontsize=6.5, loc="lower right", ncol=2)
-    ax.set_title(f"(a) {name}: what the family shares at each aligned position",
-                 loc="left", fontsize=9)
+    ax.set_title(f"(a) {name}: what the family shares at each aligned position "
+                 f"(grey = transmembrane)", loc="left", fontsize=9)
     ax = axes[1]
     ax.fill_between(c.col, 0, c.tau, color="#C0392B", alpha=0.35, lw=0)
     ax.plot(c.col, c.tau, lw=0.7, color="#C0392B")
@@ -298,7 +349,39 @@ def figure_predictive(name: str, scores: pd.DataFrame, outdir: Path):
     plt.close(fig)
 
 
-def run_family(name: str, members: list[str], outdir: Path, min_proteins: int) -> dict:
+def figure_diagnostic(name: str, preds: pd.DataFrame, scores: pd.DataFrame, outdir: Path):
+    """Predicted against observed for each held-out protein, with the compression visible."""
+    held = sorted(preds.held_out.unique())
+    n = len(held)
+    fig, axes = plt.subplots(1, n, figsize=(2.5 * n + 0.6, 2.9), layout="constrained",
+                             squeeze=False)
+    sc = scores.set_index("held_out")
+    lo = float(min(preds.observed.min(), preds.pred.min()))
+    hi = float(max(preds.observed.max(), preds.pred.max()))
+    for ax, h in zip(axes[0], held):
+        g = preds[preds.held_out == h]
+        ax.scatter(g.pred, g.observed, s=5, color=P.INK, alpha=0.35, lw=0)
+        ax.plot([lo, hi], [lo, hi], color=P.MUTED, lw=0.8, ls=(0, (3, 3)))
+        if np.ptp(g.pred) > 0:
+            b, a = np.polyfit(g.pred, g.observed, 1)
+            xs = np.array([g.pred.min(), g.pred.max()])
+            ax.plot(xs, a + b * xs, color=P.FIT_RED, lw=1.4)
+        r = sc.loc[h] if h in sc.index else {}
+        ax.set_title(f"{h}\nρ = {r.get('spearman', float('nan')):.2f}, "
+                     f"slope = {r.get('calibration_slope', float('nan')):.2f}",
+                     loc="left", fontsize=7.5)
+        ax.set_xlabel("Predicted by the rest of the family", fontsize=7)
+        ax.set_xlim(lo, hi); ax.set_ylim(lo, hi)
+    axes[0][0].set_ylabel("Observed")
+    fig.suptitle("Dashed = perfect prediction; red = the fit. A red line flatter than the "
+                 "dashed one means the family ranks the positions but squashes them.",
+                 fontsize=7, x=0.01, ha="left")
+    P.save(fig, outdir, f"b03_{name}_calibration", None, "B03")
+    plt.close(fig)
+
+
+def run_family(name: str, members: list[str], outdir: Path, min_proteins: int,
+               standardise: bool = False) -> dict:
     cfgs = {}
     for c in members:
         cfg = load_config(Path(c))
@@ -310,7 +393,7 @@ def run_family(name: str, members: list[str], outdir: Path, min_proteins: int) -
     if len(seqs) < 2:
         return {"status": "skipped", "reason": "a family needs at least two proteins"}
     aln = align_sequences(seqs)
-    est = {i: position_estimates(load_dataset(c)) for i, c in cfgs.items()}
+    est = {i: position_estimates(load_dataset(c), standardise) for i, c in cfgs.items()}
     long = column_frame(aln, est)
     if not len(long):
         return {"status": "skipped", "reason": "no measured position maps onto the alignment"}
@@ -335,9 +418,11 @@ def run_family(name: str, members: list[str], outdir: Path, min_proteins: int) -
         preds.append(pr)
     scores = pd.DataFrame(rows)
     if len(scores) and "spearman" in scores:
+        allp = pd.concat(preds, ignore_index=True)
         scores.to_csv(outdir / f"{name}_predictive.csv", index=False)
-        pd.concat(preds, ignore_index=True).to_csv(outdir / f"{name}_predictions.csv", index=False)
+        allp.to_csv(outdir / f"{name}_predictions.csv", index=False)
         figure_predictive(name, scores, outdir)
+        figure_diagnostic(name, allp, scores, outdir)
     return {"status": "ok", "method": aln.attrs.get("method", "?"),
             "n_proteins": len(seqs), "n_columns": int(len(cols)),
             "median_tau": float(cols.tau.median()),
@@ -361,6 +446,9 @@ def main(argv=None):
                     help="one family per flag, e.g. PF07690=configs/AQR1.yaml,configs/QDR2.yaml")
     ap.add_argument("--min-proteins", type=int, default=MIN_PROTEINS,
                     help="proteins a column needs before it is pooled (default 3)")
+    ap.add_argument("--standardise", action="store_true",
+                    help="scale each protein's position effects by their own spread before "
+                         "pooling, so assays of different dynamic range are comparable")
     ap.add_argument("--style", default="paper", choices=["default", "paper"])
     ap.add_argument("--outdir", default=str(OUT))
     a = ap.parse_args(argv)
@@ -385,17 +473,23 @@ def main(argv=None):
             raise SystemExit(f"--family {name}: listed twice: {', '.join(dup)}")
         print(f"\n== {name}: {len(members)} proteins", flush=True)
         try:
-            r = run_family(name, members, outdir, a.min_proteins)
+            r = run_family(name, members, outdir, a.min_proteins, a.standardise)
         except Exception as e:
             r = {"status": "error", "reason": f"{type(e).__name__}: {e}"}
         out[name] = r
         print(f"  {r['status']}: {r.get('headline') or r.get('reason', '')}", flush=True)
         for s in r.get("scores", []):
-            print(f"    held out {s['held_out']:<16} ρ = {s.get('spearman', float('nan')):+.2f}  "
-                  f"elpd {s.get('elpd', float('nan')):+.2f} "
-                  f"({s.get('elpd_gain', float('nan')):+.2f} vs one number)  "
-                  f"50/90% coverage {s.get('coverage_50', float('nan')):.0%}/"
+            print(f"    held out {s['held_out']:<14} ρ {s.get('spearman', float('nan')):+.2f}"
+                  f"  slope {s.get('calibration_slope', float('nan')):+.2f}"
+                  f"  elpd gain {s.get('elpd_gain', float('nan')):+.2f} vs one number,"
+                  f" {s.get('elpd_gain_over_segment', float('nan')):+.2f} vs TM/loop"
+                  f"  cover {s.get('coverage_50', float('nan')):.0%}/"
                   f"{s.get('coverage_90', float('nan')):.0%}", flush=True)
+        sl = [s.get("calibration_slope", np.nan) for s in r.get("scores", [])]
+        if sl and np.nanmean(sl) < 0.75:
+            print(f"    NOTE: mean calibration slope {np.nanmean(sl):.2f} - the family ranks "
+                  "positions better than it places them; the predictions are compressed "
+                  "toward the family average, which is what costs the predictive density")
     (outdir / "bayes.json").write_text(json.dumps(out, indent=2, default=str))
     try:
         shown = outdir.resolve().relative_to(REPO_ROOT)
