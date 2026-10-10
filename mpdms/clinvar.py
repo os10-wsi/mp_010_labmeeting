@@ -175,6 +175,54 @@ def family_with_queries(members: list[str], queries: dict[str, str], min_protein
     return cols, maps, aln, long
 
 
+def column_conservation(aln: pd.DataFrame, members: list[str]) -> pd.DataFrame:
+    """Per column, how conserved the measured proteins' residues are.
+
+    This is the control the whole comparison turns on. A conserved column is both where the
+    yeast data says the position matters and where human pathogenic variants sit, so a
+    constraint score that merely tracks conservation has rediscovered conservation. One
+    minus the normalised Shannon entropy of the aligned residues: 1 when every member
+    carries the same amino acid, 0 when they are maximally mixed.
+    """
+    rows = []
+    for r in aln.itertuples(index=False):
+        aas = [getattr(r, f"{m}_aa") for m in members if hasattr(r, f"{m}_aa")]
+        aas = [a for a in aas if isinstance(a, str) and a not in ("-", "")]
+        if len(aas) < 2:
+            rows.append({"col": int(r.col), "conservation": np.nan, "n_aa": len(aas)})
+            continue
+        v = pd.Series(aas).value_counts(normalize=True)
+        h = float(-(v * np.log(v)).sum())
+        rows.append({"col": int(r.col), "n_aa": len(aas),
+                     "conservation": 1.0 - h / np.log(len(aas))})
+    return pd.DataFrame(rows)
+
+
+def conservation_control(scored: pd.DataFrame) -> dict:
+    """Does the yeast constraint add anything once conservation is accounted for?"""
+    from sklearn.linear_model import LogisticRegression
+    from sklearn.metrics import roc_auc_score
+    d = scored.dropna(subset=["mu", "conservation"])
+    y = (d.label == "pathogenic").to_numpy()
+    if y.sum() < 5 or (~y).sum() < 5 or len(d) < 30:
+        return {"reason": "too few variants with both a pooled column and a conservation value"}
+    mu = -d.mu.to_numpy()
+    cons = d.conservation.to_numpy()
+    out = {"n": int(len(d)), "auroc_abundance": float(roc_auc_score(y, mu)),
+           "auroc_conservation": float(roc_auc_score(y, cons)),
+           "corr_abundance_conservation": float(ss.spearmanr(mu, cons)[0])}
+    X = np.column_stack([(mu - mu.mean()) / (mu.std() or 1),
+                         (cons - cons.mean()) / (cons.std() or 1)])
+    m = LogisticRegression(max_iter=2000).fit(X, y)
+    out["auroc_both"] = float(roc_auc_score(y, m.decision_function(X)))
+    out["coef_abundance"] = float(m.coef_[0][0])
+    out["coef_conservation"] = float(m.coef_[0][1])
+    # the decisive number: abundance scored after conservation has had its say
+    resid = mu - np.polyval(np.polyfit(cons, mu, 1), cons)
+    out["auroc_abundance_given_conservation"] = float(roc_auc_score(y, resid))
+    return out
+
+
 def evaluate(scored: pd.DataFrame, score: str = "mu") -> dict:
     """AUROC of the yeast constraint for pathogenic against benign, with a bootstrap CI."""
     from sklearn.metrics import roc_auc_score
@@ -354,6 +402,8 @@ def run_one(name, members, seqs, cv, min_proteins, outdir):
                        seg_type=c.get("seg_type"))
         rows.append(rec)
     scored = pd.DataFrame(rows)
+    cons = column_conservation(aln, sorted(long.protein.unique()))
+    scored = scored.merge(cons, on="col", how="left")
     mism = int((~scored.wt_matches_uniprot).sum())
     if mism:
         print(f"    WARNING: {mism:,} variants whose wild-type residue does not match the "
@@ -365,6 +415,7 @@ def run_one(name, members, seqs, cv, min_proteins, outdir):
 
     scored.to_csv(outdir / f"{name}_scored_variants.csv", index=False)
     res = evaluate(scored)
+    res["conservation_control"] = conservation_control(scored)
     per = []
     for g, gg in scored.groupby("gene"):
         r = evaluate(gg)
@@ -398,6 +449,23 @@ def run_one(name, members, seqs, cv, min_proteins, outdir):
               f"{res['n']:,} variants ({res['variants_per_position']:.1f} per position): "
               "this is a position score, so that ratio is the ceiling on what it can "
               "resolve")
+        cc = res.get("conservation_control", {})
+        if "auroc_abundance" in cc:
+            print(f"  conservation control (n = {cc['n']:,}):")
+            print(f"    yeast abundance alone        AUROC {cc['auroc_abundance']:.3f}")
+            print(f"    column conservation alone    AUROC {cc['auroc_conservation']:.3f}")
+            print(f"    both together                AUROC {cc['auroc_both']:.3f}")
+            print(f"    abundance after conservation AUROC "
+                  f"{cc['auroc_abundance_given_conservation']:.3f}"
+                  "   <- what abundance adds that conservation does not")
+            print(f"    they correlate at rho = {cc['corr_abundance_conservation']:+.2f}; "
+                  f"standardised coefficients: abundance {cc['coef_abundance']:+.2f}, "
+                  f"conservation {cc['coef_conservation']:+.2f}")
+            if cc["auroc_abundance_given_conservation"] < 0.55:
+                print("    NOTE: once conservation is removed the abundance signal is close "
+                      "to chance, so this result is mostly conservation rediscovered")
+        else:
+            print(f"  conservation control: {cc.get('reason', 'not computed')}")
         for r in by_gene.itertuples():
             if np.isfinite(getattr(r, "auroc", np.nan)):
                 print(f"    {r.gene:<10} AUROC {r.auroc:.3f}  "

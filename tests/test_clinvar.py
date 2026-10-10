@@ -147,3 +147,56 @@ def test_the_variants_per_position_ratio_is_reported():
     d.loc[:, "pos"] = d.pos // 2                 # two variants per position
     r = evaluate(d)
     assert r["variants_per_position"] == pytest.approx(2.0, abs=0.01)
+
+
+def _with_cons(n=150, link=1.0, seed=0):
+    """Pathogenic variants sit at constrained columns; `link` sets how much of that
+    constraint is just conservation."""
+    r = np.random.default_rng(seed)
+    cons = r.random(2 * n)
+    base = np.concatenate([r.normal(-0.6, 0.3, n), r.normal(0.0, 0.3, n)])
+    mu = -(link * (cons - 0.5) * 1.6) + (1 - link) * base + r.normal(0, 0.05, 2 * n)
+    return pd.DataFrame({"gene": "G", "pos": np.arange(2 * n), "col": np.arange(2 * n),
+                         "label": ["pathogenic"] * n + ["benign"] * n,
+                         "mu": mu, "conservation": cons})
+
+
+def test_conservation_control_credits_abundance_when_it_is_independent():
+    from mpdms.clinvar import conservation_control
+    d = _with_cons(link=0.0, seed=1)
+    c = conservation_control(d)
+    assert c["auroc_abundance"] > 0.75
+    assert c["auroc_abundance_given_conservation"] > 0.7      # survives the control
+    assert abs(c["corr_abundance_conservation"]) < 0.2
+
+
+def test_conservation_control_exposes_a_signal_that_is_only_conservation():
+    """The failure this control exists to catch."""
+    from mpdms.clinvar import conservation_control
+    r = np.random.default_rng(2)
+    n = 150
+    cons = np.concatenate([r.normal(0.8, 0.12, n), r.normal(0.35, 0.12, n)]).clip(0, 1)
+    d = pd.DataFrame({"gene": "G", "pos": np.arange(2 * n), "col": np.arange(2 * n),
+                      "label": ["pathogenic"] * n + ["benign"] * n,
+                      "mu": -cons * 1.5 + r.normal(0, 0.02, 2 * n), "conservation": cons})
+    c = conservation_control(d)
+    assert c["auroc_abundance"] > 0.9                         # looks excellent
+    assert c["auroc_conservation"] > 0.9                      # so does conservation
+    assert abs(c["corr_abundance_conservation"]) > 0.9
+    assert c["auroc_abundance_given_conservation"] < 0.6      # and nothing is left
+
+
+def test_conservation_control_refuses_too_little_data():
+    from mpdms.clinvar import conservation_control
+    assert "reason" in conservation_control(_with_cons(n=4))
+
+
+def test_column_conservation_is_one_when_every_member_agrees():
+    from mpdms.clinvar import column_conservation
+    aln = pd.DataFrame({"col": [1, 2, 3],
+                        "A_aa": ["M", "K", "-"], "B_aa": ["M", "R", "L"],
+                        "C_aa": ["M", "W", "-"]})
+    c = column_conservation(aln, ["A", "B", "C"]).set_index("col")
+    assert c.loc[1, "conservation"] == pytest.approx(1.0)     # all M
+    assert c.loc[2, "conservation"] == pytest.approx(0.0)     # all different
+    assert np.isnan(c.loc[3, "conservation"])                 # only one residue present
