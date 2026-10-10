@@ -196,6 +196,25 @@ over the accession and mutation columns identifies the protein from its sequence
 mutation strings carry their wild-type residues — and the answer is written back to
 `protein.uniprot`, so every later run is a single filtering pass.
 
+### The smallest pooled model that still predicts
+
+```bash
+python -m mpdms ladder configs/*.yaml --split family
+```
+
+Features are added one at a time; at each step the one chosen is whichever most improves
+prediction on a protein family the model has not seen. The curve flattens where extra
+features stop buying anything, and that is the model worth writing down. The run prints the
+standardised equation, and `--no-esm` asks what the biophysics carries without ESM-1v.
+
+Ranking features by their separate correlations does not answer this question. The features
+are badly collinear - "in a TM helix", "WT is hydrophobic" and "local hydrophobicity" are
+largely one fact told three ways - so a strong marginal correlation says nothing about what
+a feature *adds*. And when the per-protein correlations disagree (high I2 in
+`mpdms univariate`), one pooled coefficient describes no protein in particular, so every
+coefficient is drawn with its per-protein refits beside it and a sign-agreement warning
+when they do not point the same way.
+
 ### Bayesian pooling across a family
 
 ```bash
