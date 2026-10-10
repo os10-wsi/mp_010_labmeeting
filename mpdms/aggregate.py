@@ -208,7 +208,7 @@ def g01_positive_inside(frames: dict, meta: pd.DataFrame, outdir: Path) -> dict:
     gs = fig.add_gridspec(2, 2, width_ratios=[1, 1.15], height_ratios=[1, 0.34])
     ax = fig.add_subplot(gs[:, 0])
     ph = per_helix.sort_values(["protein", "n_helix"])
-    pal = dict(zip(sorted(frames), plt.get_cmap("tab10").colors))
+    pal = dict(zip(sorted(frames), P.series_colors(len(frames))))
     forest(ax, (ph.protein.str.replace("_fitness", "", regex=False) + " " +
                 ph.helix.str.split(":").str[-1]).tolist(),
            ph.estimate, ph.estimate - 1.96 * ph.se, ph.estimate + 1.96 * ph.se,
@@ -284,7 +284,7 @@ def g02_depth_profile(frames: dict, meta: pd.DataFrame, outdir: Path) -> dict:
 
     fig = plt.figure(figsize=(10.6, 5.6), layout="constrained")
     gs = fig.add_gridspec(2, 3, height_ratios=[1, 0.34])
-    pal = dict(zip(sorted(frames), plt.get_cmap("tab10").colors))
+    pal = dict(zip(sorted(frames), P.series_colors(len(frames))))
     for k, (ch, lab) in enumerate((("acidic", "D/E introduced"), ("basic", "K/R introduced"))):
         ax = fig.add_subplot(gs[0, k])
         ax.axvspan(0, 1, color=P.TM_GREY, lw=0, zorder=0)
@@ -540,7 +540,7 @@ def g05_helix_position(frames: dict, meta: pd.DataFrame, outdir: Path) -> dict:
     fig = plt.figure(figsize=(10.2, 5.0), layout="constrained")
     gs = fig.add_gridspec(2, 2, width_ratios=[1.3, 1], height_ratios=[1, 0.34])
     ax = fig.add_subplot(gs[:, 0])
-    pal = dict(zip(sorted(frames), plt.get_cmap("tab10").colors))
+    pal = dict(zip(sorted(frames), P.series_colors(len(frames))))
     for name, g in by_helix.groupby("protein"):
         g = g.sort_values("n_helix")
         ax.plot(g.n_helix, g["median"], "-o", ms=3, lw=0.9, color=pal[name],

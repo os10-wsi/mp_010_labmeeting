@@ -211,16 +211,20 @@ def figure(scored: pd.DataFrame, res: dict, by_gene: pd.DataFrame, outdir: Path,
     ax = axes[0]
     groups = {"benign": d.loc[d.label == "benign", "mu"].to_numpy(),
               "pathogenic": d.loc[d.label == "pathogenic", "mu"].to_numpy()}
+    # benign and pathogenic are a status pair, not two arbitrary identities, so they keep
+    # a semantic green/red rather than two samples of a sequential ramp
     P.violin_box(ax, groups, colors={"benign": "#1B9E77", "pathogenic": "#C0392B"})
-    ax.set_xticks(range(2))
-    ax.set_xticklabels([f"benign\nn = {len(groups['benign']):,}",
-                        f"pathogenic\nn = {len(groups['pathogenic']):,}"], fontsize=7)
+    # violin_box already prints each median under its violin, so the counts go above;
+    # putting them in the tick labels lands them on top of the medians
+    for k, lab in enumerate(("benign", "pathogenic")):
+        ax.text(k, 1.01, f"n = {len(groups[lab]):,}", transform=ax.get_xaxis_transform(),
+                ha="center", va="bottom", fontsize=6.5, color=P.MUTED, clip_on=False)
     ax.set_ylabel("Yeast family constraint at that column (μ)")
     ax.set_title("(a) Where the variants sit", loc="left", fontsize=9)
     ax = axes[1]
     if "auroc" in res:
         fpr, tpr, _ = roc_curve((d.label == "pathogenic"), -d.mu)
-        ax.plot(fpr, tpr, lw=1.6, color="#1B4B80")
+        ax.plot(fpr, tpr, lw=2.0, color=P.SERIES[0])
         ax.text(0.97, 0.05, f"AUROC = {res['auroc']:.2f}\n"
                             f"[{res['auroc_lo']:.2f}, {res['auroc_hi']:.2f}]",
                 transform=ax.transAxes, ha="right", va="bottom", fontsize=7.5)
@@ -231,14 +235,17 @@ def figure(scored: pd.DataFrame, res: dict, by_gene: pd.DataFrame, outdir: Path,
     if len(by_gene):
         g = by_gene.dropna(subset=["auroc"]).sort_values("auroc")
         y = np.arange(len(g))
-        ax.barh(y, g.auroc, color="#1B4B80", height=0.6)
+        cm = P.sequential_cmap()
+        ax.barh(y, g.auroc, color=[cm(0.15 + 0.7 * v) for v in g.auroc], height=0.6)
         ax.errorbar(g.auroc, y, xerr=[g.auroc - g.auroc_lo, g.auroc_hi - g.auroc],
                     fmt="none", ecolor=P.INK, elinewidth=0.8)
         ax.set_yticks(y)
         ax.set_yticklabels([f"{r.gene}  ({int(r.n_pathogenic)}P/{int(r.n_benign)}B)"
                             for r in g.itertuples()], fontsize=6.5)
-        ax.axvline(0.5, color=P.MUTED, lw=0.8, ls=(0, (3, 3)))
+        ax.axvline(0.5, color=P.MUTED, lw=0.9, ls=(0, (3, 3)))
         ax.set_xlim(0, 1)
+        # one gene must not become a bar the height of the panel
+        ax.set_ylim(-0.8, max(len(g) - 0.2, 1.4))
         ax.set_xlabel("AUROC")
     ax.set_title("(c) Per gene", loc="left", fontsize=9)
     P.save(fig, outdir, f"c01_{name}_clinvar", None, "C01")
@@ -252,8 +259,9 @@ def main(argv=None):
     ap = argparse.ArgumentParser(
         prog="python -m mpdms clinvar",
         description="Test the family's abundance signal against ClinVar classifications.")
-    ap.add_argument("--family", required=True, metavar="NAME=cfg1,cfg2,...",
-                    help="the measured proteins to pool, as in `mpdms bayes`")
+    ap.add_argument("--family", action="append", required=True, metavar="NAME=cfg1,cfg2,...",
+                    help="the measured proteins to pool, as in `mpdms bayes`; repeatable, "
+                         "so a narrow and a broad family can be compared on the same variants")
     ap.add_argument("--human", action="append", required=True, metavar="GENE=ACCESSION",
                     help="a human member of the same family, e.g. SLC2A1=P11166 (repeatable)")
     ap.add_argument("--table", required=True,
@@ -265,17 +273,22 @@ def main(argv=None):
     a = ap.parse_args(argv)
     P.use_style(a.style)
 
-    name, _, members = a.family.partition("=")
-    members = [m.strip() for m in members.split(",") if m.strip()]
-    bad = [m for m in members if not Path(m).is_file()]
-    if bad:
-        raise SystemExit(f"--family {name}: not a config file: {', '.join(bad)}")
+    fams = {}
+    for spec in a.family:
+        name, _, members = spec.partition("=")
+        members = [m.strip() for m in members.split(",") if m.strip()]
+        if not name or not members:
+            raise SystemExit(f"--family {spec}: expected NAME=cfg1.yaml,cfg2.yaml,...")
+        bad = [m for m in members if not Path(m).is_file()]
+        if bad:
+            raise SystemExit(f"--family {name}: not a config file: {', '.join(bad)}")
+        fams[name] = members
     queries = {}
     for h in a.human:
         g, _, acc = h.partition("=")
         if not acc:
             raise SystemExit(f"--human {h}: expected GENE=ACCESSION, e.g. SLC2A1=P11166")
-        queries[g.upper()] = acc.strip()
+        queries[g.strip().upper()] = acc.strip()
 
     print(f"  fetching {len(queries)} human sequence(s) ...", flush=True)
     seqs = {}
@@ -294,8 +307,36 @@ def main(argv=None):
           f"{(cv.label == 'pathogenic').sum():,} pathogenic, "
           f"{(cv.label == 'benign').sum():,} benign", flush=True)
 
-    print("  aligning and pooling the measured family ...", flush=True)
-    cols, maps, aln, long = family_with_queries(members, seqs, a.min_proteins)
+    outdir = Path(a.outdir)
+    outdir.mkdir(parents=True, exist_ok=True)
+    summary = {}
+    for name, members in fams.items():
+        summary[name] = run_one(name, members, seqs, cv, a.min_proteins, outdir)
+    if len(summary) > 1:
+        print("\n  == families side by side")
+        for n, r in summary.items():
+            o = r.get("overall", {})
+            if "auroc" in o:
+                print(f"    {n:<12} AUROC {o['auroc']:.3f} "
+                      f"[{o['auroc_lo']:.3f}, {o['auroc_hi']:.3f}]   "
+                      f"{o['n_pathogenic']}P/{o['n_benign']}B over "
+                      f"{r['n_columns']:,} pooled columns")
+            else:
+                print(f"    {n:<12} not evaluated: {o.get('reason')}")
+    (outdir / "clinvar.json").write_text(json.dumps(summary, indent=2, default=str))
+    try:
+        shown = outdir.resolve().relative_to(REPO_ROOT)
+    except ValueError:
+        shown = outdir
+    print(f"\n  -> {shown}/")
+    return 0
+
+
+def run_one(name, members, seqs, cv, min_proteins, outdir):
+    import json
+    print(f"\n  == {name}: aligning and pooling {len(members)} measured proteins",
+          flush=True)
+    cols, maps, aln, long = family_with_queries(members, seqs, min_proteins)
     print(f"    {len(cols):,} pooled columns from {long.protein.nunique()} proteins "
           f"({aln.attrs.get('method', '?')})", flush=True)
 
@@ -322,8 +363,6 @@ def main(argv=None):
     print(f"    {int(mapped.sum()):,} of {len(scored):,} variants land on a pooled column "
           f"({mapped.mean():.0%})", flush=True)
 
-    outdir = Path(a.outdir)
-    outdir.mkdir(parents=True, exist_ok=True)
     scored.to_csv(outdir / f"{name}_scored_variants.csv", index=False)
     res = evaluate(scored)
     per = []
@@ -356,16 +395,9 @@ def main(argv=None):
     else:
         print(f"  not evaluated: {res.get('reason')} "
               f"({res.get('n_pathogenic', 0)} pathogenic, {res.get('n_benign', 0)} benign)")
-    (outdir / f"{name}_clinvar.json").write_text(json.dumps(
-        {"overall": res, "by_gene": by_gene.to_dict("records"),
-         "alignment": aln.attrs.get("method"), "n_columns": int(len(cols))},
-        indent=2, default=str))
-    try:
-        shown = outdir.resolve().relative_to(REPO_ROOT)
-    except ValueError:
-        shown = outdir
-    print(f"\n  -> {shown}/")
-    return 0
+    return {"overall": res, "by_gene": by_gene.to_dict("records"),
+            "alignment": aln.attrs.get("method"), "n_columns": int(len(cols)),
+            "n_proteins": int(long.protein.nunique())}
 
 
 if __name__ == "__main__":

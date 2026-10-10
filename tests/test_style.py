@@ -172,3 +172,54 @@ def test_replicate_grid_fills_the_upper_triangle_with_r(tmp_path):
                                ["rep1", "rep2", "rep3"], tmp_path)
     assert len(cor) == 3 and cor.pearson.min() > 0.8
     assert any(str(p_).endswith(".png") for p_ in figs)
+
+
+def test_series_colours_are_fixed_in_order_not_cycled():
+    """A protein dropping out of a figure must not repaint the others."""
+    from mpdms.plotting import series_colors
+    assert series_colors(3) == series_colors(5)[:3]
+    assert series_colors(8)[:4] == series_colors(4)
+
+
+def test_series_colours_extend_past_the_fixed_list():
+    from mpdms.plotting import SERIES, series_colors
+    n = len(SERIES) + 4
+    c = series_colors(n)
+    assert len(c) == n and len(set(c)) == n
+    assert all(x.startswith("#") for x in c)
+
+
+def test_signed_quantities_keep_a_diverging_map_not_viridis():
+    """Viridis has no neutral midpoint, so using it for data centred on zero would put a
+    strong hue where 'no effect' belongs."""
+    import numpy as np
+    from mpdms.plotting import diverging_cmap, sequential_cmap
+    d = diverging_cmap()
+    mid = np.array(d(0.5)[:3])
+    assert np.ptp(mid) < 0.12                      # the midpoint is near-neutral
+    lo, hi = np.array(d(0.0)[:3]), np.array(d(1.0)[:3])
+    assert np.argmax(lo) != np.argmax(hi)        # two different hues at the poles
+    v = sequential_cmap()
+    assert np.ptp(np.array(v(0.5)[:3])) > 0.2      # viridis is emphatically not neutral there
+
+
+def test_sequential_map_is_monotone_in_lightness():
+    import numpy as np
+    from mpdms.plotting import sequential_cmap
+    v = sequential_cmap()
+    lum = [0.2126 * r + 0.7152 * g + 0.0722 * b
+           for r, g, b, _ in (v(i / 20) for i in range(21))]
+    assert all(b >= a - 1e-3 for a, b in zip(lum, lum[1:]))
+
+
+def test_titles_and_axis_labels_are_bold_in_both_styles():
+    import matplotlib.pyplot as plt
+    from mpdms import plotting as P
+    old = P.STYLE
+    try:
+        for style in ("default", "paper"):
+            P.use_style(style)
+            assert plt.rcParams["axes.titleweight"] == "bold", style
+            assert plt.rcParams["axes.labelweight"] == "bold", style
+    finally:
+        P.use_style(old)

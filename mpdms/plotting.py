@@ -22,6 +22,34 @@ CLASS_LABELS = {"missense": "Missense", "synonymous": "Synonymous", "nonsense": 
 CLASS_ORDER = ["missense", "synonymous", "nonsense"]
 
 TM_GREY = "#D9D9D9"
+
+# Viridis, sampled at 0.25 / 0.50 / 0.75 and extended for longer series. The endpoints are
+# deliberately not used: as categorical colours they fail the lightness band (near-black at
+# 0, near-white at 1) and the near-white has too little contrast on paper. This set passes
+# the colourblind separation and normal-vision checks; viridis's mid-range is genuinely low
+# in chroma, so it reads slightly muted, which is the price of it being safe to read.
+# Used wherever the categories are just identities (one per protein, one per helix).
+SERIES = ["#3b528b", "#21918c", "#5ec962", "#440154", "#31688e", "#35b779",
+          "#fde725", "#443983", "#90d743", "#26828e", "#6ece58", "#3e4989"]
+
+
+def series_colors(n: int) -> list:
+    """n identities, in fixed order. Beyond the list, viridis is sampled evenly.
+
+    Fixed order matters: if a protein drops out of a figure the others must keep their
+    colours, or the same colour means a different protein in two panels of one report.
+    """
+    if n <= len(SERIES):
+        return SERIES[:n]
+    import matplotlib as _mpl
+    v = _mpl.colormaps["viridis"]
+    return [_mpl.colors.to_hex(v(0.08 + 0.84 * i / max(n - 1, 1))) for i in range(n)]
+
+
+def sequential_cmap():
+    """Magnitude with no meaningful zero: one perceptually uniform ramp."""
+    import matplotlib as _mpl
+    return _mpl.colormaps["viridis"]
 LOOP_TINT = {"cytosolic": "#FFF4E0", "lumenal": "#E8F1FA", "extracellular": "#E8F1FA"}
 INK = "#222222"
 MUTED = "#6B6B6B"
@@ -81,9 +109,10 @@ def paper() -> bool:
 # ticks, no grid, and fonts embedded so the PDF stays editable.
 PAPER_RC = {
     "font.size": 7,
-    "axes.titlesize": 7,
-    "axes.titleweight": "normal",
+    "axes.titlesize": 7.5,
+    "axes.titleweight": "bold",
     "axes.labelsize": 7,
+    "axes.labelweight": "bold",
     "xtick.labelsize": 6,
     "ytick.labelsize": 6,
     "legend.fontsize": 6,
@@ -112,8 +141,10 @@ def set_theme():
         "font.family": "sans-serif",
         "font.sans-serif": ["Arial", "Helvetica", "Liberation Sans", "DejaVu Sans"],
         "font.size": 8,
-        "axes.titlesize": 9,
+        "axes.titlesize": 9.5,
+        "axes.titleweight": "bold",
         "axes.labelsize": 8,
+        "axes.labelweight": "bold",
         "xtick.labelsize": 7,
         "ytick.labelsize": 7,
         "legend.fontsize": 7,

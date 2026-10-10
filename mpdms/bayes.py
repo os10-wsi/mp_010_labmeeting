@@ -297,21 +297,27 @@ def figure_family(name: str, cols: pd.DataFrame, long: pd.DataFrame, outdir: Pat
             ax.fill_between(c.col, 0, 1, where=tm, transform=ax.get_xaxis_transform(),
                             color=P.TM_GREY, lw=0, zorder=0, step="mid")
     ax = axes[0]
-    ax.fill_between(c.col, c.mu_lo, c.mu_hi, color="#2F6DB5", alpha=0.25, lw=0,
+    ax.fill_between(c.col, c.mu_lo, c.mu_hi, color=P.SERIES[0], alpha=0.22, lw=0,
                     label="95% credible interval for the family mean")
-    ax.plot(c.col, c.mu, lw=0.9, color="#1B4B80", label="family mean (posterior)")
+    ax.plot(c.col, c.mu, lw=1.0, color=P.SERIES[0], label="family mean (posterior)")
     ax.axhline(0, color=P.MUTED, lw=0.6)
     ax.set_ylabel("Pooled position effect")
     ax.legend(frameon=False, fontsize=6.5, loc="lower right", ncol=2)
     ax.set_title(f"(a) {name}: what the family shares at each aligned position "
                  f"(grey = transmembrane)", loc="left", fontsize=9)
     ax = axes[1]
-    ax.fill_between(c.col, 0, c.tau, color="#C0392B", alpha=0.35, lw=0)
-    ax.plot(c.col, c.tau, lw=0.7, color="#C0392B")
+    cm = P.sequential_cmap()
+    hi = float(c.tau.max()) or 1.0
+    ax.fill_between(c.col, 0, c.tau, color=cm(0.55), alpha=0.30, lw=0)
+    ax.plot(c.col, c.tau, lw=0.8, color=cm(0.25))
+    # the columns where the family genuinely disagrees are the interesting ones
+    top = c.nlargest(min(8, len(c)), "tau")
+    ax.scatter(top.col, top.tau, s=10, color=cm(0.85), zorder=4, lw=0)
     ax.set_ylabel("τ  (between-protein SD)")
     ax.set_title("(b) Where the family members genuinely differ", loc="left", fontsize=9)
     ax = axes[2]
-    ax.fill_between(c.col, 0, c.J, color=P.MUTED, alpha=0.5, lw=0, step="mid")
+    # not grey: the transmembrane band behind it is grey, and two greys read as one
+    ax.fill_between(c.col, 0, c.J, color=P.SERIES[1], alpha=0.55, lw=0, step="mid")
     ax.set_ylabel("proteins")
     ax.set_xlabel("Alignment column")
     ax.set_title("(c) How many proteins measured each column", loc="left", fontsize=9)
@@ -325,7 +331,8 @@ def figure_predictive(name: str, scores: pd.DataFrame, outdir: Path):
     s = scores.sort_values("spearman")
     y = np.arange(len(s))
     ax = axes[0]
-    ax.barh(y, s.spearman, color="#2F6DB5", height=0.6)
+    cm = P.sequential_cmap()
+    ax.barh(y, s.spearman, color=[cm(0.15 + 0.7 * max(v, 0)) for v in s.spearman], height=0.6)
     ax.set_yticks(y); ax.set_yticklabels(s.held_out, fontsize=7)
     ax.set_xlabel("Spearman, held-out protein")
     ax.axvline(0, color=P.INK, lw=0.7)
