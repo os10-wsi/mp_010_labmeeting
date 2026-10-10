@@ -184,3 +184,70 @@ def per_position(df: pd.DataFrame, col: str = "score_z", func: str = "median",
     if full_range and len(s):
         s = s.reindex(range(int(df["pos"].min()), int(df["pos"].max()) + 1))
     return s
+
+
+def meta_analysis(yi, vi, knha: bool = True) -> dict:
+    """Random-effects meta-analysis of per-unit estimates (DerSimonian-Laird).
+
+    Pooling eight datasets as if every variant were an independent observation answers a
+    question nobody asked: it weights a protein by how many variants were measured in it.
+    Combining one estimate per protein (or per helix) instead keeps the unit of replication
+    honest, and `tau2`/`I2` say how much the units actually disagree, which is usually the
+    more interesting number than the pooled mean.
+
+    With few units the Wald interval is far too narrow, so the Hartung-Knapp-Sidik-Jonkman
+    adjustment is on by default: it uses a t distribution and rescales by the observed
+    dispersion. Turn it off only to reproduce a plain DL result.
+    """
+    y = np.asarray(yi, dtype=float)
+    v = np.asarray(vi, dtype=float)
+    ok = np.isfinite(y) & np.isfinite(v) & (v > 0)
+    y, v = y[ok], v[ok]
+    k = len(y)
+    if k == 0:
+        return {"k": 0, "mu": np.nan, "se": np.nan, "lo": np.nan, "hi": np.nan,
+                "tau2": np.nan, "I2": np.nan, "Q": np.nan, "p_Q": np.nan, "p": np.nan}
+    wf = 1.0 / v
+    mu_f = float(np.sum(wf * y) / np.sum(wf))
+    Q = float(np.sum(wf * (y - mu_f) ** 2))
+    df = k - 1
+    C = float(np.sum(wf) - np.sum(wf ** 2) / np.sum(wf))
+    tau2 = max(0.0, (Q - df) / C) if C > 0 and k > 1 else 0.0
+    w = 1.0 / (v + tau2)
+    mu = float(np.sum(w * y) / np.sum(w))
+    se = float(np.sqrt(1.0 / np.sum(w)))
+    if knha and k > 1:
+        # Hartung-Knapp: rescale by how far the units actually scatter about mu. When they
+        # happen to agree almost exactly the rescaling collapses toward zero and would
+        # report a spuriously tiny interval, so never go below the Wald standard error.
+        se = max(float(np.sqrt(np.sum(w * (y - mu) ** 2) / (df * np.sum(w)))), se)
+        crit = float(ss.t.ppf(0.975, df))
+        p = float(2 * ss.t.sf(abs(mu / se), df)) if se > 0 else np.nan
+    else:
+        crit = 1.959963984540054
+        p = float(2 * ss.norm.sf(abs(mu / se))) if se > 0 else np.nan
+    return {"k": k, "mu": mu, "se": se, "lo": mu - crit * se, "hi": mu + crit * se,
+            "tau2": float(tau2), "I2": float(max(0.0, (Q - df) / Q) * 100) if Q > 0 else 0.0,
+            "Q": Q, "p_Q": float(ss.chi2.sf(Q, df)) if k > 1 else np.nan, "p": p}
+
+
+def slope_with_se(x, y, groups=None) -> dict:
+    """OLS slope of y on x with its standard error; the unit an aggregate is built from.
+
+    `groups` clusters the standard error (e.g. by position), because variants at one
+    position are not independent draws.
+    """
+    import statsmodels.api as sm
+    x = np.asarray(x, dtype=float)
+    y = np.asarray(y, dtype=float)
+    ok = np.isfinite(x) & np.isfinite(y)
+    if groups is not None:
+        groups = np.asarray(groups)[ok]
+    x, y = x[ok], y[ok]
+    if len(x) < 5 or np.ptp(x) == 0:
+        return {"n": int(len(x)), "slope": np.nan, "se": np.nan, "p": np.nan}
+    X = sm.add_constant(x)
+    m = (sm.OLS(y, X).fit(cov_type="cluster", cov_kwds={"groups": groups})
+         if groups is not None and len(set(groups)) > 2 else sm.OLS(y, X).fit())
+    return {"n": int(len(x)), "slope": float(m.params[1]), "se": float(m.bse[1]),
+            "p": float(m.pvalues[1])}
