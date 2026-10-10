@@ -196,6 +196,31 @@ over the accession and mutation columns identifies the protein from its sequence
 mutation strings carry their wild-type residues — and the answer is written back to
 `protein.uniprot`, so every later run is a single filtering pass.
 
+### Bayesian pooling across a family
+
+```bash
+python -m mpdms bayes \
+  --family PF07690=configs/AQR1_fitness.yaml,configs/QDR2_fitness.yaml,configs/TNA1_fitness.yaml,configs/TPO3.yaml,configs/FEN2.yaml \
+  --family PF00083=configs/PHO84_fitness.yaml,configs/HXT1.yaml,configs/HXT2.yaml,configs/HXT3.yaml,configs/HXT7.yaml,configs/ITR1.yaml
+```
+
+Each family is aligned, and every alignment column gets a hierarchical normal model:
+
+    y_j | theta_j ~ Normal(theta_j, s_j^2)      protein j's measured effect, with its error
+    theta_j | mu, tau ~ Normal(mu, tau^2)       the family's spread around a shared value
+
+`mu` is what the family shares at that column, `tau` is how much its members genuinely
+differ, and Normal(mu, tau^2) is what the family says about a member nobody has measured.
+The posterior is computed exactly on a grid over tau, so there is no sampler and nothing
+to diagnose; the implementation reproduces the eight-schools posterior of Gelman BDA3
+tables 5.2 and 5.3 to within rounding, which is what the tests assert.
+
+Aggregate predictive power is then leave-one-protein-out: refit every column without one
+member and score the prediction against it by rank correlation, by expected log predictive
+density against predicting one number for the whole family, and by whether the 50% and 90%
+credible intervals actually contain 50% and 90% of what happened. The last of these is the
+one that catches a model that looks accurate and is overconfident.
+
 ### What does each feature predict on its own?
 
 Before any model combines them:

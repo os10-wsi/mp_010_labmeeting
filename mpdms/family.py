@@ -54,12 +54,16 @@ MIN_VARIANTS = 3
 def align_sequences(seqs: dict[str, str]) -> pd.DataFrame:
     """One row per alignment column; columns `<id>_pos` (1-based, NaN at a gap) and `<id>_aa`."""
     ids = list(seqs)
-    if len(ids) > 2 or shutil.which("mafft"):
+    if len(ids) < 2:
+        raise RuntimeError("need at least two sequences")
+    if shutil.which("mafft"):
         rows = _mafft(seqs)
+        rows.attrs.setdefault("method", "MAFFT")
     elif len(ids) == 2:
         rows = _pairwise(seqs)
+        rows.attrs.setdefault("method", "pairwise")
     else:
-        raise RuntimeError("need at least two sequences")
+        rows = center_star(seqs)
     return rows
 
 
@@ -95,6 +99,64 @@ def _pairwise(seqs: dict[str, str]) -> pd.DataFrame:
             pass
     a = al.align(seqs[ids[0]], seqs[ids[1]])[0]
     return _to_table(ids, [str(a[0]), str(a[1])])
+
+
+def center_star(seqs: dict[str, str]) -> pd.DataFrame:
+    """Reference-anchored alignment for more than two sequences, without MAFFT.
+
+    The most central sequence becomes the reference and every other is aligned to it
+    pairwise, so the columns are the reference's own residues. Insertions relative to the
+    reference are dropped, which a real multiple alignment would keep; for mapping each
+    protein's positions onto one shared frame, which is all that is needed here, that
+    loses only the parts no reference residue corresponds to. Use MAFFT when it is
+    available - `align_sequences` prefers it.
+    """
+    from Bio import Align
+    from Bio.Align import substitution_matrices
+    ids = list(seqs)
+    al = Align.PairwiseAligner(mode="global")
+    al.substitution_matrix = substitution_matrices.load("BLOSUM62")
+    al.open_gap_score, al.extend_gap_score = -11, -1
+    for attr in ("end_insertion_score", "end_deletion_score",
+                 "target_end_gap_score", "query_end_gap_score"):
+        try:
+            setattr(al, attr, 0.0)
+        except (AttributeError, ValueError):
+            pass
+    score = {g: 0.0 for g in ids}
+    pairs = {}
+    for i, a in enumerate(ids):
+        for b in ids[i + 1:]:
+            aln = al.align(seqs[a], seqs[b])[0]
+            pairs[(a, b)] = aln
+            sa, sb = str(aln[0]), str(aln[1])
+            ident = sum(x == y for x, y in zip(sa, sb) if x != "-")
+            frac = ident / max(1, min(len(seqs[a]), len(seqs[b])))
+            score[a] += frac
+            score[b] += frac
+    ref = max(ids, key=lambda g: score[g])
+    L = len(seqs[ref])
+    out = {f"{ref}_pos": list(range(1, L + 1)), f"{ref}_aa": list(seqs[ref])}
+    for g in ids:
+        if g == ref:
+            continue
+        aln = pairs.get((ref, g)) or pairs.get((g, ref))
+        sr, sg = (str(aln[0]), str(aln[1])) if (ref, g) in pairs else (str(aln[1]), str(aln[0]))
+        pos, aa = [np.nan] * L, ["-"] * L
+        ir = ig = 0
+        for cr, cg in zip(sr, sg):
+            if cr != "-":
+                if cg != "-":
+                    pos[ir], aa[ir] = ig + 1, cg
+                ir += 1
+            if cg != "-":
+                ig += 1
+        out[f"{g}_pos"], out[f"{g}_aa"] = pos, aa
+    t = pd.DataFrame(out)
+    t.insert(0, "col", np.arange(1, len(t) + 1))
+    t.attrs["reference"] = ref
+    t.attrs["method"] = "center-star (no MAFFT)"
+    return t
 
 
 def _mafft(seqs: dict[str, str]) -> pd.DataFrame:
