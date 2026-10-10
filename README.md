@@ -215,6 +215,29 @@ a feature *adds*. And when the per-protein correlations disagree (high I2 in
 coefficient is drawn with its per-protein refits beside it and a sign-agreement warning
 when they do not point the same way.
 
+### What does the family predict for one unmeasured protein?
+
+```bash
+python -m mpdms predict \
+  --family hexose=configs/HXT1.yaml,configs/HXT2.yaml,configs/HXT3.yaml,configs/HXT7.yaml \
+  --human SLC2A1=P11166 --table variant_summary.txt.gz
+```
+
+One row per residue, and a figure along the sequence. The call is not `mu` against a
+threshold: a column where the family agrees on a mild effect and one where it disagrees
+wildly can share a mean and say very different things about an unmeasured member. Each
+residue is scored by the posterior predictive for a new family member,
+
+    effect ~ Normal(mu, tau^2 + var(mu))
+
+so the number reported is P(effect < threshold) - the probability that a protein the family
+has never seen loses abundance there. A column the family is unsure about lands near one
+half, which is the honest answer rather than a confident one, and those positions are
+called `uncertain` rather than forced either way.
+
+With `--table`, the predicted-loss positions are cross-tabulated against ClinVar: how many
+pathogenic and benign variants sit at them, with an odds ratio and a Fisher test.
+
 ### How related are the proteins?
 
 ```bash
