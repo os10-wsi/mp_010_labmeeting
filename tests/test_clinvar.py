@@ -440,6 +440,29 @@ def test_the_shared_scope_uses_one_set_of_variants_for_every_predictor():
     assert int(own.loc["esm1v", "n"]) == 80
 
 
+def test_alphamissense_survives_a_header_short_of_a_column(tmp_path):
+    """The released file names three columns and writes four.
+
+    pandas resolves that by promoting the first column to an index, which shifts every
+    name one to the left: uniprot_id then holds "M1A", am_pathogenicity holds "benign",
+    and filtering by accession matches nothing at all. Nothing about the file looks
+    wrong, so this is asserted rather than trusted.
+    """
+    from mpdms.clinvar import read_alphamissense
+    f = tmp_path / "am.tsv"
+    f.write_text("# Copyright 2023 DeepMind Technologies Limited\n#\n"
+                 "# Licensed under CC BY-NC-SA 4.0 license\n"
+                 "uniprot_id\tprotein_variant\tam_pathogenicity\n"
+                 "O95528\tM1A\t0.1202\tbenign\n"
+                 "O95528\tG23D\t0.9803\tpathogenic\n"
+                 "P11166\tQ5R\t0.5000\tambiguous\n")
+    out = read_alphamissense(f, {"O95528"})
+    assert len(out) == 2
+    assert set(out.uniprot) == {"O95528"}
+    assert out.am_pathogenicity.dtype.kind == "f"       # a number, not "benign"
+    assert out.loc[out.pos == 23, "am_pathogenicity"].iloc[0] == pytest.approx(0.9803)
+
+
 def test_alphamissense_is_read_by_column_name_and_filtered_by_accession(tmp_path):
     from mpdms.clinvar import read_alphamissense
     f = tmp_path / "am.tsv"

@@ -168,13 +168,28 @@ def read_alphamissense(path: Path, uniprots: set[str]) -> pd.DataFrame:
     """
     path = Path(path)
     opener = gzip.open if str(path).endswith(".gz") else open
+    header, first, n_skip = None, None, 0
     with opener(path, "rt") as fh:
         for line in fh:
-            if not line.startswith("#"):
+            n_skip += 1
+            if line.startswith("#"):
+                continue
+            if header is None:
                 header = line.rstrip("\n").split("\t")
-                break
-        else:
-            raise SystemExit(f"{path.name}: no header row")
+                continue
+            first = line.rstrip("\n").split("\t")
+            break
+    if header is None:
+        raise SystemExit(f"{path.name}: no header row")
+    # The released file names three columns and writes four: am_class is in every data
+    # row and missing from the header. pandas resolves that by making the first column
+    # an index, which shifts every name one to the left - uniprot_id then holds "M1A"
+    # and am_pathogenicity holds "benign" - and the accession filter quietly matches
+    # nothing. Naming the surplus columns before reading is what stops that.
+    extra = (len(first) - len(header)) if first else 0
+    if extra > 0:
+        header = header + (["am_class"] if extra == 1 and "am_class" not in header
+                           else [f"column_{len(header) + i + 1}" for i in range(extra)])
     cols = {c.lower().replace(" ", "").replace("_", ""): c for c in header}
     uni = cols.get("uniprotid") or cols.get("uniprot")
     var = cols.get("proteinvariant") or cols.get("variant")
@@ -185,6 +200,7 @@ def read_alphamissense(path: Path, uniprots: set[str]) -> pd.DataFrame:
     want = {u.upper() for u in uniprots}
     keep = []
     for chunk in pd.read_csv(path, sep="\t", comment="#", chunksize=1_000_000,
+                             header=None, names=header, skiprows=n_skip - 1,
                              usecols=lambda c: c in (uni, var, sc), low_memory=False):
         hit = chunk[chunk[uni].astype(str).str.upper().isin(want)]
         if len(hit):
