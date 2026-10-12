@@ -493,7 +493,15 @@ Two details that matter and are easy to get wrong:
 | --- | --- |
 | I01 | does a helix's ΔG predict its mean tolerance? (the weak version) |
 | I02 | the interaction, two ways: slope-of-effect-on-ΔΔG per helix against that helix's ΔG, and a per-protein model with the interaction term |
-| I03 | effect against ΔΔG, **one line per helix** coloured by that helix's ΔG, with the median of the helices in bold |
+| I03 | effect against ΔΔG, **one line per helix** coloured by that helix's ΔG, with the mean (± SEM) and median across helices in bold |
+
+I03 draws two bold summaries, and they answer different questions. Both weight each
+helix once, so neither is dominated by a helix carrying more variants: the **median** is
+the typical helix, the **mean** follows a helix that plunges. Where they separate, a few
+helices are carrying the trend. `i03_median_curve.csv` also records
+`pooled_over_variants`, the variant-weighted average — which is what the older
+marginal/comfortable figure drew, and the reason that figure and this one do not look
+alike.
 
 I02 still uses a within-protein median split to label helices "marginal" in its model,
 but I03 does not split at all: it draws every helix and lets ΔG be the colour. The split

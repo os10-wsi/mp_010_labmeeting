@@ -377,17 +377,33 @@ def i03_helix_curves(variants: dict, helices: dict, names: list[str],
             rows.append({"protein": g, "helix": hx, "dg": dg, "slope": float(r.slope),
                          "se": float(r.stderr), "p": float(r.pvalue), "n": int(len(sub))})
         if curves:
-            # median across helices at each common bin: the typical helix, with no
-            # helix allowed to dominate by having more variants than the others
+            # Both summaries, because they answer different questions. Each helix
+            # contributes one number per bin either way, so neither is dominated by a
+            # helix that happens to carry more variants. The MEDIAN is the typical
+            # helix; the MEAN follows a helix that plunges. Where they separate, a few
+            # helices are carrying the trend, and that is worth seeing rather than
+            # choosing one estimator and hiding it.
             wide = pd.DataFrame({k: m.set_index(m.index).y for k, m in curves.items()})
             xs = pd.concat([m.x for m in curves.values()], axis=1).median(axis=1)
-            med = wide.median(axis=1)
-            ok = wide.notna().sum(axis=1) >= 3
-            ax.plot(xs[ok], med[ok], "-o", ms=4.5, lw=2.4, color=P.INK, zorder=6,
-                    label="median of helices")
-            med_rows += [{"protein": g, "ddg": float(x), "median_effect": float(y),
-                          "n_helices": int(n)}
-                         for x, y, n in zip(xs[ok], med[ok], wide.notna().sum(axis=1)[ok])]
+            n_h = wide.notna().sum(axis=1)
+            ok = n_h >= 3
+            med, mn = wide.median(axis=1), wide.mean(axis=1)
+            sem = wide.std(axis=1, ddof=1) / np.sqrt(n_h.clip(lower=1))
+            ax.fill_between(xs[ok], (mn - sem)[ok], (mn + sem)[ok], color=P.INK,
+                            alpha=0.12, lw=0, zorder=5)
+            ax.plot(xs[ok], mn[ok], "-o", ms=4.5, lw=2.4, color=P.INK, zorder=6,
+                    label="mean of helices (± SEM)")
+            ax.plot(xs[ok], med[ok], "--s", ms=3.8, lw=1.8, color=P.INK, zorder=6,
+                    mfc="white", label="median of helices")
+            # the pooled curve is what a variant-weighted average gives, which is what
+            # the earlier marginal/comfortable figure drew; kept in the table so the
+            # two can be compared without a third line on the panel
+            pooled = v.groupby("bin", observed=True).score_z.mean()
+            med_rows += [{"protein": g, "ddg": float(x), "mean_effect": float(a),
+                          "median_effect": float(b), "sem_across_helices": float(c),
+                          "pooled_over_variants": float(d), "n_helices": int(n)}
+                         for x, a, b, c, d, n in zip(xs[ok], mn[ok], med[ok], sem[ok],
+                                                     pooled.reindex(wide.index)[ok], n_h[ok])]
         ax.axhline(0, color=P.MUTED, lw=0.6)
         ax.axvline(0, color=P.MUTED, lw=0.6, ls=(0, (1, 2)))
         s = pd.DataFrame([r for r in rows if r["protein"] == g])
@@ -401,15 +417,16 @@ def i03_helix_curves(variants: dict, helices: dict, names: list[str],
         if i % 2 == 0:
             ax.set_ylabel("mean effect", fontsize=7.5)
         if i == 0:
-            ax.legend(frameon=False, fontsize=6.5, loc="lower left")
+            ax.legend(frameon=False, fontsize=6, loc="lower left")
     if hi > lo:
         import matplotlib as mpl
         sm = mpl.cm.ScalarMappable(cmap=cmap, norm=mpl.colors.Normalize(lo, hi))
         fig.colorbar(sm, ax=axes, fraction=0.022, pad=0.01).set_label(
             "ΔG of inserting the helix (kcal/mol)", fontsize=8, fontweight="bold")
     fig.suptitle("One line per TM helix, coloured by how readily it inserts: dark = "
-                 "inserts easily, light = least insertable of the set. The claim predicts "
-                 "the lighter lines fall away faster to the right.",
+                 "inserts easily, light = marginal (ΔG above zero would not insert on its "
+                 "own). The claim predicts the lighter lines fall away faster to the "
+                 "right. Solid black = mean over helices, dashed = median.",
                  fontsize=7, x=0.01, ha="left")
     P.save(fig, outdir, "i03_helix_curves", None, "I03")
     plt.close(fig)

@@ -180,8 +180,15 @@ def test_every_helix_gets_its_own_curve_and_the_median_is_of_helices(tmp_path):
     assert len(per) == 12 and per.helix.nunique() == 12
     med = pd.read_csv(tmp_path / "i03_median_curve.csv")
     assert len(med) >= 3 and (med.n_helices >= 3).all()
-    # the median curve is a median of helices, so it sits inside their spread
-    assert med.median_effect.between(per.slope.min() * 10, 1).all()
+    # both summaries are reported, and both weight every helix once
+    assert {"mean_effect", "median_effect", "sem_across_helices",
+            "pooled_over_variants"} <= set(med.columns)
+    assert med.sem_across_helices.gt(0).all()
+    # with no single helix out on its own the two summaries track each other, within
+    # the spread of the helices themselves; where they do not, that is the signal the
+    # second line exists to show (asserted on its own below)
+    assert ((med.mean_effect - med.median_effect).abs()
+            <= 2 * med.sem_across_helices + 1e-9).all()
     # and with a planted interaction, the less insertable helices have steeper slopes
     rho = ss.spearmanr(per.dg, per.slope)[0]
     assert rho < -0.4, rho
@@ -196,3 +203,17 @@ def test_a_helix_with_too_little_data_is_left_out_rather_than_drawn_thin(tmp_pat
     per = pd.read_csv(tmp_path / "i03_helix_slopes.csv")
     assert "TM3" not in set(per.helix)
     assert len(per) == 5
+
+
+def test_the_mean_follows_an_outlier_helix_and_the_median_does_not(tmp_path):
+    """Why both lines are drawn: where they separate, a few helices carry the trend."""
+    h, v = _toy(n_helices=12, effect="null", seed=8, per_helix=120)
+    # one helix collapses at high ddG, the rest are flat
+    hit = (v.helix == "TM5") & (v.ddg > 1)
+    v.loc[hit, "score_z"] = v.loc[hit, "score_z"] - 2.0
+    I.i03_helix_curves({"P": v}, {"P": h}, ["P"], tmp_path)
+    m = pd.read_csv(tmp_path / "i03_median_curve.csv").sort_values("ddg")
+    right = m.iloc[-1]
+    assert right.mean_effect < right.median_effect - 0.05
+    # and the median stays near where the eleven unaffected helices sit
+    assert abs(right.median_effect - m.iloc[0].median_effect) < 0.15
