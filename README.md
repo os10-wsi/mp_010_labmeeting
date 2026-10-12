@@ -454,6 +454,58 @@ together, and on the test fixture that alone takes p from 0.016 to 0.089. Each p
 also gets a PyMOL `.pml` and a ChimeraX `.cxc` script under `structures/<protein>/`, with
 the ten residues as spheres and every pair under 10 Å as a real distance object.
 
+### Does insertion energetics set a floor on what a helix tolerates?
+
+```bash
+python -m mpdms insertion \
+  configs/AQR1_fitness.yaml configs/HXT2.yaml configs/HXT1.yaml configs/HXT3.yaml
+```
+
+A TM helix has to be recognised by the translocon and released into the bilayer. A
+strongly hydrophobic helix inserts with margin to spare and a slightly more polar
+substitution changes nothing it depends on; a marginal helix has no margin, and the same
+substitution pushes it below threshold.
+
+So the claim is an **interaction**, not a main effect: the same chemical change should
+cost more in a marginal helix than in a comfortable one. The main effect of
+hydrophobicity would be there whether or not insertion energetics had anything to do with
+it, because a substitution that raises ΔΔG is usually also one that buries badly — which
+is why RSA is a covariate in every model here and the interaction is what gets reported.
+
+The scale is **dsTβL** (Elazar et al. 2016, eLife 5:e12125): a fourth-order polynomial in
+depth per residue, kcal/mol relative to alanine, taken from the authors' own
+`polyval_Kfix_14Jan2016.txt`. A segment is laid across the membrane at `linspace(−15,
++15)` and its ΔG is the sum of the per-residue values at those depths, which is that
+code's convention.
+
+Two details that matter and are easy to get wrong:
+
+- **Negative z is cytoplasmic, and the profiles are not symmetric.** Lysine costs +0.24
+  kcal/mol at z = −15 and +2.41 at z = +12; arginine is outright favourable on the inner
+  side. That is the positive-inside rule sitting inside the scale as measured. Laying
+  every helix N-to-C from −15 to +15 would score every second helix of a transporter
+  backwards, so helix `orientation` from the topology is respected.
+- **Standard errors are clustered by helix.** ΔG takes one value per helix, so the
+  interaction has as many independent units as there are helices — twelve, not the
+  thousands of variants inside them.
+
+| figure | question |
+| --- | --- |
+| I01 | does a helix's ΔG predict its mean tolerance? (the weak version) |
+| I02 | the interaction, two ways: slope-of-effect-on-ΔΔG per helix against that helix's ΔG, and a per-protein model with the interaction term |
+| I03 | effect against ΔΔG, binned, marginal helices against comfortable ones |
+
+"Marginal" is a median split **within** each protein: an absolute kcal/mol cut would
+mostly sort the proteins, since a longer helix has a more negative ΔG by construction.
+
+`--depth structure` evaluates each ΔΔG at the residue's real depth from the AlphaFold
+membrane frame instead of its idealised position in the helix.
+
+Two caveats the module states in its own docstring: the assay measured abundance, so a
+variant that fails to insert and one that inserts and then misfolds look identical here;
+and dsTβL was measured in a single-span reporter, while these are twelve-span
+transporters whose helices insert with help from their neighbours.
+
 ### Can the structure make the family model better - and does it beat ESM-1v?
 
 ```bash
