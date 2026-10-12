@@ -439,9 +439,71 @@ def i03_helix_curves(variants: dict, helices: dict, names: list[str],
     return {"status": "ok", "headline": head, "by_helix": per.to_dict("records")}
 
 
+# ------------------------------------ i04 the pooled curve, every helix together
+def i04_pooled(variants: dict, names: list[str], outdir: Path,
+               n_bins: int = 10) -> dict:
+    """Effect against ddG over all TM helices at once, averaged over variants.
+
+    The plainest version of the question, and the one the marginal/comfortable figure
+    was really drawing before it split the helices in two: take every missense variant
+    that sits in a transmembrane helix, bin them by the ddG their substitution implies
+    at that residue's depth, and average. One curve per protein, no grouping, no helix
+    given a vote of its own.
+
+    Because this is an average over variants, a helix that happens to be better covered
+    in the library counts for more than a thin one. That is the right estimator for the
+    question "what does a destabilising substitution cost in this protein's membrane
+    domain", and the wrong one for "do helices differ" - which is what I03 is for. The
+    slope's standard error is still clustered by helix, since variants in one helix
+    share whatever else is true of it.
+    """
+    import statsmodels.formula.api as smf
+    rows, fits = [], []
+    fig, pairs, _ = grid(names, w=3.1, h=2.8, extra=0.3)
+    for i, (g, ax) in enumerate(pairs):
+        v = variants[g].dropna(subset=["score_z", "ddg"])
+        if len(v) < 100:
+            continue
+        b = pd.qcut(v.ddg, n_bins, duplicates="drop")
+        m = v.groupby(b, observed=True).agg(x=("ddg", "mean"), y=("score_z", "mean"),
+                                            e=("score_z", "sem"), n=("score_z", "size"))
+        m = m.dropna()
+        ax.fill_between(m.x, m.y - m.e, m.y + m.e, color=P.DARK_RED, alpha=0.18, lw=0)
+        ax.plot(m.x, m.y, "-o", ms=4.5, lw=1.8, color=P.DARK_RED, mec=P.INK, mew=0.4)
+        ax.axhline(0, color=P.MUTED, lw=0.6)
+        ax.axvline(0, color=P.MUTED, lw=0.6, ls=(0, (1, 2)))
+        rows += [{"protein": g, "ddg": float(r.x), "mean_effect": float(r.y),
+                  "sem": float(r.e), "n_variants": int(r.n)} for r in m.itertuples()]
+        f = smf.ols("score_z ~ ddg", data=v).fit(
+            cov_type="cluster", cov_kwds={"groups": v.helix})
+        fits.append({"protein": g, "slope": float(f.params["ddg"]),
+                     "se_clustered": float(f.bse["ddg"]),
+                     "p": float(f.pvalues["ddg"]),
+                     "n_variants": int(len(v)), "n_helices": int(v.helix.nunique()),
+                     "spearman": float(ss.spearmanr(v.ddg, v.score_z)[0])})
+        panel(ax, i, g, f"slope {fits[-1]['slope']:+.3f} ± {fits[-1]['se_clustered']:.3f} "
+                        f"kcal⁻¹, {len(v):,} variants", size=7.5)
+        if i // 2 == (len(names) - 1) // 2:
+            ax.set_xlabel("ΔΔG of the substitution at that depth (kcal/mol)", fontsize=7.5)
+        if i % 2 == 0:
+            ax.set_ylabel("mean effect", fontsize=7.5)
+    fig.suptitle("Every missense variant in a TM helix, binned by ΔΔG and averaged. "
+                 "Band = SEM over variants; the slope's error is clustered by helix.",
+                 fontsize=7, x=0.01, ha="left")
+    P.save(fig, outdir, "i04_pooled_curve", None, "I04")
+    plt.close(fig)
+    pd.DataFrame(rows).to_csv(outdir / "i04_pooled_curve.csv", index=False)
+    ft = pd.DataFrame(fits)
+    ft.to_csv(outdir / "i04_pooled_slopes.csv", index=False)
+    head = "; ".join(f"{r.protein.replace('_fitness', '')} {r.slope:+.3f} ± "
+                     f"{r.se_clustered:.3f} (p {r.p:.2g})" for r in ft.itertuples())
+    return {"status": "ok", "headline": head, "by_protein": ft.to_dict("records")}
+
+
 ANALYSES = {"i01": "helix ΔG against its tolerance",
             "i02": "the interaction: is ΔΔG worse in a marginal helix?",
-            "i03": "every helix separately, and the median of them"}
+            "i03": "every helix separately, with the mean and median of them",
+            "i04": "the pooled curve over all helices, averaged over variants"}
 
 
 def main(argv=None):
@@ -506,8 +568,10 @@ def main(argv=None):
                 r = i01_helix_tolerance(helices, names, outdir)
             elif k == "i02":
                 r = i02_interaction(variants, helices, names, outdir)
-            else:
+            elif k == "i03":
                 r = i03_helix_curves(variants, helices, names, outdir)
+            else:
+                r = i04_pooled(variants, names, outdir)
         except Exception as e:
             r = {"status": "error", "reason": f"{type(e).__name__}: {e}"}
         out[k] = r

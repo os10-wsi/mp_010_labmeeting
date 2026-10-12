@@ -494,6 +494,14 @@ Two details that matter and are easy to get wrong:
 | I01 | does a helix's ΔG predict its mean tolerance? (the weak version) |
 | I02 | the interaction, two ways: slope-of-effect-on-ΔΔG per helix against that helix's ΔG, and a per-protein model with the interaction term |
 | I03 | effect against ΔΔG, **one line per helix** coloured by that helix's ΔG, with the mean (± SEM) and median across helices in bold |
+| I04 | the same thing pooled: every variant in any TM helix, binned by ΔΔG and averaged — one curve per protein, no grouping |
+
+I04 is the plain version and the one to put on a slide: every missense variant that
+sits in a TM helix, binned by ΔΔG and averaged, one curve per protein. Because it
+averages over variants, a helix that is better covered in the library counts for more —
+the right estimator for "what does a destabilising substitution cost in this membrane
+domain", and the wrong one for "do helices differ", which is I03's job. Its slope is
+still reported with the error clustered by helix.
 
 I03 draws two bold summaries, and they answer different questions. Both weight each
 helix once, so neither is dominated by a helix carrying more variants: the **median** is

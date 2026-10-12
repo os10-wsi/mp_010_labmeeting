@@ -217,3 +217,31 @@ def test_the_mean_follows_an_outlier_helix_and_the_median_does_not(tmp_path):
     assert right.mean_effect < right.median_effect - 0.05
     # and the median stays near where the eleven unaffected helices sit
     assert abs(right.median_effect - m.iloc[0].median_effect) < 0.15
+
+
+def test_the_pooled_curve_averages_over_variants_not_helices(tmp_path):
+    """The estimator the old figure used: every variant counts once, so coverage weighs."""
+    h, v = _toy(n_helices=12, effect="null", seed=12, per_helix=60)
+    # one helix is deeply covered and sits well below the rest
+    extra = v[v.helix == "TM1"].sample(900, replace=True, random_state=0)
+    extra = extra.assign(score_z=extra.score_z - 1.0)
+    deep = pd.concat([v, extra], ignore_index=True)
+    I.i04_pooled({"P": deep}, ["P"], tmp_path)
+    pooled = pd.read_csv(tmp_path / "i04_pooled_curve.csv")
+    I.i03_helix_curves({"P": deep}, {"P": h}, ["P"], tmp_path)
+    by_helix = pd.read_csv(tmp_path / "i03_median_curve.csv")
+    # the well-covered helix drags the pooled average down; the median over helices
+    # barely notices it, which is the whole difference between the two figures
+    assert pooled.mean_effect.mean() < by_helix.median_effect.mean() - 0.2
+    assert int(pooled.n_variants.sum()) == len(deep)
+
+
+def test_the_pooled_slope_error_is_clustered_by_helix(tmp_path):
+    h, v = _toy(n_helices=12, effect="main", seed=13, per_helix=90)
+    import statsmodels.formula.api as smf
+    r = I.i04_pooled({"P": v}, ["P"], tmp_path)["by_protein"][0]
+    f = smf.ols("score_z ~ ddg", data=v).fit(cov_type="cluster",
+                                             cov_kwds={"groups": v.helix})
+    assert r["se_clustered"] == pytest.approx(f.bse["ddg"], rel=1e-6)
+    assert r["slope"] < 0 and r["n_helices"] == 12
+    assert r["n_variants"] == len(v)
