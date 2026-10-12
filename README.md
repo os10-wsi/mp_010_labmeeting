@@ -285,6 +285,29 @@ missense variant is mapped to its alignment column, and pathogenic and benign va
 compared by the constraint the yeast data assigns to that column. Reported as an AUROC with
 a bootstrap interval, overall and per gene.
 
+Every run also writes `<family>_variant_ranking.csv` and the C02 figure: one row and one
+point per variant, ordered by constraint, with `pairs_beaten` — for a pathogenic variant,
+the fraction of benign variants it is correctly ranked above; for a benign variant, the
+fraction of pathogenic it is correctly ranked below. Averaging that column over either
+class returns the AUROC exactly, so a variant with a low value is literally one of the
+ones costing the score, and the terminal names them worst-first. The threshold shown is
+Youden's J on the same variants, so the `called` column describes the figure rather than
+predicting anything.
+
+### Boxed, square figures for slides
+
+```bash
+MPDMS_BOX=1 MPDMS_SQUARE=1 python -m mpdms clinvar ...
+```
+
+`MPDMS_BOX=1` closes the frame — all four spines, drawn heavier (`MPDMS_BOX_WIDTH`
+changes the weight, default 1.4). `MPDMS_SQUARE=1` makes each panel square. Both are
+presentation choices rather than analysis ones, so they are applied at save time, at the
+one place every figure passes through: any command picks them up on a rerun and no
+analysis module knows about them. Square is skipped for a panel with a fixed data aspect
+— a heatmap, a structure projection in angstroms — since squaring the box there would
+stretch the data instead.
+
 One gene is a perfectly good run, and the figure adapts: with a single `--human` the
 per-gene panel (c) is dropped, since it would be panel (b)'s AUROC redrawn as one bar,
 and the gene's name moves into the titles of (a) and (b).

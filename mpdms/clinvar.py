@@ -223,6 +223,102 @@ def conservation_control(scored: pd.DataFrame) -> dict:
     return out
 
 
+def rank_variants(scored: pd.DataFrame, score: str = "mu") -> pd.DataFrame:
+    """Every scored variant, ordered by constraint, with how well each one is called.
+
+    The AUROC is an average over all pathogenic-benign pairs, so it hides which variants
+    the model gets right. This takes it apart. For a pathogenic variant, `pairs_beaten`
+    is the fraction of benign variants it is more constrained than; for a benign variant,
+    the fraction of pathogenic variants it is less constrained than. Averaging that
+    column over either class returns the AUROC exactly, so a variant with a low value is
+    literally one of the ones costing the score.
+
+    The threshold is Youden's J on these same variants, which is the best this score can
+    do here rather than a threshold anyone could have set in advance - so `called` is a
+    description of the figure, not a prediction, and `pairs_beaten` is the number to rank
+    by.
+    """
+    d = scored.dropna(subset=[score]).copy()
+    path = (d.label == "pathogenic").to_numpy()
+    if path.sum() == 0 or (~path).sum() == 0:
+        return pd.DataFrame()
+    x = -d[score].to_numpy()                      # higher = more constrained
+    pos, neg = x[path], x[~path]
+    beaten = np.where(
+        path,
+        [(np.sum(neg < v) + 0.5 * np.sum(neg == v)) / len(neg) for v in x],
+        [(np.sum(pos > v) + 0.5 * np.sum(pos == v)) / len(pos) for v in x])
+    d["pairs_beaten"] = beaten
+    d["constraint_rank"] = ss.rankdata(-x, method="min").astype(int)   # 1 = most constrained
+    d["percentile"] = 100 * (1 - ss.rankdata(-x) / len(x))
+    # Youden's J over the thresholds the data actually offers
+    cuts = np.unique(x)
+    j = [(np.mean(pos >= c) - np.mean(neg >= c), c) for c in cuts]
+    best = max(j)[1]
+    d["called"] = np.where(x >= best, "pathogenic", "benign")
+    d["outcome"] = np.select(
+        [path & (d.called == "pathogenic"), path & (d.called == "benign"),
+         ~path & (d.called == "benign")],
+        ["true positive", "missed (false negative)", "true negative"],
+        default="false alarm (false positive)")
+    d.attrs["threshold_mu"] = float(-best)
+    d.attrs["youden_j"] = float(max(j)[0])
+    cols = ["gene", "pos", "wt", "mut", "label", "outcome", "pairs_beaten",
+            "constraint_rank", "percentile", "mu", "tau", "J", "seg_type",
+            "conservation", "col"]
+    out = d[[c for c in cols if c in d.columns]].sort_values("constraint_rank")
+    out.attrs = dict(d.attrs)
+    return out.reset_index(drop=True)
+
+
+def figure_variants(ranked: pd.DataFrame, outdir: Path, name: str, gene: str = ""):
+    """Every variant as its own point, so the misses can be named rather than averaged."""
+    if not len(ranked):
+        return
+    d = ranked.sort_values("mu")
+    y = np.arange(len(d))[::-1]
+    col = {"benign": "#1B9E77", "pathogenic": "#C0392B"}
+    fig, axes = plt.subplots(1, 2, figsize=(9.6, max(3.4, 0.17 * len(d) + 1.1)),
+                             layout="constrained", gridspec_kw={"width_ratios": [1.5, 1]})
+    ax = axes[0]
+    thr = d.attrs.get("threshold_mu")
+    if thr is not None:
+        ax.axvline(thr, color=P.INK, lw=1.0, ls=(0, (4, 3)))
+        ax.text(thr, len(d) + 0.4, f"  best threshold μ = {thr:+.3f}", fontsize=6,
+                va="bottom", color=P.INK)
+    ax.hlines(y, d.mu.min() - 0.01, d.mu, color="#DDDDDD", lw=0.7, zorder=0)
+    miss = d.outcome.str.startswith(("missed", "false alarm"))
+    ax.scatter(d.mu, y, s=30, c=[col[v] for v in d.label], zorder=4,
+               edgecolor=np.where(miss, P.INK, "none"),
+               linewidth=np.where(miss, 1.1, 0.0))
+    ax.set_yticks(y)
+    ax.set_yticklabels([f"{r.wt}{int(r.pos)}{r.mut}" for r in d.itertuples()], fontsize=6)
+    for t, m in zip(ax.get_yticklabels(), miss):
+        if m:
+            t.set_fontweight("bold")
+    ax.set_xlabel("Yeast family constraint at that column (μ)")
+    ax.set_ylim(-1, len(d))
+    ax.set_title(f"(a) every {gene or 'query'} variant, ordered by constraint "
+                 "(ringed and bold = on the wrong side)", loc="left", fontsize=8.5)
+    hand = [plt.Line2D([], [], marker="o", ls="", color=col[k], label=k)
+            for k in ("pathogenic", "benign")]
+    ax.legend(handles=hand, frameon=False, fontsize=6.5, loc="lower right")
+
+    ax = axes[1]
+    for k, lab in enumerate(("pathogenic", "benign")):
+        g = d[d.label == lab].sort_values("pairs_beaten")
+        ax.scatter(g.pairs_beaten, np.arange(len(g)) + (0 if k == 0 else 0),
+                   s=26, color=col[lab], label=lab, alpha=0.85, edgecolor=P.INK, lw=0.3)
+    ax.axvline(0.5, color=P.MUTED, lw=0.8, ls=(0, (3, 3)))
+    ax.set_xlim(-0.02, 1.02)
+    ax.set_xlabel("fraction of the other class it is correctly ordered against")
+    ax.set_ylabel("variants of that class, sorted")
+    ax.set_title("(b) what each variant contributes to the AUROC", loc="left", fontsize=8.5)
+    ax.legend(frameon=False, fontsize=6.5, loc="lower right")
+    P.save(fig, outdir, f"c02_{name}_variants", None, "C02")
+    plt.close(fig)
+
+
 def evaluate(scored: pd.DataFrame, score: str = "mu") -> dict:
     """AUROC of the yeast constraint for pathogenic against benign, with a bootstrap CI."""
     from sklearn.metrics import roc_auc_score
@@ -435,8 +531,17 @@ def run_one(name, members, seqs, cv, min_proteins, outdir):
         per.append(r)
     by_gene = pd.DataFrame(per)
     by_gene.to_csv(outdir / f"{name}_by_gene.csv", index=False)
+    ranked = rank_variants(scored)
+    if len(ranked):
+        ranked.to_csv(outdir / f"{name}_variant_ranking.csv", index=False)
+        res["threshold_mu"] = ranked.attrs.get("threshold_mu")
+        res["youden_j"] = ranked.attrs.get("youden_j")
+        res["outcomes"] = {k: int(v) for k, v in ranked.outcome.value_counts().items()}
     if "auroc" in res:
         figure(scored, res, by_gene, outdir, name)
+        one = by_gene.dropna(subset=["auroc"]) if "auroc" in by_gene else by_gene
+        figure_variants(ranked, outdir, name,
+                        str(one.gene.iloc[0]) if len(one) == 1 else "")
 
     print()
     if "auroc" in res:
@@ -478,6 +583,20 @@ def run_one(name, members, seqs, cv, min_proteins, outdir):
                       "to chance, so this result is mostly conservation rediscovered")
         else:
             print(f"  conservation control: {cc.get('reason', 'not computed')}")
+        if len(ranked):
+            print(f"\n  per variant (best threshold μ = {ranked.attrs['threshold_mu']:+.3f}, "
+                  f"Youden J = {ranked.attrs['youden_j']:.2f}):")
+            for k, v in ranked.outcome.value_counts().items():
+                print(f"    {k:<28} {v}")
+            bad = ranked[ranked.outcome.str.startswith(("missed", "false alarm"))]
+            if len(bad):
+                print("    on the wrong side, worst first:")
+                for r in bad.sort_values("pairs_beaten").itertuples():
+                    print(f"      {r.wt}{int(r.pos)}{r.mut:<4} {r.label:<11} μ {r.mu:+.3f}"
+                          f"  beats {r.pairs_beaten:.0%} of the other class"
+                          + (f"  [{r.seg_type}]" if isinstance(getattr(r, "seg_type", None), str)
+                             else ""))
+            print(f"    full table: {name}_variant_ranking.csv")
         for r in by_gene.itertuples():
             if np.isfinite(getattr(r, "auroc", np.nan)):
                 print(f"    {r.gene:<10} AUROC {r.auroc:.3f}  "

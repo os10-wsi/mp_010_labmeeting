@@ -239,3 +239,37 @@ def test_one_query_gene_drops_the_per_gene_panel(tmp_path):
             narrow = w
         else:
             assert w > narrow
+
+
+def test_the_per_variant_contributions_average_to_the_auroc():
+    """The identity that makes the table trustworthy: AUROC is the mean of these."""
+    from mpdms.clinvar import evaluate, rank_variants
+    s = _panel_scored(["SLC2A10"], seed=3)
+    r = rank_variants(s)
+    auc = evaluate(s)["auroc"]
+    for lab in ("pathogenic", "benign"):
+        assert r.loc[r.label == lab, "pairs_beaten"].mean() == pytest.approx(auc, abs=1e-9)
+    assert r.pairs_beaten.between(0, 1).all()
+    assert r.constraint_rank.iloc[0] == 1
+    assert r.mu.is_monotonic_increasing          # rank 1 is the most constrained
+
+
+def test_the_variants_on_the_wrong_side_are_the_ones_named():
+    from mpdms.clinvar import rank_variants
+    s = _panel_scored(["SLC2A10"], seed=5)
+    # plant one obvious miss: a pathogenic variant at a completely unconstrained column
+    s.loc[s.index[0], ["label", "mu"]] = ["pathogenic", 0.9]
+    r = rank_variants(s)
+    worst = r.sort_values("pairs_beaten").iloc[0]
+    assert worst.mu == pytest.approx(0.9)
+    assert worst.outcome.startswith("missed")
+    assert worst.pairs_beaten == pytest.approx(0.0)
+    assert set(r.outcome) <= {"true positive", "true negative",
+                              "missed (false negative)", "false alarm (false positive)"}
+    assert r.attrs["youden_j"] > 0
+
+
+def test_one_sided_input_returns_an_empty_table_rather_than_raising():
+    from mpdms.clinvar import rank_variants
+    s = _panel_scored(["SLC2A10"])
+    assert not len(rank_variants(s[s.label == "benign"]))

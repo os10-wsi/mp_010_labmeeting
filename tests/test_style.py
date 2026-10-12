@@ -438,3 +438,40 @@ def test_zero_is_white_on_the_fitness_scale():
     assert P.fitness_cmap()(P.fitness_norm()(-1.0))[0] > 0.4
     assert P.fitness_cmap()(P.fitness_norm()(-1.0))[2] < 0.05
     assert P.fitness_cmap()(P.fitness_norm()(0.5))[2] > 0.7
+
+
+def test_box_and_square_close_the_frame_at_save_time(tmp_path, monkeypatch):
+    """Presentation switches, applied where every figure passes through."""
+    import matplotlib.pyplot as plt
+
+    from mpdms import plotting as P
+    P.use_style("paper")
+    monkeypatch.setenv("MPDMS_BOX", "1")
+    monkeypatch.setenv("MPDMS_SQUARE", "1")
+    fig, ax = plt.subplots()
+    ax.plot([0, 1], [0, 1])
+    P.save(fig, tmp_path, "boxed")
+    assert all(sp.get_visible() for sp in ax.spines.values())
+    assert all(sp.get_linewidth() > 1.0 for sp in ax.spines.values())
+    assert ax.get_box_aspect() == 1
+
+    # off by default, so nothing changes for a run that does not ask for it
+    monkeypatch.delenv("MPDMS_BOX"); monkeypatch.delenv("MPDMS_SQUARE")
+    fig, ax = plt.subplots()
+    ax.plot([0, 1], [0, 1])
+    P.save(fig, tmp_path, "plain")
+    assert not ax.spines["top"].get_visible()
+    assert ax.get_box_aspect() is None
+
+
+def test_square_leaves_a_heatmap_alone(tmp_path, monkeypatch):
+    """A panel with a fixed data aspect would be stretched, not squared."""
+    import matplotlib.pyplot as plt
+    import numpy as np
+
+    from mpdms import plotting as P
+    monkeypatch.setenv("MPDMS_SQUARE", "1")
+    fig, ax = plt.subplots()
+    ax.imshow(np.zeros((20, 4)))                 # imshow fixes the aspect
+    P.save(fig, tmp_path, "heat")
+    assert ax.get_box_aspect() is None

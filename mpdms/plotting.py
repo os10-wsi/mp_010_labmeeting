@@ -1,6 +1,7 @@
 """Shared theme, colormaps and figure helpers so every slide looks the same."""
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 from functools import lru_cache
@@ -268,9 +269,46 @@ def write_caption(fig, path: Path, name: str, panels: list[tuple[str, str]]) -> 
     return path
 
 
+def _frame(fig) -> None:
+    """MPDMS_BOX / MPDMS_SQUARE, applied to every panel just before the figure is saved.
+
+    Both are presentation choices rather than analysis ones, so they are switches read
+    from the environment and applied here, at the one place every figure passes through.
+    Doing it at save time means a rerun of any command picks them up and no analysis
+    module has to know about them.
+
+        MPDMS_BOX=1     close the frame: all four spines, drawn heavier
+        MPDMS_SQUARE=1  make each panel square
+
+    Square is skipped for an axes that already has a fixed data aspect - a heatmap of
+    20 x 12 cells, a structure projection in angstroms - because forcing those to a
+    square box would stretch the data rather than the panel.
+    """
+    box, square = os.environ.get("MPDMS_BOX"), os.environ.get("MPDMS_SQUARE")
+    if not (box or square):
+        return
+    lw = float(os.environ.get("MPDMS_BOX_WIDTH", 1.4))
+    for ax in fig.axes:
+        if ax.get_label() == "<colorbar>":
+            continue
+        if box:
+            for sp in ax.spines.values():
+                sp.set_visible(True)
+                sp.set_linewidth(lw)
+                sp.set_color(INK)
+        if square:
+            try:
+                fixed = ax.get_aspect() != "auto"
+            except Exception:
+                fixed = True
+            if not fixed and ax.name == "rectilinear":
+                ax.set_box_aspect(1)
+
+
 def save(fig, outdir: Path, name: str, cfg=None, analysis: str = "") -> list[Path]:
     outdir = Path(outdir)
     outdir.mkdir(parents=True, exist_ok=True)
+    _frame(fig)
     stamp(fig, cfg, analysis)
     panels = _relabel_panels(fig) if paper() else []
     paths = []
