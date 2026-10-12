@@ -325,6 +325,55 @@ density against predicting one number for the whole family, and by whether the 5
 credible intervals actually contain 50% and 90% of what happened. The last of these is the
 one that catches a model that looks accurate and is overconfident.
 
+### What does a residue's environment say about what it tolerates?
+
+```bash
+python -m mpdms environ \
+  configs/AQR1_fitness.yaml configs/HXT1.yaml configs/HXT2.yaml \
+  configs/HXT3.yaml configs/HXT7.yaml
+```
+
+A membrane protein has several kinds of buried and several kinds of exposed, and RSA
+cannot tell them apart. Each position is classified with the membrane frame instead:
+
+| class | what it is |
+| --- | --- |
+| helix-helix core | in a TM helix, RSA < 0.15: packed against other helices |
+| cavity-lining | in a TM helix, exposed, inside the median TM radius: facing the central pathway, which in a transporter is water |
+| lipid-facing | in a TM helix, exposed, outside it: facing acyl chains |
+| cytosolic / lumenal loop | outside the membrane, by side from the topology |
+
+RSA merges the middle two, and they are the two with opposite chemistry — a polar residue
+is at home in the cavity and out of place against lipid. Separating them is what the
+`radial` coordinate is for. The radial cut is each protein's own median TM radius, not a
+fixed number of angstroms, and it is printed and stored. Positions with pLDDT < 70 are
+left unclassified rather than placed on geometry the model is unsure of.
+
+| figure | question |
+| --- | --- |
+| E01 | mean effect per position by class, per protein and pooled |
+| E02 | burial against depth together: does burial cost more in the bilayer centre than at its edge? |
+| E03 | Δ hydrophobicity against effect, in three bands of burial, with the quadratic term |
+| E04 | polar→hydrophobic and back, by class, each against that class's own baseline |
+| E05 | effect against contact number, with RSA partialled out |
+| E06 | where the ten largest ESM-1v residuals sit, and whether they cluster |
+
+E04 is the one that states the hypothesis directly. Every direction is reported relative
+to the average substitution at the same kind of position: a class that is intolerant of
+everything would otherwise look intolerant of each direction in turn, which says nothing
+about chemistry. E05 reports the partial correlation as well as the raw one, because
+contacts and RSA are two views of the same thing and only the partial is news.
+
+E06 asks whether the positions where ESM-1v expects more constraint than abundance shows
+form a network. Mean pairwise Cα distance against a permutation null, and it is scored
+against **two** nulls: ten positions drawn from anywhere measured, and ten drawn with the
+same TM/loop composition as the observed set. The second is the one to believe — ten TM
+residues are close together because TM residues are close together, and on the test
+fixture that alone takes p from 0.016 to 0.089. Each protein also gets a PyMOL `.pml` and
+a ChimeraX `.cxc` script under `structures/<protein>/`, with the ten residues as spheres
+and every pair under 10 Å as a real distance object, so the network in the figure can be
+turned around in the model.
+
 ### Can the structure make the family model better - and does it beat ESM-1v?
 
 ```bash
