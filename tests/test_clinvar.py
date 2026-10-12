@@ -273,3 +273,50 @@ def test_one_sided_input_returns_an_empty_table_rather_than_raising():
     from mpdms.clinvar import rank_variants
     s = _panel_scored(["SLC2A10"])
     assert not len(rank_variants(s[s.label == "benign"]))
+
+
+def test_several_substitutions_at_one_residue_are_one_observation():
+    """mu is a position score, so a gene whose variants cluster is scored on fewer units."""
+    from mpdms.clinvar import collapse_to_positions, evaluate
+    rows = []
+    # three pathogenic substitutions at one well-predicted arginine, plus singletons
+    for mut in "WPL":
+        rows.append({"gene": "G", "pos": 132, "wt": "R", "mut": mut,
+                     "label": "pathogenic", "mu": -0.12})
+    for k, mu in enumerate([-0.20, -0.18, -0.15, -0.10, 0.03]):
+        rows.append({"gene": "G", "pos": 200 + k, "wt": "A", "mut": "V",
+                     "label": "pathogenic", "mu": mu})
+    for k, mu in enumerate([-0.05, -0.02, 0.00, 0.01, 0.02, 0.04]):
+        rows.append({"gene": "G", "pos": 300 + k, "wt": "A", "mut": "V",
+                     "label": "benign", "mu": mu})
+    s = pd.DataFrame(rows)
+    at_pos = collapse_to_positions(s)
+    assert len(at_pos) == 12 and (at_pos.label == "pathogenic").sum() == 6
+    assert int(at_pos.loc[at_pos.pos == 132, "n_variants"].iloc[0]) == 3
+    # the triple-counted residue inflates the variant-level number
+    assert evaluate(s)["auroc"] > evaluate(at_pos)["auroc"]
+
+
+def test_a_position_called_both_ways_is_dropped_rather_than_guessed():
+    from mpdms.clinvar import collapse_to_positions
+    s = pd.DataFrame([{"gene": "G", "pos": 7, "wt": "A", "mut": "V",
+                       "label": "pathogenic", "mu": -0.2},
+                      {"gene": "G", "pos": 7, "wt": "A", "mut": "T",
+                       "label": "benign", "mu": -0.2},
+                      {"gene": "G", "pos": 9, "wt": "A", "mut": "V",
+                       "label": "benign", "mu": 0.0}])
+    out = collapse_to_positions(s)
+    assert list(out.pos) == [9]
+    assert out.attrs["n_mixed_positions"] == 1
+
+
+def test_a_coarse_conservation_baseline_is_counted():
+    """Conservation from four aligned residues is nearly binary; the run must say so."""
+    from mpdms.clinvar import conservation_control
+    rng = np.random.default_rng(0)
+    n = 60
+    s = pd.DataFrame({"label": ["pathogenic"] * (n // 2) + ["benign"] * (n // 2),
+                      "mu": np.concatenate([rng.normal(-0.3, 0.1, n // 2),
+                                            rng.normal(0.0, 0.1, n // 2)]),
+                      "conservation": rng.choice([0.42, 0.59, 1.0], n)})
+    assert conservation_control(s)["n_conservation_levels"] == 3

@@ -210,6 +210,7 @@ def conservation_control(scored: pd.DataFrame) -> dict:
     cons = d.conservation.to_numpy()
     out = {"n": int(len(d)), "auroc_abundance": float(roc_auc_score(y, mu)),
            "auroc_conservation": float(roc_auc_score(y, cons)),
+           "n_conservation_levels": int(pd.Series(cons).nunique()),
            "corr_abundance_conservation": float(ss.spearmanr(mu, cons)[0])}
     X = np.column_stack([(mu - mu.mean()) / (mu.std() or 1),
                          (cons - cons.mean()) / (cons.std() or 1)])
@@ -220,6 +221,27 @@ def conservation_control(scored: pd.DataFrame) -> dict:
     # the decisive number: abundance scored after conservation has had its say
     resid = mu - np.polyval(np.polyfit(cons, mu, 1), cons)
     out["auroc_abundance_given_conservation"] = float(roc_auc_score(y, resid))
+    return out
+
+
+def collapse_to_positions(scored: pd.DataFrame) -> pd.DataFrame:
+    """One row per position, because mu is a property of the position, not the variant.
+
+    Three substitutions at one arginine get the same score and count three times in a
+    variant-level AUROC, so a gene whose pathogenic variants cluster at a few residues is
+    scored on fewer independent observations than the variant count suggests. Collapsing
+    first is the honest unit. A position carrying both a pathogenic and a benign call is
+    dropped rather than assigned one of them: the score cannot separate what it cannot
+    see apart.
+    """
+    d = scored.dropna(subset=["mu"])
+    if not len(d):
+        return d
+    g = d.groupby(["gene", "pos"])
+    keep = g.label.nunique() == 1
+    out = (g.first().assign(n_variants=g.size(), label=g.label.first())
+           .loc[keep[keep].index].reset_index())
+    out.attrs["n_mixed_positions"] = int((~keep).sum())
     return out
 
 
@@ -531,6 +553,11 @@ def run_one(name, members, seqs, cv, min_proteins, outdir):
         per.append(r)
     by_gene = pd.DataFrame(per)
     by_gene.to_csv(outdir / f"{name}_by_gene.csv", index=False)
+    at_pos = collapse_to_positions(scored)
+    if len(at_pos):
+        res_pos = evaluate(at_pos)
+        res["by_position"] = res_pos
+        at_pos.to_csv(outdir / f"{name}_scored_positions.csv", index=False)
     ranked = rank_variants(scored)
     if len(ranked):
         ranked.to_csv(outdir / f"{name}_variant_ranking.csv", index=False)
@@ -548,6 +575,16 @@ def run_one(name, members, seqs, cv, min_proteins, outdir):
         print(f"  AUROC {res['auroc']:.3f}  [{res['auroc_lo']:.3f}, {res['auroc_hi']:.3f}]"
               f"   {res['n_pathogenic']:,} pathogenic vs {res['n_benign']:,} benign"
               f"   p = {res['p_mannwhitney']:.2g}")
+        rp = res.get("by_position", {})
+        if "auroc" in rp:
+            print(f"  by position: AUROC {rp['auroc']:.3f}  "
+                  f"[{rp['auroc_lo']:.3f}, {rp['auroc_hi']:.3f}]"
+                  f"   {rp['n_pathogenic']} pathogenic vs {rp['n_benign']} benign positions"
+                  f"   p = {rp['p_mannwhitney']:.2g}")
+            print("    <- the honest unit: mu is a property of the position, so several "
+                  "substitutions at one residue are one observation, not several")
+        elif rp:
+            print(f"  by position: not evaluated: {rp.get('reason')}")
         gap = res["median_benign"] - res["median_pathogenic"]
         print(f"  median constraint: pathogenic {res['median_pathogenic']:+.3f}, "
               f"benign {res['median_benign']:+.3f}   (gap {gap:+.3f})")
@@ -578,6 +615,12 @@ def run_one(name, members, seqs, cv, min_proteins, outdir):
             print(f"    they correlate at rho = {cc['corr_abundance_conservation']:+.2f}; "
                   f"standardised coefficients: abundance {cc['coef_abundance']:+.2f}, "
                   f"conservation {cc['coef_conservation']:+.2f}")
+            lv = cc.get("n_conservation_levels", 0)
+            if lv and lv < 8:
+                print(f"    CAUTION: conservation takes only {lv} distinct values over "
+                      "these variants - it is one minus the entropy of a handful of "
+                      "aligned residues, so it is a coarse baseline and beating it is a "
+                      "weaker claim than beating a deep-alignment conservation score")
             if cc["auroc_abundance_given_conservation"] < 0.55:
                 print("    NOTE: once conservation is removed the abundance signal is close "
                       "to chance, so this result is mostly conservation rediscovered")
