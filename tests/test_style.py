@@ -315,3 +315,56 @@ def test_a_nonsense_threshold_falls_back_rather_than_crashing(monkeypatch, capsy
     monkeypatch.setenv("MPDMS_Z_SITE", "strict")
     assert _z_site() == -1.0
     assert "not a number" in capsys.readouterr().out
+
+
+def _rep_df(n_rep=3, n=600, seed=0):
+    import numpy as np
+    import pandas as pd
+    r = np.random.default_rng(seed)
+    base = r.normal(-0.4, 0.5, n)
+    d = {f"rep{k}": base + r.normal(0, 0.15, n) for k in range(1, n_rep + 1)}
+    d.update(pass_filter=True, vclass="missense", pos=np.arange(n) % 80,
+             score_z=base, wt="A", mut="V")
+    return pd.DataFrame(d)
+
+
+def test_the_replicate_grid_has_text_on_the_diagonal_and_r_above_it(tmp_path):
+    """The published idiom: density below, the correlation above, names on the diagonal."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from mpdms.analyses.qc import replicate_grid
+
+    class _Cfg:
+        id = "T"
+        display_name = "T"
+
+        def get_path(self, *a, **k):
+            return None
+    paths, stats = replicate_grid(_rep_df(), _Cfg(), ["rep1", "rep2", "rep3"], tmp_path)
+    assert paths and all(p.exists() for p in paths)
+    # three pairs below the diagonal, each with a correlation
+    assert len(stats) == 3
+    assert (stats.pearson > 0.8).all()
+    assert set(stats.columns) >= {"rep_x", "rep_y", "pearson", "spearman", "n"}
+    plt.close("all")
+
+
+def test_the_grid_reports_one_row_per_pair_not_per_cell(tmp_path):
+    """Nine cells, three pairs: the upper triangle must not be counted twice."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from mpdms.analyses.qc import replicate_grid
+
+    class _Cfg:
+        id = "T"
+        display_name = "T"
+
+        def get_path(self, *a, **k):
+            return None
+    _, stats = replicate_grid(_rep_df(n_rep=4), _Cfg(),
+                              ["rep1", "rep2", "rep3", "rep4"], tmp_path)
+    assert len(stats) == 6                       # 4 choose 2
+    assert len({frozenset((r.rep_x, r.rep_y)) for r in stats.itertuples()}) == 6
+    plt.close("all")

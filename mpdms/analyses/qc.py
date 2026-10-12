@@ -32,65 +32,59 @@ def _kde(ax, x, color, label=None, lw=1.4, fill=True, bw=None, grid=None, ls="-"
 
 
 def replicate_grid(df, cfg, reps, figdir, name="qc_replicate_correlation", label="Normalised fitness"):
+    """The pair-plot idiom: density below the diagonal, the correlation above it.
+
+    The diagonal carries only the replicate's name, as in the published form - a density
+    there would be the same curve three times and says nothing about agreement, which is
+    what the figure is for. Tick labels appear once per row and column rather than on
+    every cell, and the axis is named once for the whole grid.
+    """
     n = len(reps)
     d = df[df["pass_filter"]]
     lo, hi = np.nanpercentile(d[reps].to_numpy(), [0.3, 99.7])
     pad = 0.05 * (hi - lo)
     lim = (lo - pad, hi + pad)
-    size = 1.9
-    fig, axes = plt.subplots(n, n, figsize=(size * n + 0.6, size * n + 0.4), squeeze=False)
+    size = 1.75
+    fig, axes = plt.subplots(n, n, figsize=(size * n + 0.9, size * n + 0.8), squeeze=False,
+                             layout="constrained")
     stats_rows = []
-    grid = np.linspace(*lim, 300)
     for i, j in itertools.product(range(n), range(n)):
         ax = axes[i, j]
-        if j > i:
-            # upper triangle carries the correlation as a boxed number, as in the
-            # reference figure, instead of being left blank
-            x, y = d[reps[j]], d[reps[i]]
-            ok = x.notna() & y.notna()
-            r = ss.pearsonr(x[ok], y[ok])[0] if ok.sum() > 2 else np.nan
-            ax.text(0.5, 0.5, f"r = {r:.2f}", transform=ax.transAxes, ha="center", va="center",
-                    fontsize=10, color="#2F6DB5")
+        if i == j:
+            ax.text(0.5, 0.5, f"Replicate\n{reps[i][3:]}", transform=ax.transAxes,
+                    ha="center", va="center", fontsize=9)
             ax.set_xticks([]); ax.set_yticks([])
             for sp in ax.spines.values():
-                sp.set_color("#C9D3DD")
+                sp.set_visible(False)
             continue
-        if i == j:
-            for c in P.CLASS_ORDER:
-                _kde(ax, d.loc[d.vclass == c, reps[i]], P.CLASS_COLORS[c], grid=grid, lw=1.1)
-            ax.set_yticks([])
-            ax.spines["left"].set_visible(False)
-            ax.set_xlim(lim)
-            ax.set_title(f"Replicate {reps[i][3:]}", fontsize=8, pad=2)
+        x, y = d[reps[j]], d[reps[i]]
+        ok = x.notna() & y.notna()
+        r = ss.pearsonr(x[ok], y[ok])[0] if ok.sum() > 2 else np.nan
+        rho = ss.spearmanr(x[ok], y[ok])[0] if ok.sum() > 2 else np.nan
+        if j > i:
+            ax.text(0.5, 0.5, f"r = {r:.2f}", transform=ax.transAxes, ha="center",
+                    va="center", fontsize=10.5, color="#4C5BA8", style="italic")
+            ax.set_xticks([]); ax.set_yticks([])
         else:
-            x, y = d[reps[j]], d[reps[i]]
-            ok = x.notna() & y.notna()
-            ax.hexbin(x[ok], y[ok], gridsize=45, extent=(*lim, *lim), cmap=DENSITY_CMAP,
-                           bins="log", mincnt=1, linewidths=0, rasterized=True)
-            ax.plot(lim, lim, ls=(0, (3, 2)), color=P.MUTED, lw=0.7)
-            for v in (0, -1):
-                ax.axhline(v, color="#BBBBBB", lw=0.4, zorder=0)
-                ax.axvline(v, color="#BBBBBB", lw=0.4, zorder=0)
-            r = ss.pearsonr(x[ok], y[ok])[0] if ok.sum() > 2 else np.nan
-            rho = ss.spearmanr(x[ok], y[ok])[0] if ok.sum() > 2 else np.nan
-            ax.text(0.04, 0.96, f"ρ = {rho:.2f}\nn = {ok.sum():,}", transform=ax.transAxes,
-                    va="top", ha="left", fontsize=6.5)
-            stats_rows.append({"rep_x": reps[j], "rep_y": reps[i], "pearson": r, "spearman": rho, "n": int(ok.sum())})
+            ax.hexbin(x[ok], y[ok], gridsize=50, extent=(*lim, *lim),
+                      cmap=P.sequential_cmap(), bins="log", mincnt=1, linewidths=0,
+                      rasterized=True)
             ax.set_xlim(lim); ax.set_ylim(lim)
             ax.set_aspect("equal")
-        if i == n - 1:
-            ax.set_xlabel(f"{label} (rep {reps[j][3:]})")
-        else:
-            ax.set_xticklabels([])
-        if j == 0 and i != j:
-            ax.set_ylabel(f"{label} (rep {reps[i][3:]})")
-        elif i != j:
-            ax.set_yticklabels([])
-    if n > 1:
-        axes[0, 0].legend(handles=P.class_legend_handles(), loc="upper left", fontsize=5.5,
-                          title="Variant class", title_fontsize=5.5)
+            stats_rows.append({"rep_x": reps[j], "rep_y": reps[i], "pearson": r,
+                               "spearman": rho, "n": int(ok.sum())})
+            if i != n - 1:
+                ax.set_xticklabels([])
+            if j != 0:
+                ax.set_yticklabels([])
+        for sp in ax.spines.values():
+            sp.set_visible(True)
+            sp.set_color(P.INK)
+            sp.set_linewidth(0.8)
+        ax.tick_params(labelsize=6.5)
+    fig.supxlabel(label, fontsize=8, fontweight="bold")
+    fig.supylabel(label, fontsize=8, fontweight="bold")
     P.title(fig, cfg, "replicate reproducibility")
-    fig.tight_layout(rect=(0, 0.01, 1, 0.97))
     return P.save(fig, figdir, name, cfg, "QC"), pd.DataFrame(stats_rows)
 
 
