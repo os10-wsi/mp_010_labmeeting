@@ -326,54 +326,105 @@ def i02_interaction(variants: dict, helices: dict, names: list[str],
     return {"status": "ok", "headline": head, "models": mo.to_dict("records")}
 
 
-# ----------------------------------------- i03 the picture the claim implies
-def i03_floor(variants: dict, names: list[str], outdir: Path) -> dict:
-    """Effect against ddG, drawn separately for marginal and comfortable helices."""
-    rows = []
-    fig, pairs, _ = grid(names, w=3.0, h=2.7, extra=0.3)
+# ----------------------------------------- i03 every helix, and the median of them
+N_BINS = 6
+MIN_PER_BIN = 5
+
+
+def i03_helix_curves(variants: dict, helices: dict, names: list[str],
+                     outdir: Path) -> dict:
+    """Effect against ddG, one line per TM helix, coloured by that helix's own dG.
+
+    This replaces a median split into "marginal" and "comfortable" halves. The split
+    threw away the quantity being tested: dG is continuous, the helices of a transporter
+    all insert comfortably in absolute terms, and cutting them at their own median
+    produced two groups whose difference was a difference in rank rather than in
+    energetics. Drawing every helix and colouring it by its dG shows the same data with
+    nothing binned away, and the claim becomes something to look for directly - the
+    lighter lines, the less insertable helices, should fall away faster on the right.
+
+    The bins are common across the helices of one protein, so the median line is a
+    median of comparable numbers rather than of whatever each helix's own quantiles
+    happened to be.
+    """
+    rows, med_rows = [], []
+    fig, pairs, axes = grid(names, w=3.3, h=3.0, extra=0.3)
+    sm = None
+    allh = pd.concat([h for h in helices.values()])
+    lo, hi = float(allh.dg.min()), float(allh.dg.max())
+    cmap = P.sequential_cmap()
     for i, (g, ax) in enumerate(pairs):
         v = variants[g].dropna(subset=["score_z", "ddg"])
-        for lab, sub, col in (("comfortable helices", v[v.marginal == 0], "#2166AC"),
-                              ("marginal helices", v[v.marginal == 1], P.DARK_RED)):
-            if len(sub) < 40:
+        h = helices[g].set_index("helix")
+        if not len(v):
+            continue
+        edges = np.unique(np.quantile(v.ddg, np.linspace(0, 1, N_BINS + 1)))
+        if len(edges) < 3:
+            continue
+        v = v.assign(bin=pd.cut(v.ddg, edges, include_lowest=True))
+        curves = {}
+        for hx, sub in v.groupby("helix"):
+            m = sub.groupby("bin", observed=True).agg(
+                x=("ddg", "mean"), y=("score_z", "mean"), n=("score_z", "size"))
+            m = m[m.n >= MIN_PER_BIN].dropna()
+            if len(m) < 3:
                 continue
-            b = pd.qcut(sub.ddg, 6, duplicates="drop")
-            m = sub.groupby(b, observed=True).agg(x=("ddg", "mean"), y=("score_z", "mean"),
-                                                  e=("score_z", "sem"),
-                                                  n=("score_z", "size")).dropna()
-            ax.errorbar(m.x, m.y, yerr=m.e, fmt="-o", ms=4, lw=1.3, color=col, capsize=2,
-                        label=lab, mec=P.INK, mew=0.4)
+            dg = float(h.loc[hx, "dg"])
+            curves[hx] = m
+            ax.plot(m.x, m.y, "-", lw=1.0, alpha=0.85,
+                    color=cmap((dg - lo) / (hi - lo) if hi > lo else 0.5))
             r = ss.linregress(sub.ddg, sub.score_z)
-            rows.append({"protein": g, "group": lab, "slope": float(r.slope),
+            rows.append({"protein": g, "helix": hx, "dg": dg, "slope": float(r.slope),
                          "se": float(r.stderr), "p": float(r.pvalue), "n": int(len(sub))})
+        if curves:
+            # median across helices at each common bin: the typical helix, with no
+            # helix allowed to dominate by having more variants than the others
+            wide = pd.DataFrame({k: m.set_index(m.index).y for k, m in curves.items()})
+            xs = pd.concat([m.x for m in curves.values()], axis=1).median(axis=1)
+            med = wide.median(axis=1)
+            ok = wide.notna().sum(axis=1) >= 3
+            ax.plot(xs[ok], med[ok], "-o", ms=4.5, lw=2.4, color=P.INK, zorder=6,
+                    label="median of helices")
+            med_rows += [{"protein": g, "ddg": float(x), "median_effect": float(y),
+                          "n_helices": int(n)}
+                         for x, y, n in zip(xs[ok], med[ok], wide.notna().sum(axis=1)[ok])]
         ax.axhline(0, color=P.MUTED, lw=0.6)
         ax.axvline(0, color=P.MUTED, lw=0.6, ls=(0, (1, 2)))
-        d = [r for r in rows if r["protein"] == g]
-        panel(ax, i, g, "  ".join(f"{r['group'].split()[0]} {r['slope']:+.3f}" for r in d),
-              size=7.5)
+        s = pd.DataFrame([r for r in rows if r["protein"] == g])
+        extra = ""
+        if len(s) >= 4:
+            rho, pv = ss.spearmanr(s.dg, s.slope)
+            extra = f"{len(s)} helices, slope vs ΔG ρ = {rho:+.2f} (p = {pv:.2g})"
+        panel(ax, i, g, extra, size=7.5)
         if i // 2 == (len(names) - 1) // 2:
             ax.set_xlabel("ΔΔG of the substitution at that depth (kcal/mol)", fontsize=7.5)
         if i % 2 == 0:
             ax.set_ylabel("mean effect", fontsize=7.5)
         if i == 0:
-            ax.legend(frameon=False, fontsize=6)
-    fig.suptitle("Positive ΔΔG = the substitution makes the helix harder to insert. The "
-                 "claim predicts the red line falls away faster than the blue one.",
+            ax.legend(frameon=False, fontsize=6.5, loc="lower left")
+    if hi > lo:
+        import matplotlib as mpl
+        sm = mpl.cm.ScalarMappable(cmap=cmap, norm=mpl.colors.Normalize(lo, hi))
+        fig.colorbar(sm, ax=axes, fraction=0.022, pad=0.01).set_label(
+            "ΔG of inserting the helix (kcal/mol)", fontsize=8, fontweight="bold")
+    fig.suptitle("One line per TM helix, coloured by how readily it inserts: dark = "
+                 "inserts easily, light = least insertable of the set. The claim predicts "
+                 "the lighter lines fall away faster to the right.",
                  fontsize=7, x=0.01, ha="left")
-    P.save(fig, outdir, "i03_marginal_vs_comfortable", None, "I03")
+    P.save(fig, outdir, "i03_helix_curves", None, "I03")
     plt.close(fig)
     per = pd.DataFrame(rows)
-    per.to_csv(outdir / "i03_slopes_by_group.csv", index=False)
-    head = "; ".join(f"{p.replace('_fitness', '')} "
-                     + " vs ".join(f"{r.slope:+.3f}" for r in d.itertuples())
-                     for p, d in per.groupby("protein"))
-    return {"status": "ok", "headline": f"marginal vs comfortable slopes: {head}",
-            "by_protein": per.to_dict("records")}
+    per.to_csv(outdir / "i03_helix_slopes.csv", index=False)
+    pd.DataFrame(med_rows).to_csv(outdir / "i03_median_curve.csv", index=False)
+    head = "; ".join(f"{g.replace('_fitness', '')} ρ(slope, ΔG) "
+                     f"{ss.spearmanr(d.dg, d.slope)[0]:+.2f} over {len(d)} helices"
+                     for g, d in per.groupby("protein") if len(d) >= 4)
+    return {"status": "ok", "headline": head, "by_helix": per.to_dict("records")}
 
 
 ANALYSES = {"i01": "helix ΔG against its tolerance",
             "i02": "the interaction: is ΔΔG worse in a marginal helix?",
-            "i03": "marginal against comfortable helices, binned"}
+            "i03": "every helix separately, and the median of them"}
 
 
 def main(argv=None):
@@ -439,7 +490,7 @@ def main(argv=None):
             elif k == "i02":
                 r = i02_interaction(variants, helices, names, outdir)
             else:
-                r = i03_floor(variants, names, outdir)
+                r = i03_helix_curves(variants, helices, names, outdir)
         except Exception as e:
             r = {"status": "error", "reason": f"{type(e).__name__}: {e}"}
         out[k] = r

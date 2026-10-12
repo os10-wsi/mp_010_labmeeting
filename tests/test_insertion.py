@@ -5,6 +5,7 @@ matplotlib.use("Agg")
 import numpy as np
 import pandas as pd
 import pytest
+from scipy import stats as ss
 
 from mpdms import insertion as I
 
@@ -169,3 +170,29 @@ def test_standard_errors_are_clustered_by_helix(tmp_path):
     clustered_s = smf.ols("score_z ~ ddg * helix_dg + rsa_", data=w).fit(
         cov_type="cluster", cov_kwds={"groups": w.helix})
     assert clustered_s.bse["helix_dg"] > 2 * naive_s.bse["helix_dg"]
+
+
+def test_every_helix_gets_its_own_curve_and_the_median_is_of_helices(tmp_path):
+    """No median split: the figure draws each helix and the median across them."""
+    h, v = _toy(n_helices=12, effect="interaction", seed=3, per_helix=120)
+    r = I.i03_helix_curves({"P": v}, {"P": h}, ["P"], tmp_path)
+    per = pd.read_csv(tmp_path / "i03_helix_slopes.csv")
+    assert len(per) == 12 and per.helix.nunique() == 12
+    med = pd.read_csv(tmp_path / "i03_median_curve.csv")
+    assert len(med) >= 3 and (med.n_helices >= 3).all()
+    # the median curve is a median of helices, so it sits inside their spread
+    assert med.median_effect.between(per.slope.min() * 10, 1).all()
+    # and with a planted interaction, the less insertable helices have steeper slopes
+    rho = ss.spearmanr(per.dg, per.slope)[0]
+    assert rho < -0.4, rho
+    assert "ρ(slope, ΔG)" in r["headline"]
+
+
+def test_a_helix_with_too_little_data_is_left_out_rather_than_drawn_thin(tmp_path):
+    h, v = _toy(n_helices=6, seed=5, per_helix=90)
+    sparse = pd.concat([v[v.helix != "TM3"], v[v.helix == "TM3"].head(4)],
+                       ignore_index=True)
+    I.i03_helix_curves({"P": sparse}, {"P": h}, ["P"], tmp_path)
+    per = pd.read_csv(tmp_path / "i03_helix_slopes.csv")
+    assert "TM3" not in set(per.helix)
+    assert len(per) == 5

@@ -493,10 +493,14 @@ Two details that matter and are easy to get wrong:
 | --- | --- |
 | I01 | does a helix's ΔG predict its mean tolerance? (the weak version) |
 | I02 | the interaction, two ways: slope-of-effect-on-ΔΔG per helix against that helix's ΔG, and a per-protein model with the interaction term |
-| I03 | effect against ΔΔG, binned, marginal helices against comfortable ones |
+| I03 | effect against ΔΔG, **one line per helix** coloured by that helix's ΔG, with the median of the helices in bold |
 
-"Marginal" is a median split **within** each protein: an absolute kcal/mol cut would
-mostly sort the proteins, since a longer helix has a more negative ΔG by construction.
+I02 still uses a within-protein median split to label helices "marginal" in its model,
+but I03 does not split at all: it draws every helix and lets ΔG be the colour. The split
+was throwing away the quantity being tested — ΔG is continuous, every helix of these
+transporters inserts comfortably in absolute terms (roughly −9 to −15 kcal/mol), and
+cutting them at their own median produced two groups whose difference was a difference
+in rank rather than in energetics. Read I03 first.
 
 `--depth structure` evaluates each ΔΔG at the residue's real depth from the AlphaFold
 membrane frame instead of its idealised position in the helix.
