@@ -51,14 +51,14 @@ MIN_VARIANTS = 3
 
 
 # ------------------------------------------------------------------ alignment
-def align_sequences(seqs: dict[str, str]) -> pd.DataFrame:
+def align_sequences(seqs: dict[str, str], mafft_args: list[str] | None = None) -> pd.DataFrame:
     """One row per alignment column; columns `<id>_pos` (1-based, NaN at a gap) and `<id>_aa`."""
     ids = list(seqs)
     if len(ids) < 2:
         raise RuntimeError("need at least two sequences")
     if shutil.which("mafft"):
-        rows = _mafft(seqs)
-        rows.attrs.setdefault("method", "MAFFT")
+        rows = _mafft(seqs, mafft_args)
+        rows.attrs.setdefault("method", "MAFFT " + " ".join(mafft_args or ["--auto"]))
     elif len(ids) == 2:
         rows = _pairwise(seqs)
         rows.attrs.setdefault("method", "pairwise")
@@ -159,7 +159,10 @@ def center_star(seqs: dict[str, str]) -> pd.DataFrame:
     return t
 
 
-def _mafft(seqs: dict[str, str]) -> pd.DataFrame:
+def _mafft(seqs: dict[str, str], args: list[str] | None = None) -> pd.DataFrame:
+    """Align with MAFFT. `args` replaces --auto, e.g. ["--maxiterate", "1000", "--localpair"]
+    (L-INS-i), which is worth the extra time for remote homologues where --auto drops to a
+    fast progressive method and the alignment is the thing being relied on."""
     if not shutil.which("mafft"):
         raise RuntimeError("more than two proteins needs MAFFT (conda install -c bioconda mafft)")
     import tempfile
@@ -167,7 +170,8 @@ def _mafft(seqs: dict[str, str]) -> pd.DataFrame:
     with tempfile.TemporaryDirectory() as d:
         fa = Path(d) / "in.fa"
         fa.write_text("".join(f">{g}\n{s}\n" for g, s in seqs.items()))
-        out = subprocess.run(["mafft", "--auto", "--quiet", str(fa)], capture_output=True, text=True, check=True)
+        cmd = ["mafft"] + (list(args) if args else ["--auto"]) + ["--quiet", str(fa)]
+        out = subprocess.run(cmd, capture_output=True, text=True, check=True)
     cur, al = None, {g: [] for g in ids}
     for line in out.stdout.splitlines():
         if line.startswith(">"):

@@ -197,21 +197,40 @@ def column_frame(aln: pd.DataFrame, est: dict) -> pd.DataFrame:
     return pd.concat(rows, ignore_index=True) if rows else pd.DataFrame()
 
 
-def pool_columns(long: pd.DataFrame, min_proteins: int = MIN_PROTEINS) -> pd.DataFrame:
-    """One hierarchical fit per alignment column."""
+def pool_columns(long: pd.DataFrame, min_proteins: int = MIN_PROTEINS,
+                 min_topology_agreement: float = 0.0) -> pd.DataFrame:
+    """One hierarchical fit per alignment column.
+
+    `min_topology_agreement` drops columns where the proteins disagree about whether the
+    aligned residues are transmembrane. Those are alignment errors, and pooling across one
+    averages a membrane position with a loop position.
+    """
     rows = []
     for col, g in long.groupby("col"):
         if len(g) < min_proteins:
             continue
         r = hierarchical_normal(g.y.to_numpy(), g.s.to_numpy(), seed=int(col))
         seg = g.seg_type.dropna() if "seg_type" in g else pd.Series(dtype=object)
+        # Do the proteins agree about what this column IS? Aligning across a superfamily
+        # can place a transmembrane residue of one protein against a loop residue of
+        # another, and the pooled mean at such a column is an average of two different
+        # things. Topology is independent of the alignment, so it tests it.
+        agree = float(seg.value_counts(normalize=True).iloc[0]) if len(seg) else np.nan
         rows.append({"col": int(col), "seg_type": (seg.mode().iloc[0] if len(seg) else None),
+                     "topology_agreement": agree,
                      "J": r["J"], "mu": r["mu_mean"], "mu_sd": r["mu_sd"],
                      "mu_lo": r["mu_lo"], "mu_hi": r["mu_hi"], "tau": r["tau_median"],
                      "tau_hi": r.get("tau_hi", np.nan), "pred_sd": r["pred_sd"],
                      "shrinkage": r.get("shrinkage", np.nan),
                      "proteins": ",".join(sorted(g.protein))})
-    return pd.DataFrame(rows)
+    t = pd.DataFrame(rows)
+    dropped = 0
+    if len(t) and min_topology_agreement > 0 and "topology_agreement" in t:
+        keep = t.topology_agreement.isna() | (t.topology_agreement >= min_topology_agreement)
+        dropped = int((~keep).sum())
+        t = t[keep].reset_index(drop=True)
+    t.attrs["n_dropped_topology"] = dropped
+    return t
 
 
 def predict_held_out(long: pd.DataFrame, held: str, min_proteins: int = 2) -> pd.DataFrame:
@@ -288,8 +307,11 @@ def score_predictions(pred: pd.DataFrame, baseline: float) -> dict:
 
 def figure_family(name: str, cols: pd.DataFrame, long: pd.DataFrame, outdir: Path):
     """What the family shares along the alignment, and where its members disagree."""
-    fig, axes = plt.subplots(3, 1, figsize=(10.0, 6.2), sharex=True, layout="constrained",
-                             gridspec_kw={"height_ratios": [1.5, 0.8, 0.5]})
+    has_topo = "topology_agreement" in cols and cols.topology_agreement.notna().any()
+    n = 4 if has_topo else 3
+    fig, axes = plt.subplots(n, 1, figsize=(10.0, 6.2 + (0.9 if has_topo else 0)),
+                             sharex=True, layout="constrained",
+                             gridspec_kw={"height_ratios": [1.5, 0.8, 0.5] + ([0.6] if has_topo else [])})
     c = cols.sort_values("col")
     for ax in axes:
         if "seg_type" in c and c.seg_type.notna().any():   # the membrane, on every panel
@@ -319,8 +341,20 @@ def figure_family(name: str, cols: pd.DataFrame, long: pd.DataFrame, outdir: Pat
     # not grey: the transmembrane band behind it is grey, and two greys read as one
     ax.fill_between(c.col, 0, c.J, color=P.SERIES[1], alpha=0.55, lw=0, step="mid")
     ax.set_ylabel("proteins")
-    ax.set_xlabel("Alignment column")
     ax.set_title("(c) How many proteins measured each column", loc="left", fontsize=9)
+    if "topology_agreement" in c and c.topology_agreement.notna().any():
+        ax = axes[3]
+        ta = c.topology_agreement
+        ax.fill_between(c.col, 0, ta, color=P.SERIES[2], alpha=0.5, lw=0, step="mid")
+        bad = c[ta < 0.8]
+        if len(bad):
+            ax.scatter(bad.col, bad.topology_agreement, s=5, color="#C0392B", lw=0, zorder=4)
+        ax.set_ylim(0, 1.05)
+        ax.set_ylabel("topology\nagreement")
+        ax.set_title("(d) Do the proteins agree this column is transmembrane? "
+                     "(red = under 80%, the alignment is unreliable there)",
+                     loc="left", fontsize=9)
+    axes[-1].set_xlabel("Alignment column")
     P.save(fig, outdir, f"b01_{name}_family_posterior", None, "B01")
     plt.close(fig)
 
@@ -388,7 +422,8 @@ def figure_diagnostic(name: str, preds: pd.DataFrame, scores: pd.DataFrame, outd
 
 
 def run_family(name: str, members: list[str], outdir: Path, min_proteins: int,
-               standardise: bool = False) -> dict:
+               standardise: bool = False, mafft_args: list[str] | None = None,
+               min_topology_agreement: float = 0.0) -> dict:
     cfgs = {}
     for c in members:
         cfg = load_config(Path(c))
@@ -399,12 +434,12 @@ def run_family(name: str, members: list[str], outdir: Path, min_proteins: int,
         return {"status": "skipped", "reason": f"no sequence for {', '.join(missing)}"}
     if len(seqs) < 2:
         return {"status": "skipped", "reason": "a family needs at least two proteins"}
-    aln = align_sequences(seqs)
+    aln = align_sequences(seqs, mafft_args)
     est = {i: position_estimates(load_dataset(c), standardise) for i, c in cfgs.items()}
     long = column_frame(aln, est)
     if not len(long):
         return {"status": "skipped", "reason": "no measured position maps onto the alignment"}
-    cols = pool_columns(long, min_proteins)
+    cols = pool_columns(long, min_proteins, min_topology_agreement)
     if not len(cols):
         return {"status": "skipped",
                 "reason": f"no alignment column has {min_proteins}+ proteins measured"}
@@ -432,11 +467,23 @@ def run_family(name: str, members: list[str], outdir: Path, min_proteins: int,
         figure_diagnostic(name, allp, scores, outdir)
     return {"status": "ok", "method": aln.attrs.get("method", "?"),
             "n_proteins": len(seqs), "n_columns": int(len(cols)),
+            "n_dropped_topology": int(cols.attrs.get("n_dropped_topology", 0)),
+            "median_topology_agreement": (float(cols.topology_agreement.median())
+                                          if "topology_agreement" in cols
+                                          and cols.topology_agreement.notna().any() else None),
             "median_tau": float(cols.tau.median()),
             "median_mu_sd": float(cols.mu_sd.median()),
             "scores": scores.to_dict("records") if len(scores) else [],
-            "headline": (f"{len(seqs)} proteins, {len(cols)} pooled columns; "
-                         f"median τ = {cols.tau.median():.2f}"
+            "headline": (f"{len(seqs)} proteins, {len(cols)} pooled columns"
+                         + (f" ({int(cols.attrs.get('n_dropped_topology', 0)):,} dropped for "
+                            "topology disagreement)"
+                            if cols.attrs.get("n_dropped_topology") else "")
+                         + (f"; topology agrees at {cols.topology_agreement.median():.0%} of "
+                            f"proteins per column, fully at "
+                            f"{float((cols.topology_agreement >= 0.999).mean()):.0%} of columns"
+                            if "topology_agreement" in cols
+                            and cols.topology_agreement.notna().any() else "")
+                         + f"; median τ = {cols.tau.median():.2f}"
                          + (f"; held-out Spearman {scores.spearman.mean():.2f}, "
                             f"elpd gain {scores.elpd_gain.mean():+.3f}"
                             if len(scores) and "spearman" in scores else ""))}
@@ -453,6 +500,14 @@ def main(argv=None):
                     help="one family per flag, e.g. PF07690=configs/AQR1.yaml,configs/QDR2.yaml")
     ap.add_argument("--min-proteins", type=int, default=MIN_PROTEINS,
                     help="proteins a column needs before it is pooled (default 3)")
+    ap.add_argument("--mafft-args", default=None,
+                    help="MAFFT options in place of --auto, e.g. "
+                         "\"--maxiterate 1000 --localpair\" (L-INS-i), which is worth the "
+                         "time when the family spans more than one Pfam")
+    ap.add_argument("--min-topology-agreement", type=float, default=0.0,
+                    help="drop alignment columns where fewer than this fraction of the "
+                         "proteins agree on transmembrane-or-not; 0.8 is a reasonable "
+                         "filter for a cross-family alignment")
     ap.add_argument("--standardise", action="store_true",
                     help="scale each protein's position effects by their own spread before "
                          "pooling, so assays of different dynamic range are comparable")
@@ -480,7 +535,9 @@ def main(argv=None):
             raise SystemExit(f"--family {name}: listed twice: {', '.join(dup)}")
         print(f"\n== {name}: {len(members)} proteins", flush=True)
         try:
-            r = run_family(name, members, outdir, a.min_proteins, a.standardise)
+            r = run_family(name, members, outdir, a.min_proteins, a.standardise,
+                           (a.mafft_args.split() if a.mafft_args else None),
+                           a.min_topology_agreement)
         except Exception as e:
             r = {"status": "error", "reason": f"{type(e).__name__}: {e}"}
         out[name] = r

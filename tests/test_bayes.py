@@ -238,3 +238,46 @@ def test_standardising_rescales_without_changing_the_ranking():
     assert np.allclose(ss.rankdata(raw.y), ss.rankdata(std.y))
     assert np.std(std.y, ddof=1) == pytest.approx(1.0, abs=1e-6)
     assert std.attrs["scale"] == pytest.approx(float(np.std(raw.y, ddof=1)))
+
+
+def _long_topo(n_col=40, disagree_from=30):
+    """Columns up to `disagree_from` have all proteins agreeing they are TM; after that
+    one protein calls it a loop, which is what a bad cross-family alignment looks like."""
+    rows = []
+    for p in ("P1", "P2", "P3", "P4"):
+        for c in range(1, n_col + 1):
+            seg = "TM"
+            if c > disagree_from and p == "P4":
+                seg = "loop"
+            rows.append({"col": c, "protein": p, "pos": c, "seg_type": seg,
+                         "y": -0.5, "s": 0.1, "n": 19})
+    return pd.DataFrame(rows)
+
+
+def test_topology_agreement_is_measured_per_column():
+    cols = pool_columns(_long_topo(), min_proteins=4).set_index("col")
+    assert cols.loc[1, "topology_agreement"] == pytest.approx(1.0)
+    assert cols.loc[40, "topology_agreement"] == pytest.approx(0.75)   # 3 of 4 agree
+
+
+def test_columns_where_the_proteins_disagree_about_topology_can_be_dropped():
+    """Pooling across such a column averages a membrane position with a loop position."""
+    keep_all = pool_columns(_long_topo(), min_proteins=4)
+    filtered = pool_columns(_long_topo(), min_proteins=4, min_topology_agreement=0.8)
+    assert len(filtered) == 30 < len(keep_all) == 40
+    assert filtered.attrs["n_dropped_topology"] == 10
+    assert (filtered.topology_agreement >= 0.8).all()
+
+
+def test_no_filtering_by_default():
+    cols = pool_columns(_long_topo(), min_proteins=4)
+    assert cols.attrs["n_dropped_topology"] == 0
+    assert len(cols) == 40
+
+
+def test_a_column_with_no_topology_survives_the_filter():
+    """Topology is optional; a missing annotation must not silently delete the column."""
+    long = _long_topo()
+    long.loc[long.col == 5, "seg_type"] = None
+    cols = pool_columns(long, min_proteins=4, min_topology_agreement=0.8)
+    assert 5 in set(cols.col)

@@ -305,6 +305,14 @@ Each family is aligned, and every alignment column gets a hierarchical normal mo
     y_j | theta_j ~ Normal(theta_j, s_j^2)      protein j's measured effect, with its error
     theta_j | mu, tau ~ Normal(mu, tau^2)       the family's spread around a shared value
 
+For a family spanning more than one Pfam, two options matter. `--mafft-args
+"--maxiterate 1000 --localpair"` uses L-INS-i rather than letting `--auto` fall back to a
+fast progressive method, and `--min-topology-agreement 0.8` drops columns where the
+proteins disagree about whether the aligned residues are transmembrane. Topology comes
+from DeepTMHMM and is independent of the alignment, so it tests it: a column where one
+protein's membrane residue is aligned against another's loop residue is an alignment
+error, and pooling across it averages two different things.
+
 `mu` is what the family shares at that column, `tau` is how much its members genuinely
 differ, and Normal(mu, tau^2) is what the family says about a member nobody has measured.
 The posterior is computed exactly on a grid over tau, so there is no sampler and nothing
