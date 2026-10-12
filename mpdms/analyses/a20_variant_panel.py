@@ -309,12 +309,148 @@ def percentile_figure(cfg, df: pd.DataFrame, pc: pd.DataFrame, figdir):
     return P.save(fig, figdir, "a20b_missense_percentile", cfg, "A20")
 
 
+
+# ------------------------------------------------- single-estimate datasets
+def collect_single(df: pd.DataFrame, labels: list[str]) -> tuple[pd.DataFrame, list[str]]:
+    """The named variants when the table carries one estimate and its error, not replicates.
+
+    DiMSum writes a fitness and a sigma per variant rather than per-replicate columns, so
+    there are no three values to draw. The error bar is that sigma carried through the same
+    linear rescaling as the score, which is what `se` holds.
+    """
+    rows, missing = [], []
+    for lab in labels:
+        pr = parse_substitution(lab)
+        if pr is None:
+            missing.append(f"{lab}: not a point substitution")
+            continue
+        wt, pos, mut = pr
+        hit = df[(df.pos == pos) & (df.mut == mut) & (df.vclass == "missense")]
+        if not len(hit):
+            missing.append(f"{lab}: not measured in this dataset")
+            continue
+        r = hit.iloc[0]
+        if str(r.wt).upper() != wt:
+            missing.append(f"{lab}: dataset has {r.wt}{pos}, not {wt}{pos} - numbering mismatch")
+            continue
+        if not bool(r.pass_filter):
+            missing.append(f"{lab}: present but fails the read/replicate filter")
+            continue
+        rows.append({"variant": lab, "pos": pos, "wt": wt, "mut": mut,
+                     "score_z": float(r.score_z),
+                     "se": float(r.se) if "se" in hit.columns and np.isfinite(r.se) else np.nan})
+    return pd.DataFrame(rows), missing
+
+
+def site_distributions(df: pd.DataFrame, positions: list[int]) -> dict:
+    """Every substitution measured at each named position: the distribution behind the point."""
+    d = df[df.pass_filter & (df.vclass == "missense")]
+    return {p: d.loc[d.pos == p, "score_z"].dropna().to_numpy() for p in positions}
+
+
+def figure_single(cfg, named: pd.DataFrame, syn: np.ndarray, sites: dict, figdir):
+    """(a) each named variant against the synonymous spread; (b) its whole position."""
+    order = named.variant.tolist()
+    fig, axes = plt.subplots(1, 2, figsize=(4.2 + 0.55 * len(order), 3.6),
+                             layout="constrained", gridspec_kw={"width_ratios": [1, 1]})
+    ax = axes[0]
+    # the synonymous variants are the reference: hundreds of measurements of "no effect".
+    # Its median is 0 by construction and the label lands on the two-line tick label, so
+    # it is left off here; panel (b) prints medians where they are worth reading.
+    P.violin_box(ax, {SYN_LABEL: syn}, colors={SYN_LABEL: SYN_COLOR}, width=0.6,
+                 show_medians=False)
+    x = np.arange(1, len(order) + 1)
+    ax.errorbar(x, named.score_z, yerr=1.96 * named.se.fillna(0), fmt="o", ms=5,
+                color=MUT_COLOR, ecolor=P.INK, elinewidth=0.9, capsize=2.5, zorder=4)
+    lo, hi = np.percentile(syn, [2.5, 97.5]) if len(syn) > 4 else (np.nan, np.nan)
+    if np.isfinite(lo):
+        ax.axhspan(lo, hi, color=SYN_COLOR, alpha=0.12, lw=0, zorder=0)
+    ax.axhline(0, color=SYN_COLOR, lw=0.8)
+    ax.axhline(-1, color="#C0392B", lw=0.8, ls=(0, (3, 3)))
+    ax.set_xticks(np.arange(0, len(order) + 1))
+    ax.set_xticklabels([SYN_LABEL] + order, rotation=45, ha="right", fontsize=6.5)
+    ax.set_ylabel("Normalised fitness (synonymous = 0, nonsense = −1)")
+    ax.set_title("(a) Named variants, ±95% CI from the table's sigma", loc="left", fontsize=8.5)
+
+    ax = axes[1]
+    groups = {SYN_LABEL: syn}
+    for lab, pos in zip(order, named.pos):
+        v = sites.get(pos, np.array([]))
+        if len(v) >= 3:
+            groups[f"{named.loc[named.variant == lab, 'wt'].iloc[0]}{pos}"] = v
+    cols = {k: (SYN_COLOR if k == SYN_LABEL else "#B8912F") for k in groups}
+    P.violin_box(ax, groups, colors=cols, width=0.7)
+    for k, (lab, pos) in enumerate(zip(order, named.pos), start=1):
+        key = f"{named.loc[named.variant == lab, 'wt'].iloc[0]}{pos}"
+        if key in groups:
+            j = list(groups).index(key)
+            ax.plot([j], [named.loc[named.variant == lab, "score_z"].iloc[0]], "o", ms=5,
+                    color=HILITE, zorder=6, markeredgecolor="white", markeredgewidth=0.6)
+    ax.axhline(0, color=SYN_COLOR, lw=0.8)
+    ax.axhline(-1, color="#C0392B", lw=0.8, ls=(0, (3, 3)))
+    ax.set_xticks(range(len(groups)))
+    ax.set_xticklabels(list(groups), rotation=45, ha="right", fontsize=6.5)
+    ax.set_ylabel("Normalised fitness")
+    ax.set_title("(b) Every substitution at each named position; gold = the alanine",
+                 loc="left", fontsize=8.5)
+    P.title(cfg=cfg, fig=fig, text="A20 named variants (single-estimate dataset)")
+    return P.save(fig, figdir, "a20_variant_panel", cfg, "A20")
+
+
+def stats_single(named: pd.DataFrame, syn: np.ndarray) -> pd.DataFrame:
+    """Each variant against the synonymous spread - the comparison that is powered."""
+    rows = []
+    mu, sd = float(np.mean(syn)), float(np.std(syn, ddof=1))
+    for r in named.itertuples():
+        z = (r.score_z - mu) / sd if sd > 0 else np.nan
+        rows.append({"variant": r.variant, "score_z": r.score_z, "se": r.se,
+                     "syn_mean": mu, "syn_sd": sd, "z_vs_synonymous": z,
+                     "percentile_in_synonymous": float((syn < r.score_z).mean() * 100),
+                     "p": float(2 * ss.norm.sf(abs(z))) if np.isfinite(z) else np.nan})
+    t = pd.DataFrame(rows)
+    if len(t):
+        t["q"] = bh_fdr(t.p)
+    return t
+
+
 def run(df: pd.DataFrame, cfg, outdir: Path) -> dict:
     figdir, tabdir = dirs(outdir)
     labels = wanted_variants(cfg)
     if not labels:
         return skipped("a20", cfg, f"no variants named for {cfg.get_path('protein.gene', cfg.id)} "
                                    "(set report.variant_panel, or add measured entries to _literature.yaml)")
+    syn_all = df[(df.vclass == "synonymous") & df.pass_filter].score_z.dropna().to_numpy()
+    if not replicate_cols(df):
+        # DiMSum output carries one fitness and one sigma per variant; draw that, rather
+        # than skipping an analysis the dataset can perfectly well support
+        named, missing = collect_single(df, labels)
+        if not len(named):
+            return skipped("a20", cfg, "none of the named variants are usable: "
+                           + "; ".join(missing))
+        if len(syn_all) < 5:
+            return skipped("a20", cfg, "fewer than 5 synonymous variants to compare against")
+        sites = site_distributions(df, named.pos.tolist())
+        st = stats_single(named, syn_all)
+        st.to_csv(tabdir / "a20_variant_stats.csv", index=False)
+        named.to_csv(tabdir / "a20_variant_values.csv", index=False)
+        figs = figure_single(cfg, named, syn_all, sites, figdir)
+        pc = percentiles(df, labels)
+        if len(pc):
+            figs = figs + percentile_figure(cfg, df, pc, figdir)
+            pc.to_csv(tabdir / "a20b_percentiles.csv", index=False)
+        sig = st[st.q < 0.05]
+        head = (f"{len(named)} named variants, one estimate each (no replicate columns); "
+                f"{len(sig)} differ from synonymous at q < 0.05"
+                + (": " + ", ".join(sig.variant) if len(sig) else ""))
+        return result("a20", cfg, head,
+                      {"n_named": int(len(named)), "n_significant": int(len(sig)),
+                       "has_replicates": False,
+                       "variants": st.set_index("variant").score_z.to_dict()},
+                      [f"not plotted - {m}" for m in missing]
+                      + ["one estimate per variant, so the error bar is the table's sigma, "
+                         "not replicate scatter"],
+                      figs, [tabdir / "a20_variant_stats.csv"])
+
     mut, syn, missing = collect(df, cfg, labels)
     if not len(mut):
         return skipped("a20", cfg, "none of the named variants are usable: " + "; ".join(missing))
