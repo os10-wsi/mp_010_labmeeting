@@ -292,6 +292,21 @@ dropped and counted. The run also prints variants per position, because this is 
 score: two substitutions at one residue get the same prediction, and that ratio is the
 ceiling on what the comparison can resolve.
 
+To test one human gene on its own, name only that gene. For SLC2A10 scored by the hexose
+transporters:
+
+```bash
+scripts/clinvar_slc2a10.sh data/external/variant_summary.txt.gz
+# which is
+python -m mpdms clinvar \
+  --family hexose=configs/HXT1.yaml,configs/HXT2.yaml,configs/HXT3.yaml,configs/HXT7.yaml \
+  --human SLC2A10=O95528 --table variant_summary.txt.gz --outdir outputs/_clinvar_slc2a10
+```
+
+Only SLC2A10 takes part in the alignment and only its ClinVar variants are scored. With a
+single gene C01 is panels (a) and (b) alone - the per-gene panel (c) would be one bar
+repeating the AUROC already printed on (b) - and the gene is named in the panel titles.
+
 ### Bayesian pooling across a family
 
 ```bash

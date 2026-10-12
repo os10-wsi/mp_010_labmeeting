@@ -200,3 +200,47 @@ def test_column_conservation_is_one_when_every_member_agrees():
     assert c.loc[1, "conservation"] == pytest.approx(1.0)     # all M
     assert c.loc[2, "conservation"] == pytest.approx(0.0)     # all different
     assert np.isnan(c.loc[3, "conservation"])                 # only one residue present
+
+
+# ------------------------------------------------------------------ figure
+def _scored_genes(genes, n=60, seed=0):
+    parts = []
+    for k, g in enumerate(genes):
+        d = _scored(n=n, seed=seed + k)
+        d["gene"] = g
+        parts.append(d)
+    return pd.concat(parts, ignore_index=True)
+
+
+def _draw(monkeypatch, tmp_path, scored):
+    """Run `figure` with the save step replaced, and return what it would have saved."""
+    import mpdms.clinvar as C
+    seen = {}
+
+    def fake_save(fig, outdir, name, cfg=None, analysis=""):
+        seen["axes"] = len(fig.axes)
+        seen["name"] = name
+        seen["titles"] = [ax.get_title(loc="left") for ax in fig.axes]
+        return []
+
+    monkeypatch.setattr(C.P, "save", fake_save)
+    res = evaluate(scored)
+    by_gene = pd.DataFrame([dict(evaluate(gg), gene=g) for g, gg in scored.groupby("gene")])
+    C.figure(scored, res, by_gene, tmp_path, "fam")
+    return seen
+
+
+def test_one_human_gene_gives_panels_a_and_b_only(monkeypatch, tmp_path):
+    """A per-gene panel with one bar repeats the AUROC already on (b), so it is dropped
+    and the gene is named on the panels instead."""
+    seen = _draw(monkeypatch, tmp_path, _scored_genes(["SLC2A10"]))
+    assert seen["axes"] == 2
+    assert seen["name"] == "c01_fam_clinvar"
+    assert seen["titles"][0].startswith("(a)") and "SLC2A10" in seen["titles"][0]
+    assert seen["titles"][1].startswith("(b)") and "SLC2A10" in seen["titles"][1]
+
+
+def test_several_human_genes_keep_the_per_gene_panel(monkeypatch, tmp_path):
+    seen = _draw(monkeypatch, tmp_path, _scored_genes(["SLC2A1", "SLC2A10"]))
+    assert seen["axes"] == 3
+    assert seen["titles"][2].startswith("(c)")

@@ -252,9 +252,20 @@ def evaluate(scored: pd.DataFrame, score: str = "mu") -> dict:
 
 
 def figure(scored: pd.DataFrame, res: dict, by_gene: pd.DataFrame, outdir: Path, name: str):
+    """C01: (a) constraint by class, (b) the ROC, and (c) one bar per human gene.
+
+    With a single human gene there is nothing to compare in (c) - one bar repeating the
+    AUROC already printed on (b) - so the figure is panels (a) and (b) alone, and the
+    gene is named in the titles so the artwork says which protein it is about.
+    """
     from sklearn.metrics import roc_curve
-    fig, axes = plt.subplots(1, 3, figsize=(10.2, 3.2), layout="constrained",
-                             gridspec_kw={"width_ratios": [1, 1, 1.1]})
+    genes = sorted(scored.gene.dropna().unique())
+    single = genes[0] if len(genes) == 1 else None
+    if single:
+        fig, axes = plt.subplots(1, 2, figsize=(6.6, 3.2), layout="constrained")
+    else:
+        fig, axes = plt.subplots(1, 3, figsize=(10.2, 3.2), layout="constrained",
+                                 gridspec_kw={"width_ratios": [1, 1, 1.1]})
     d = scored.dropna(subset=["mu"])
     ax = axes[0]
     groups = {"benign": d.loc[d.label == "benign", "mu"].to_numpy(),
@@ -268,7 +279,8 @@ def figure(scored: pd.DataFrame, res: dict, by_gene: pd.DataFrame, outdir: Path,
         ax.text(k, 1.01, f"n = {len(groups[lab]):,}", transform=ax.get_xaxis_transform(),
                 ha="center", va="bottom", fontsize=6.5, color=P.MUTED, clip_on=False)
     ax.set_ylabel("Yeast family constraint at that column (μ)")
-    ax.set_title("(a) Where the variants sit", loc="left", fontsize=9)
+    ax.set_title(f"(a) Where the {single + ' ' if single else ''}variants sit",
+                 loc="left", fontsize=9)
     ax = axes[1]
     if "auroc" in res:
         fpr, tpr, _ = roc_curve((d.label == "pathogenic"), -d.mu)
@@ -278,7 +290,12 @@ def figure(scored: pd.DataFrame, res: dict, by_gene: pd.DataFrame, outdir: Path,
                 transform=ax.transAxes, ha="right", va="bottom", fontsize=7.5)
     ax.plot([0, 1], [0, 1], color=P.MUTED, lw=0.8, ls=(0, (3, 3)))
     ax.set_xlabel("False positive rate"); ax.set_ylabel("True positive rate")
-    ax.set_title("(b) Pathogenic vs benign", loc="left", fontsize=9)
+    ax.set_title(f"(b) Pathogenic vs benign{' in ' + single if single else ''}",
+                 loc="left", fontsize=9)
+    if single:
+        P.save(fig, outdir, f"c01_{name}_clinvar", None, "C01")
+        plt.close(fig)
+        return
     ax = axes[2]
     if len(by_gene):
         g = by_gene.dropna(subset=["auroc"]).sort_values("auroc")
