@@ -189,6 +189,63 @@ def write_structures(cfg, sites: pd.DataFrame, outdir) -> list:
     return out
 
 
+
+def ranking_figure(cfg, sites: pd.DataFrame, func: pd.DataFrame, figdir):
+    """The functional sites ordered by how constrained they are, not by position.
+
+    Panel (d) of A15 lists them in sequence order, which is the right way to find a residue
+    but the wrong way to decide which to work on. Here they are ranked by median z, with the
+    abundance each site actually shows beside it: a site can be strongly constrained in
+    ESM-1v and barely move in abundance, and those are the interesting ones, so they are
+    marked rather than left to be read off two panels.
+    """
+    if not len(func):
+        return []
+    r = func.sort_values("median_z").reset_index(drop=True)
+    r["rank"] = np.arange(1, len(r) + 1)
+    h = max(2.4, 0.19 * len(r) + 1.4)
+    fig, axes = plt.subplots(1, 2, figsize=(9.4, h), layout="constrained",
+                             gridspec_kw={"width_ratios": [1.15, 1]})
+    y = np.arange(len(r))[::-1]
+
+    ax = axes[0]
+    cm = P.sequential_cmap()
+    lo = float(min(r.median_z.min(), Z_SITE))
+    cols = [cm(0.15 + 0.7 * (1 - (z - lo) / (Z_SITE - lo))) if Z_SITE != lo else cm(0.5)
+            for z in r.median_z]
+    ax.barh(y, r.median_z, color=cols, height=0.68, zorder=2)
+    ax.axvline(Z_SITE, color=FUNC_COLOR, lw=0.9, ls=(0, (3, 3)), zorder=3)
+    ax.set_yticks(y)
+    ax.set_yticklabels([f"{i:>3}. {w}{int(p_)}" for i, w, p_ in zip(r["rank"], r.wt, r.pos)],
+                       fontsize=6, family="monospace")
+    ax.set_xlabel(f"Site median z (ESM-1v − expected);  dashed = {Z_SITE} threshold")
+    ax.set_title(f"(a) {len(r)} functional sites, most constrained first", loc="left",
+                 fontsize=9)
+    # the q values sat on the bars, dark grey on dark viridis; put them past the bar ends
+    # instead, where the panel background is always light
+    pad = 0.02 * abs(lo)
+    for yy, z, q in zip(y, r.median_z, r.q):
+        ax.text(z - pad, yy, f"q = {q:.1e}", ha="right", va="center", fontsize=5.2,
+                color=P.MUTED)
+    ax.set_xlim(lo * 1.22, 0)
+
+    ax = axes[1]
+    tol = r.abundance_tolerant.to_numpy(bool) if "abundance_tolerant" in r else np.zeros(len(r), bool)
+    ax.barh(y, r.median_abundance, height=0.68,
+            color=np.where(tol, "#B8912F", P.SERIES[0]), zorder=2)
+    ax.axvline(TOLERANT, color=P.MUTED, lw=0.9, ls=(0, (2, 2)))
+    ax.axvline(0, color=P.INK, lw=0.7)
+    ax.set_yticks(y)
+    ax.set_yticklabels([])
+    ax.set_xlabel("Site median abundance")
+    ax.set_title(f"(b) Abundance at the same sites; gold = tolerant (≥ {TOLERANT}), "
+                 f"n = {int(tol.sum())}", loc="left", fontsize=9)
+    P.title(fig, cfg, "A15b functional sites ranked by constraint")
+    out = P.save(fig, figdir, "a15b_functional_ranking", cfg, "A15")
+    plt.close(fig)
+    return out
+
+
 def run(df, cfg, outdir):
     p = cfg.resolve(cfg.get_path("evolution.esm_scores"))
     if p is None or not p.exists():
@@ -307,12 +364,24 @@ def run(df, cfg, outdir):
     P.title(fig, cfg, "A15 abundance vs ESM-1v: functional sites")
     figs = P.save(fig, figdir, "a15_esm_functional", cfg, "A15")
 
+    figs = figs + ranking_figure(cfg, sites, func, figdir)
+
     t1, t2 = tabdir / "a15_variants.csv", tabdir / "a15_sites.csv"
     d.to_csv(t1, index=False)
-    sites.sort_values("q").to_csv(t2, index=False)
+    # ranked by how constrained the site is, which is the order the shortlist is read in
+    ranked = sites.sort_values(["functional", "median_z"], ascending=[False, True]).copy()
+    ranked.insert(0, "rank", np.where(ranked.functional,
+                                      np.arange(1, len(ranked) + 1), np.nan))
+    ranked.to_csv(t2, index=False)
+    t3 = tabdir / "a15_functional_ranked.csv"
+    (ranked[ranked.functional][["rank", "pos", "wt", "segment", "seg_type", "n_variants",
+                                "median_z", "median_abundance", "median_esm1v", "q",
+                                "abundance_tolerant"]]
+     .to_csv(t3, index=False))
     off = int(cfg.get_path("structure.numbering_offset", 0) or 0)
     pml = (f"select {cfg.id}_functional, resi " + "+".join(str(int(p_) - off) for p_ in func.pos)) if len(func) else ""
     (tabdir / "a15_functional_sites.pml").write_text(pml + "\n")
+    tabs_extra = [t3]
     structs = write_structures(cfg, sites, outdir)
     if not structs:
         caveats.append("no structure in config - coloured structures not written")
@@ -325,10 +394,13 @@ def run(df, cfg, outdir):
                    "a 'functional' call means constraint beyond this abundance readout, not proof of function")
     head = (f"{len(func)} functional sites (ESM-1v more constrained than abundance explains, q<{Q_SITE}); "
             f"{int(sites.functional_and_tolerant.sum())} of them abundance-tolerant; variant ρ(abundance, ESM-1v) = {rho:.2f}"
-            + (f"; top: {', '.join(f'{r.wt}{r.pos}' for r in func.head(5).itertuples())}" if len(func) else ""))
+            + (f"; most constrained: "
+               + ", ".join(f"{r.wt}{int(r.pos)} (z {r.median_z:+.1f})"
+                           for r in func.nsmallest(5, "median_z").itertuples())
+               if len(func) else ""))
     return result("a15", cfg, head, {"spearman": rho, "n_variants": len(d), "n_sites_tested": len(sites),
                                      "n_functional": int(len(func)), "residual_scale": scale,
                                      "n_functional_tolerant": int(sites.functional_and_tolerant.sum()),
                                      "functional_sites": [f"{r.wt}{r.pos}" for r in func.itertuples()],
                                      "pymol": pml, "best_p": fmt_p(sites.p.min())},
-                  caveats, figs, [t1, t2] + [str(x) for x in structs])
+                  caveats, figs, [t1, t2] + tabs_extra + [str(x) for x in structs])

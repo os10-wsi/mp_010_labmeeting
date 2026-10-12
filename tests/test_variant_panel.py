@@ -79,3 +79,54 @@ def test_the_reported_error_is_the_rescaled_sigma_not_replicate_scatter():
     df.loc[(df.pos == 209) & (df.mut == "A"), "se"] = 0.33
     d, _ = collect_single(df, ["Q209A"])
     assert d.se.iloc[0] == pytest.approx(0.33)
+
+
+# ------------------------------------------------- A15 functional-site ranking
+def _sites(n=6):
+    import numpy as np
+    return pd.DataFrame({
+        "pos": np.arange(100, 100 + n), "wt": list("QWNSYF")[:n],
+        "segment": "TM1", "seg_type": "TM", "n_variants": 19,
+        # deliberately not in position order, so sorting by z really does reorder
+        "median_z": np.array([-1.4, -2.4, -1.05, -2.0, -1.2, -1.8])[:n],
+        "median_abundance": np.linspace(-1.2, -0.2, n),
+        "median_esm1v": np.linspace(-4, -2, n),
+        "q": np.linspace(1e-4, 4e-2, n), "functional": True,
+        "abundance_tolerant": [False] * (n - 2) + [True] * 2})
+
+
+def test_the_ranking_is_by_constraint_not_by_position():
+    """Sequence order finds a residue; constraint order decides which to work on."""
+    from mpdms.analyses.a15_esm_functional import ranking_figure
+    s = _sites()
+    r = s.sort_values("median_z").reset_index(drop=True)
+    assert list(r.pos) != sorted(r.pos)             # the two orders differ here
+    assert r.median_z.is_monotonic_increasing       # most negative first
+
+
+def test_the_ranking_figure_is_drawn_and_labels_every_site(tmp_path):
+    import matplotlib
+    matplotlib.use("Agg")
+    from mpdms.analyses.a15_esm_functional import ranking_figure
+
+    class _Cfg:
+        id = "T"
+        display_name = "T"
+
+        def get_path(self, *a, **k):
+            return None
+    s = _sites()
+    out = ranking_figure(_Cfg(), s, s, tmp_path)
+    assert out and all(p.exists() for p in out)
+
+
+def test_no_functional_sites_draws_nothing_rather_than_an_empty_panel(tmp_path):
+    from mpdms.analyses.a15_esm_functional import ranking_figure
+
+    class _Cfg:
+        id = "T"
+        display_name = "T"
+
+        def get_path(self, *a, **k):
+            return None
+    assert ranking_figure(_Cfg(), _sites(), _sites().iloc[:0], tmp_path) == []

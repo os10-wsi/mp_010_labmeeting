@@ -37,6 +37,7 @@ FIGURE_ORDER = [
     ("a28_helix_substitution_matrices", "Substitution matrices: helices in the membrane vs helices outside it"),
     ("a18_helix_kr_vs_pro", "Lys/Arg vs proline in each TM helix"),
     ("a18b_rsa_vs_kr_pro", "Solvent accessibility vs Lys/Arg and vs proline effect (TM helices)"),
+    ("a15b_functional_ranking", "Functional sites ranked by constraint, with their abundance"),
     ("a19_literature", "Published functional residues against this screen"),
     ("a20_variant_panel", "Replicate fitness of named variants vs synonymous wild type"),
     ("a20b_missense_percentile", "Named variants placed in the missense fitness distribution"),
