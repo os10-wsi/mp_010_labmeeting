@@ -294,6 +294,37 @@ ones costing the score, and the terminal names them worst-first. The threshold s
 Youden's J on the same variants, so the `called` column describes the figure rather than
 predicting anything.
 
+### Against AlphaMissense and ESM-1v
+
+```bash
+python -m mpdms clinvar \
+  --family hexose=configs/HXT1.yaml,configs/HXT2.yaml,configs/HXT3.yaml,configs/HXT7.yaml \
+  --human SLC2A10=O95528 --table variant_summary.txt.gz \
+  --alphamissense AlphaMissense_aa_substitutions.tsv.gz \
+  --esm SLC2A10=SLC2A10_esm1v.csv
+```
+
+C03 puts the family model beside the predictors it has to beat: one violin per
+predictor in its own units (benign grey, pathogenic blue), then one ROC with all of
+them. Column conservation joins the ROC as a dashed reference.
+
+The AlphaMissense release is 216 million rows, so it is streamed and filtered by
+accession, and its columns are found by name rather than position. The ESM-1v table is
+whatever `python -m mpdms esm` writes, or any csv with pos, mut and esm1v.
+
+Two things the design turns on:
+
+- **Direction.** Every predictor is flipped into one convention before scoring — higher
+  AlphaMissense means pathogenic, lower ESM-1v and lower μ mean pathogenic. A sign error
+  here gives 1 − AUROC and looks entirely plausible, so a test plants a separation in
+  all four and asserts each comes back above 0.9, then flips one and asserts it inverts.
+- **Which variants.** `scope` is reported twice per predictor. `own` is that predictor's
+  AUROC on every variant it scores; `shared` is the AUROC on the variants **all** of
+  them score. Only `shared` is a comparison — AlphaMissense scores every missense while
+  the family model only reaches mapped alignment columns, so their `own` numbers answer
+  different questions. The ROC panel draws the shared set and says how many variants
+  that is.
+
 ### Variants of uncertain significance
 
 ```bash

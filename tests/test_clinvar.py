@@ -396,3 +396,76 @@ def test_the_figure_gains_a_panel_only_when_there_are_vus(tmp_path):
     figure(with_vus, evaluate(known), by_gene, tmp_path, "b")
     wide = mpimg.imread(tmp_path / "c01_b_clinvar.png").shape[1]
     assert wide > plain
+
+
+def _four_predictors(n=80, seed=0):
+    rng = np.random.default_rng(seed)
+    half = n // 2
+    return pd.DataFrame({
+        "gene": "SLC2A10", "uniprot": "O95528",
+        "pos": np.arange(n), "wt": "A", "mut": "V",
+        "label": ["pathogenic"] * half + ["benign"] * half,
+        # each predictor points a DIFFERENT way round on purpose
+        "mu": np.r_[rng.normal(-0.30, 0.10, half), rng.normal(0.00, 0.10, half)],
+        "esm1v": np.r_[rng.normal(-8.0, 1.0, half), rng.normal(-4.0, 1.0, half)],
+        "am_pathogenicity": np.r_[rng.normal(0.80, 0.12, half),
+                                  rng.normal(0.20, 0.12, half)].clip(0, 1),
+        "conservation": np.r_[rng.normal(0.85, 0.12, half), rng.normal(0.55, 0.12, half)]})
+
+
+def test_every_predictor_is_turned_the_right_way_round():
+    """The one mistake that is silently catastrophic: a flipped sign gives 1 - AUROC."""
+    from mpdms.clinvar import PREDICTORS, score_predictors
+    d = _four_predictors()
+    keys = [k for k, *_ in PREDICTORS]
+    r = score_predictors(d, keys).query("scope == 'own'").set_index("key")
+    for k in keys:
+        assert r.loc[k, "auroc"] > 0.9, (k, r.loc[k, "auroc"])
+    # and flipping one really does invert it, so the test above has teeth
+    flipped = score_predictors(d.assign(am_pathogenicity=-d.am_pathogenicity),
+                               keys).query("scope == 'own'").set_index("key")
+    assert flipped.loc["am_pathogenicity", "auroc"] < 0.1
+
+
+def test_the_shared_scope_uses_one_set_of_variants_for_every_predictor():
+    from mpdms.clinvar import PREDICTORS, score_predictors
+    d = _four_predictors(seed=2)
+    d.loc[d.index[:10], "am_pathogenicity"] = np.nan      # AlphaMissense misses ten
+    d.loc[d.index[-6:], "mu"] = np.nan                    # the family model misses six
+    r = score_predictors(d, [k for k, *_ in PREDICTORS])
+    shared = r[r.scope == "shared"]
+    assert shared.n.nunique() == 1 and int(shared.n.iloc[0]) == 64
+    own = r[r.scope == "own"].set_index("key")
+    assert int(own.loc["am_pathogenicity", "n"]) == 70
+    assert int(own.loc["esm1v", "n"]) == 80
+
+
+def test_alphamissense_is_read_by_column_name_and_filtered_by_accession(tmp_path):
+    from mpdms.clinvar import read_alphamissense
+    f = tmp_path / "am.tsv"
+    f.write_text("# AlphaMissense\n"
+                 "am_pathogenicity\tprotein_variant\tuniprot_id\tam_class\n"
+                 "0.91\tG23D\tO95528\tpathogenic\n"
+                 "0.08\tA106S\tO95528\tbenign\n"
+                 "0.50\tQ5R\tP11166\tambiguous\n"
+                 "0.70\tnonsense\tO95528\tx\n")
+    out = read_alphamissense(f, {"O95528"})
+    assert list(out.columns) == ["uniprot", "wt", "pos", "mut", "am_pathogenicity"]
+    assert len(out) == 2                      # the other accession and the junk row go
+    assert set(out.pos) == {23, 106}
+    assert out.loc[out.pos == 23, "am_pathogenicity"].iloc[0] == pytest.approx(0.91)
+    assert out.wt.tolist() == ["G", "A"] and out.mut.tolist() == ["D", "S"]
+
+
+def test_the_predictor_figure_draws_a_violin_per_predictor_plus_one_roc(tmp_path):
+    from mpdms import plotting as P
+    from mpdms.clinvar import PREDICTORS, figure_predictors, score_predictors
+    P.use_style("default")
+    d = _four_predictors(seed=5)
+    r = score_predictors(d, [k for k, *_ in PREDICTORS])
+    figure_predictors(d, r, tmp_path, "hexose", "SLC2A10")
+    png = tmp_path / "c03_hexose_predictors.png"
+    assert png.exists()
+    cap = (tmp_path / "c03_hexose_predictors_caption.txt")
+    if cap.exists():                       # paper style writes panel text to a caption
+        assert "AlphaMissense" in cap.read_text()

@@ -157,6 +157,96 @@ def fetch_sequence(acc: str) -> str:
     return "".join(txt.split("\n")[1:]).strip()
 
 
+def read_alphamissense(path: Path, uniprots: set[str]) -> pd.DataFrame:
+    """AlphaMissense substitution scores for these UniProt accessions.
+
+    The released table is 216 million rows, so it is streamed and filtered by accession
+    rather than read: the same lesson the ESM import taught, and the difference between
+    seconds and minutes. Columns are found by NAME (uniprot_id, protein_variant,
+    am_pathogenicity) because the published order is not something to rely on, and any
+    leading comment lines are skipped.
+    """
+    path = Path(path)
+    opener = gzip.open if str(path).endswith(".gz") else open
+    with opener(path, "rt") as fh:
+        for line in fh:
+            if not line.startswith("#"):
+                header = line.rstrip("\n").split("\t")
+                break
+        else:
+            raise SystemExit(f"{path.name}: no header row")
+    cols = {c.lower().replace(" ", "").replace("_", ""): c for c in header}
+    uni = cols.get("uniprotid") or cols.get("uniprot")
+    var = cols.get("proteinvariant") or cols.get("variant")
+    sc = cols.get("ampathogenicity") or cols.get("pathogenicity")
+    if not (uni and var and sc):
+        raise SystemExit(f"{path.name}: need uniprot_id, protein_variant and "
+                         f"am_pathogenicity columns; found {header[:8]}")
+    want = {u.upper() for u in uniprots}
+    keep = []
+    for chunk in pd.read_csv(path, sep="\t", comment="#", chunksize=1_000_000,
+                             usecols=lambda c: c in (uni, var, sc), low_memory=False):
+        hit = chunk[chunk[uni].astype(str).str.upper().isin(want)]
+        if len(hit):
+            keep.append(hit)
+    if not keep:
+        raise SystemExit(f"{path.name}: no rows for {', '.join(sorted(want))}")
+    t = pd.concat(keep, ignore_index=True)[[uni, var, sc]]
+    t.columns = ["uniprot", "variant", "am_pathogenicity"]
+    v = t.variant.astype(str).str.extract(r"^([A-Z])(\d+)([A-Z])$")
+    t = t[v[0].notna()]
+    return pd.DataFrame({"uniprot": t.uniprot.str.upper(),
+                         "wt": v[0][v[0].notna()], "pos": v[1][v[0].notna()].astype(int),
+                         "mut": v[2][v[0].notna()],
+                         "am_pathogenicity": t.am_pathogenicity.to_numpy()})
+
+
+# how each predictor points. `sign` multiplies the raw value so that, after it, HIGHER
+# always means "more likely pathogenic" - which is what the AUROC needs and the one
+# thing that is silently catastrophic to get wrong.
+PREDICTORS = [("am_pathogenicity", "AlphaMissense", +1, "higher = pathogenic"),
+              ("esm1v", "ESM-1v", -1, "lower = deleterious"),
+              ("mu", "Family model μ", -1, "lower = constrained"),
+              ("conservation", "Column conservation", +1, "higher = conserved")]
+VIOLIN_ORDER = ["am_pathogenicity", "esm1v", "mu"]
+
+
+def predictor_table(scored: pd.DataFrame, am: pd.DataFrame | None,
+                    esm: dict[str, pd.DataFrame], acc: dict[str, str]) -> pd.DataFrame:
+    """The known variants with every available predictor attached, one column each."""
+    d = scored[scored.label.isin(["benign", "pathogenic"])].copy()
+    if am is not None and len(am):
+        d["uniprot"] = d.gene.map({g: a.upper() for g, a in acc.items()})
+        d = d.merge(am, on=["uniprot", "pos", "wt", "mut"], how="left")
+    for g, e in (esm or {}).items():
+        m = e.rename(columns={"esm1v": "_e"})[["pos", "mut", "_e"]]
+        m = m.assign(gene=g)
+        d = d.merge(m, on=["gene", "pos", "mut"], how="left")
+        d["esm1v"] = d["_e"] if "esm1v" not in d else d.esm1v.fillna(d["_e"])
+        d = d.drop(columns="_e")
+    return d
+
+
+def score_predictors(d: pd.DataFrame, keys: list[str]) -> pd.DataFrame:
+    """AUROC per predictor, on its own variants and on the shared ones."""
+    both = d.dropna(subset=[k for k in keys if k in d])
+    rows = []
+    for k, lab, sign, note in PREDICTORS:
+        if k not in d or d[k].isna().all():
+            continue
+        for scope, sub in (("own", d.dropna(subset=[k])), ("shared", both)):
+            # evaluate() was written for mu and takes LOWER = pathogenic, so each
+            # predictor is flipped into that convention here rather than special-cased
+            # inside it. -sign puts every predictor the same way round: AlphaMissense
+            # (high = pathogenic) is negated, ESM-1v and mu (low = pathogenic) are not.
+            r = evaluate(sub.assign(_s=-sign * sub[k]), score="_s")
+            rows.append({"predictor": lab, "key": k, "scope": scope, "direction": note,
+                         **{x: r.get(x) for x in ("n", "n_pathogenic", "n_benign",
+                                                  "auroc", "auroc_lo", "auroc_hi",
+                                                  "p_mannwhitney")}})
+    return pd.DataFrame(rows)
+
+
 def family_with_queries(members: list[str], queries: dict[str, str], min_proteins: int):
     """Pool the measured family, and map each query protein's residues onto the same columns.
 
@@ -514,6 +604,70 @@ def figure(scored: pd.DataFrame, res: dict, by_gene: pd.DataFrame, outdir: Path,
     plt.close(fig)
 
 
+BENIGN_GREY = "#9A9A9A"
+PATHOGENIC_BLUE = "#2A5DA8"
+
+
+def figure_predictors(d: pd.DataFrame, res: pd.DataFrame, outdir: Path, name: str,
+                      gene: str = ""):
+    """Each predictor's two distributions, then all of them on one ROC.
+
+    The violins show each predictor in its own units, because they have no common
+    scale and rescaling them to share one would invent a comparison. The ROC is where
+    they are actually compared, and it is drawn on the variants that ALL of them score:
+    an AUROC computed on a predictor's own larger set is a different question, so those
+    are reported in the table beside it rather than overlaid here.
+    """
+    from sklearn.metrics import roc_curve
+    keys = [k for k in VIOLIN_ORDER if k in d and d[k].notna().any()]
+    if not keys:
+        return
+    roc_keys = keys + [k for k in ("conservation",) if k in d and d[k].notna().any()]
+    shared = d.dropna(subset=roc_keys)
+    n = len(keys) + 1
+    fig, axes = plt.subplots(1, n, figsize=(3.1 * n + 0.4, 3.3), layout="constrained")
+    look = {k: (lab, sign, note) for k, lab, sign, note in PREDICTORS}
+    for ax, k in zip(axes, keys):
+        lab, _, note = look[k]
+        sub = d.dropna(subset=[k])
+        groups = {"benign": sub.loc[sub.label == "benign", k].to_numpy(),
+                  "pathogenic": sub.loc[sub.label == "pathogenic", k].to_numpy()}
+        P.violin_box(ax, groups, colors={"benign": BENIGN_GREY,
+                                         "pathogenic": PATHOGENIC_BLUE})
+        for j, g in enumerate(("benign", "pathogenic")):
+            ax.text(j, 1.01, f"n = {len(groups[g]):,}", transform=ax.get_xaxis_transform(),
+                    ha="center", va="bottom", fontsize=6.5, color=P.MUTED, clip_on=False)
+        ax.set_ylabel(f"{lab}  ({note})", fontsize=7.5)
+        r = res[(res.key == k) & (res.scope == "own")]
+        extra = f"AUROC {r.auroc.iloc[0]:.2f}" if len(r) and pd.notna(r.auroc.iloc[0]) else ""
+        ax.set_title(f"({chr(97 + list(axes).index(ax))}) {lab}  {extra}", loc="left",
+                     fontsize=9)
+    ax = axes[-1]
+    cols = dict(zip(roc_keys, [PATHOGENIC_BLUE, "#1B9E77", "#C0392B", P.MUTED]))
+    y = (shared.label == "pathogenic").to_numpy()
+    for k in roc_keys:
+        lab, sign, _ = look[k]
+        if len(shared) < 10 or y.sum() == 0 or (~y).sum() == 0:
+            continue
+        fpr, tpr, _ = roc_curve(y, sign * shared[k].to_numpy())
+        r = res[(res.key == k) & (res.scope == "shared")]
+        a = r.auroc.iloc[0] if len(r) else np.nan
+        ax.plot(fpr, tpr, lw=2.0 if k != "conservation" else 1.3, color=cols[k],
+                ls=(0, (4, 3)) if k == "conservation" else "-",
+                label=f"{lab}  {a:.2f}")
+    ax.plot([0, 1], [0, 1], color=P.INK, lw=0.8, ls=(0, (2, 3)))
+    ax.set_xlabel("False positive rate"); ax.set_ylabel("True positive rate")
+    ax.set_aspect("equal")
+    ax.legend(frameon=False, fontsize=6.5, loc="lower right", title=None)
+    ax.set_title(f"({chr(97 + n - 1)}) the same {len(shared):,} variants", loc="left",
+                 fontsize=9)
+    fig.suptitle(f"{gene or 'query'}: benign in grey, pathogenic in blue. Every predictor "
+                 "in its own units; the ROC compares them on the variants all of them "
+                 "score.", fontsize=7, x=0.01, ha="left")
+    P.save(fig, outdir, f"c03_{name}_predictors", None, "C03")
+    plt.close(fig)
+
+
 def main(argv=None):
     import json
     warnings.filterwarnings("ignore", category=RuntimeWarning)
@@ -530,6 +684,13 @@ def main(argv=None):
                     help="ClinVar variant_summary.txt(.gz), or any table with gene, "
                          "protein change and clinical significance columns")
     ap.add_argument("--min-proteins", type=int, default=3)
+    ap.add_argument("--alphamissense", metavar="FILE",
+                    help="AlphaMissense_aa_substitutions.tsv.gz (or any table with "
+                         "uniprot_id, protein_variant and am_pathogenicity). Streamed "
+                         "and filtered by accession, so the full release is fine")
+    ap.add_argument("--esm", action="append", default=[], metavar="GENE=FILE",
+                    help="per-variant ESM-1v scores for a query protein, as a csv with "
+                         "pos, mut and esm1v/llr/score (repeatable)")
     ap.add_argument("--include-vus", action="store_true",
                     help="also score the variants ClinVar calls uncertain, and add a panel "
                          "showing where they fall. They never enter the AUROC, the "
@@ -575,11 +736,30 @@ def main(argv=None):
           + (f"; plus {(cv.label == 'uncertain').sum():,} of uncertain significance"
              if a.include_vus else ""), flush=True)
 
+    am = None
+    if a.alphamissense:
+        print(f"  reading {Path(a.alphamissense).name} ...", flush=True)
+        am = read_alphamissense(Path(a.alphamissense), set(queries.values()))
+        print(f"    {len(am):,} AlphaMissense substitutions for "
+              f"{am.uniprot.nunique()} accession(s)", flush=True)
+    esm = {}
+    for spec in a.esm:
+        g, _, f = spec.partition("=")
+        if not f:
+            raise SystemExit(f"--esm {spec}: expected GENE=FILE")
+        from .analyses.a15_esm_functional import read_esm
+        e = read_esm(Path(f))
+        if e is None:
+            raise SystemExit(f"--esm {f}: need columns pos, mut and esm1v/llr/score")
+        esm[g.strip().upper()] = e
+        print(f"    {len(e):,} ESM-1v scores for {g.strip().upper()}", flush=True)
+
     outdir = Path(a.outdir)
     outdir.mkdir(parents=True, exist_ok=True)
     summary = {}
     for name, members in fams.items():
-        summary[name] = run_one(name, members, seqs, cv, a.min_proteins, outdir)
+        summary[name] = run_one(name, members, seqs, cv, a.min_proteins, outdir,
+                                am=am, esm=esm, acc=queries)
     if len(summary) > 1:
         print("\n  == families side by side")
         for n, r in summary.items():
@@ -600,7 +780,8 @@ def main(argv=None):
     return 0
 
 
-def run_one(name, members, seqs, cv, min_proteins, outdir):
+def run_one(name, members, seqs, cv, min_proteins, outdir, am=None, esm=None,
+            acc=None):
     import json
     print(f"\n  == {name}: aligning and pooling {len(members)} measured proteins",
           flush=True)
@@ -736,6 +917,30 @@ def run_one(name, members, seqs, cv, min_proteins, outdir):
                           + (f"  [{r.seg_type}]" if isinstance(getattr(r, "seg_type", None), str)
                              else ""))
             print(f"    full table: {name}_variant_ranking.csv")
+        pred = predictor_table(known, am, esm or {}, acc or {})
+        keys = [k for k, *_ in PREDICTORS if k in pred and pred[k].notna().any()]
+        if len(keys) > 1:
+            pr = score_predictors(pred, keys)
+            pred.to_csv(outdir / f"{name}_predictors.csv", index=False)
+            pr.to_csv(outdir / f"{name}_predictor_auroc.csv", index=False)
+            one = by_gene.dropna(subset=["auroc"]) if "auroc" in by_gene else by_gene
+            figure_predictors(pred, pr, outdir, name,
+                              str(one.gene.iloc[0]) if len(one) == 1 else "")
+            res["predictors"] = pr.to_dict("records")
+            print("\n  predictors, each on its own variants and on the shared set:")
+            for k in keys:
+                rr = pr[pr.key == k].set_index("scope")
+                lab = next(l for kk, l, *_ in PREDICTORS if kk == k)
+                bits = []
+                for sc in ("own", "shared"):
+                    if sc in rr.index and pd.notna(rr.loc[sc, "auroc"]):
+                        bits.append(f"{sc} {rr.loc[sc, 'auroc']:.3f} "
+                                    f"[{rr.loc[sc, 'auroc_lo']:.3f}, "
+                                    f"{rr.loc[sc, 'auroc_hi']:.3f}] "
+                                    f"n={int(rr.loc[sc, 'n'])}")
+                print(f"    {lab:<22} " + "   ".join(bits))
+            print("    compare the shared column: the own column is a different set of "
+                  "variants for each predictor")
         if len(uncertain):
             ben_min = float(known.loc[known.label == "benign", "mu"].min())
             below = int((uncertain.mu < ben_min).sum())
