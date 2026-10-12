@@ -119,7 +119,8 @@ def protein_sequence(cfg: Config) -> str | None:
     if not raw:
         return None
     txt = str(raw).strip()
-    if len(txt) > 200 or (txt.isalpha() and "." not in txt and "/" not in txt and len(txt) > 30):
+    # a long run of letters with no dot or separator is a sequence, not a filename
+    if len(txt) > 200 or (txt.isalpha() and "." not in txt and "/" not in txt and len(txt) > 20):
         return txt.upper()          # the residues themselves, not a filename
     p = cfg.resolve(raw)
     if p and p.exists():

@@ -292,7 +292,16 @@ def _recover_synonymous(raw: pd.DataFrame, colmap: dict, v: pd.DataFrame, wt_seq
         missing &= ~wtm
     ref = wt_nt_reference(raw, colmap)
     if ref is None:
-        v.loc[missing, "mut"] = "="  # synonymous but position unknown -> dropped later
+        # No nucleotide sequence (DiMSum writes NA when it was not kept), so a row with no
+        # amino-acid change cannot be placed at a codon. It is still the zero anchor: at
+        # the protein level it IS the wild type, whether or not a silent base changed. The
+        # alternative, dropping it, throws away the only reference the library has.
+        if colmap.get("aa_seq") and wt_seq:
+            same = raw[colmap["aa_seq"]].astype(str).str.strip().str.upper() == wt_seq.upper()
+            v.loc[missing & same, "mut"] = "WT_ROW"
+            v.loc[missing & ~same, "mut"] = "="
+        else:
+            v.loc[missing, "mut"] = "="  # position unknown -> dropped later
         return v
     v = v.copy()
     for i in v.index[missing]:
@@ -336,7 +345,7 @@ def lower_anchor(mis: pd.Series, how: str) -> float:
     return float(mis.min()) if m.group(1) == "min" else float(np.nanpercentile(mis, float(m.group(2))))
 
 
-def anchors(df: pd.DataFrame, col: str, cfg: Config) -> dict:
+def anchors(df: pd.DataFrame, col: str, cfg: Config, wt_score: float | None = None) -> dict:
     ok = df["pass_filter"] & df[col].notna()
     syn = df.loc[ok & (df.vclass == "synonymous"), col]
     stop_mask = ok & (df.vclass == "nonsense")
@@ -359,10 +368,21 @@ def anchors(df: pd.DataFrame, col: str, cfg: Config) -> dict:
     else:
         info["stop_median"] = float(np.nanpercentile(mis, 1)) if len(mis) else np.nan
         info["stop_source"] = "missense_p1_FALLBACK"
-    if len(syn) < 5:
-        mis = df.loc[ok & (df.vclass == "missense"), col]
-        info["syn_median"] = float(mis.median())
-        info["syn_source"] = "missense_median_FALLBACK"
+    how0 = str(cfg.get_path("normalization.zero_anchor", "synonymous") or "synonymous")
+    if how0 == "wild_type" and wt_score is not None and np.isfinite(wt_score):
+        info["syn_median"] = float(wt_score)
+        info["syn_source"] = "wild_type"
+    elif len(syn) < 5:
+        # A library with no synonymous variants is not a broken library. When the table
+        # carries a wild-type row, that is a real zero anchor and a far better one than the
+        # median missense variant, which assumes the average mutation does nothing.
+        if wt_score is not None and np.isfinite(wt_score):
+            info["syn_median"] = float(wt_score)
+            info["syn_source"] = "wild_type_row"
+        else:
+            mis = df.loc[ok & (df.vclass == "missense"), col]
+            info["syn_median"] = float(mis.median())
+            info["syn_source"] = "missense_median_FALLBACK"
     return info
 
 
@@ -447,14 +467,16 @@ def load_dataset(cfg: Config, use_cache: bool = False) -> pd.DataFrame:
     # ------------------------------------------------------ normalisation
     sa = float(cfg.get_path("normalization.syn_anchor", 0.0))
     ta = float(cfg.get_path("normalization.stop_anchor", -1.0))
-    norm = {"score": anchors(df, "score_raw", cfg)}
+    wt_raw = float(wt_rows["score_raw"].mean()) if len(wt_rows) else None
+    norm = {"score": anchors(df, "score_raw", cfg, wt_raw)}
     a = norm["score"]
     df["score_z"] = normalise(df["score_raw"], a["syn_median"], a["stop_median"], sa, ta)
     df["se"] = df["se_raw"] * abs((sa - ta) / (a["syn_median"] - a["stop_median"]))
     for i in range(1, nrep + 1):
         col = f"rep{i}_raw"
         tmp = df.assign(pass_filter=df["pass_filter"] & df[f"rep{i}_pass"])
-        ai = anchors(tmp, col, cfg)
+        ai = anchors(tmp, col, cfg,
+                     float(wt_rows[col].mean()) if len(wt_rows) and col in wt_rows else None)
         norm[f"rep{i}"] = ai
         df[f"rep{i}"] = normalise(df[col].where(df[f"rep{i}_pass"]), ai["syn_median"], ai["stop_median"], sa, ta)
         if f"rep{i}_se_raw" in df:

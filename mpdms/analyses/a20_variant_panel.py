@@ -348,32 +348,62 @@ def site_distributions(df: pd.DataFrame, positions: list[int]) -> dict:
     return {p: d.loc[d.pos == p, "score_z"].dropna().to_numpy() for p in positions}
 
 
-def figure_single(cfg, named: pd.DataFrame, syn: np.ndarray, sites: dict, figdir):
+def stats_single_wt(named: pd.DataFrame) -> pd.DataFrame:
+    """Each variant against the wild type at 0, using its own standard error.
+
+    Without synonymous variants there is no empirical picture of what "no effect" looks
+    like, so the only test available is whether the variant's own interval excludes zero.
+    That is a weaker claim: it uses measurement error alone and knows nothing about how
+    much a variant that truly does nothing still moves between wells.
+    """
+    rows = []
+    for r in named.itertuples():
+        z = r.score_z / r.se if np.isfinite(r.se) and r.se > 0 else np.nan
+        rows.append({"variant": r.variant, "score_z": r.score_z, "se": r.se,
+                     "reference": "wild type (0)", "z_vs_wild_type": z,
+                     "p": float(2 * ss.norm.sf(abs(z))) if np.isfinite(z) else np.nan})
+    t = pd.DataFrame(rows)
+    if len(t):
+        t["q"] = bh_fdr(t.p)
+    return t
+
+
+def figure_single(cfg, named: pd.DataFrame, syn, sites: dict, figdir):
     """(a) each named variant against the synonymous spread; (b) its whole position."""
     order = named.variant.tolist()
     fig, axes = plt.subplots(1, 2, figsize=(4.2 + 0.55 * len(order), 3.6),
                              layout="constrained", gridspec_kw={"width_ratios": [1, 1]})
     ax = axes[0]
-    # the synonymous variants are the reference: hundreds of measurements of "no effect".
-    # Its median is 0 by construction and the label lands on the two-line tick label, so
-    # it is left off here; panel (b) prints medians where they are worth reading.
-    P.violin_box(ax, {SYN_LABEL: syn}, colors={SYN_LABEL: SYN_COLOR}, width=0.6,
-                 show_medians=False)
-    x = np.arange(1, len(order) + 1)
+    has_syn = syn is not None and len(syn) >= 5
+    if has_syn:
+        # the synonymous variants are the reference: hundreds of measurements of "no
+        # effect". Its median is 0 by construction and the label would land on the
+        # two-line tick label, so it is left off here.
+        P.violin_box(ax, {SYN_LABEL: syn}, colors={SYN_LABEL: SYN_COLOR}, width=0.6,
+                     show_medians=False)
+    x = np.arange(1 if has_syn else 0, len(order) + (1 if has_syn else 0))
     ax.errorbar(x, named.score_z, yerr=1.96 * named.se.fillna(0), fmt="o", ms=5,
                 color=MUT_COLOR, ecolor=P.INK, elinewidth=0.9, capsize=2.5, zorder=4)
-    lo, hi = np.percentile(syn, [2.5, 97.5]) if len(syn) > 4 else (np.nan, np.nan)
-    if np.isfinite(lo):
+    if has_syn:
+        lo, hi = np.percentile(syn, [2.5, 97.5])
         ax.axhspan(lo, hi, color=SYN_COLOR, alpha=0.12, lw=0, zorder=0)
-    ax.axhline(0, color=SYN_COLOR, lw=0.8)
+    ax.axhline(0, color=SYN_COLOR, lw=1.1,
+               label="wild type" if not has_syn else None)
     ax.axhline(-1, color="#C0392B", lw=0.8, ls=(0, (3, 3)))
-    ax.set_xticks(np.arange(0, len(order) + 1))
-    ax.set_xticklabels([SYN_LABEL] + order, rotation=45, ha="right", fontsize=6.5)
-    ax.set_ylabel("Normalised fitness (synonymous = 0, nonsense = −1)")
-    ax.set_title("(a) Named variants, ±95% CI from the table's sigma", loc="left", fontsize=8.5)
+    ax.set_xticks(np.arange(0, len(order) + (1 if has_syn else 0)))
+    ax.set_xticklabels(([SYN_LABEL] if has_syn else []) + order,
+                       rotation=45, ha="right", fontsize=6.5)
+    ax.set_ylabel("Normalised fitness (wild type = 0, nonsense = −1)"
+                  if not has_syn else
+                  "Normalised fitness (synonymous = 0, nonsense = −1)")
+    ax.set_title("(a) Named variants vs "
+                 + ("the synonymous spread" if has_syn else "wild type")
+                 + ", ±95% CI from sigma", loc="left", fontsize=8.5)
+    if not has_syn:
+        ax.legend(frameon=False, fontsize=6.5, loc="lower left")
 
     ax = axes[1]
-    groups = {SYN_LABEL: syn}
+    groups = {SYN_LABEL: syn} if has_syn else {}
     for lab, pos in zip(order, named.pos):
         v = sites.get(pos, np.array([]))
         if len(v) >= 3:
@@ -427,20 +457,24 @@ def run(df: pd.DataFrame, cfg, outdir: Path) -> dict:
         if not len(named):
             return skipped("a20", cfg, "none of the named variants are usable: "
                            + "; ".join(missing))
-        if len(syn_all) < 5:
-            return skipped("a20", cfg, "fewer than 5 synonymous variants to compare against")
+        # No synonymous variants is a normal library design, not a reason to skip. The
+        # reference is then the wild type itself, which normalisation has put at 0, and
+        # the spread of "no effect" has to come from somewhere else - here the variants
+        # whose intervals cover 0.
+        ref_syn = syn_all if len(syn_all) >= 5 else None
         sites = site_distributions(df, named.pos.tolist())
-        st = stats_single(named, syn_all)
+        st = stats_single(named, syn_all) if ref_syn is not None else stats_single_wt(named)
         st.to_csv(tabdir / "a20_variant_stats.csv", index=False)
         named.to_csv(tabdir / "a20_variant_values.csv", index=False)
-        figs = figure_single(cfg, named, syn_all, sites, figdir)
+        figs = figure_single(cfg, named, ref_syn, sites, figdir)
         pc = percentiles(df, labels)
         if len(pc):
             figs = figs + percentile_figure(cfg, df, pc, figdir)
             pc.to_csv(tabdir / "a20b_percentiles.csv", index=False)
         sig = st[st.q < 0.05]
+        ref_name = "synonymous" if ref_syn is not None else "wild type"
         head = (f"{len(named)} named variants, one estimate each (no replicate columns); "
-                f"{len(sig)} differ from synonymous at q < 0.05"
+                f"{len(sig)} differ from {ref_name} at q < 0.05"
                 + (": " + ", ".join(sig.variant) if len(sig) else ""))
         return result("a20", cfg, head,
                       {"n_named": int(len(named)), "n_significant": int(len(sig)),
@@ -448,7 +482,11 @@ def run(df: pd.DataFrame, cfg, outdir: Path) -> dict:
                        "variants": st.set_index("variant").score_z.to_dict()},
                       [f"not plotted - {m}" for m in missing]
                       + ["one estimate per variant, so the error bar is the table's sigma, "
-                         "not replicate scatter"],
+                         "not replicate scatter"]
+                      + ([] if ref_syn is not None else
+                         ["no synonymous variants in this library: the reference is the wild "
+                          "type at 0 and each variant is tested against its own sigma, which "
+                          "is a weaker comparison than a synonymous spread would give"]),
                       figs, [tabdir / "a20_variant_stats.csv"])
 
     mut, syn, missing = collect(df, cfg, labels)

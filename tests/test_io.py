@@ -269,3 +269,51 @@ def test_keep_classes_drops_controls_only_after_they_set_the_scale(tmp_path):
     a = full.query("vclass == 'missense'").set_index(["pos", "mut"]).score_z
     b = mis.set_index(["pos", "mut"]).score_z
     assert (a.reindex(b.index) - b).abs().max() < 1e-12       # scores identical, rows fewer
+
+
+def _no_syn(tmp_path, with_wt=True):
+    """A library with no synonymous variants, as the DiMSum tables here are: nt_seq is NA,
+    so a no-amino-acid-change row can only be recognised by its aa_seq."""
+    seq = "MKLWTTAVGCLAVSAGGLFFGYDTGVISGAMPFIQKEFNLSSLQEGLVVSSLLVGA"
+    rows = []
+    if with_wt:
+        for _ in range(6):
+            rows.append({"Pos": None, "WT_AA": "", "Mut": "NA", "aa_seq": seq,
+                         "Nham_aa": 0, "STOP": "FALSE", "fitness": 0.02, "sigma": 0.03})
+    for p in range(2, len(seq) + 1):
+        for m in "AVDG":
+            if m == seq[p - 1]:
+                continue
+            rows.append({"Pos": p, "WT_AA": seq[p - 1], "Mut": m,
+                         "aa_seq": seq[:p - 1] + m + seq[p:], "Nham_aa": 1,
+                         "STOP": "FALSE", "fitness": -0.4, "sigma": 0.1})
+        rows.append({"Pos": p, "WT_AA": seq[p - 1], "Mut": "*",
+                     "aa_seq": seq[:p - 1] + "*" + seq[p:], "Nham_aa": 1,
+                     "STOP": "TRUE", "fitness": -1.4, "sigma": 0.1})
+    return pd.DataFrame(rows)
+
+
+def test_a_library_with_no_synonymous_still_gets_a_real_zero_anchor(tmp_path):
+    """The no-amino-acid-change rows are the wild type; dropping them loses the anchor."""
+    cfg = _cfg(tmp_path, _no_syn(tmp_path), protein={"sequence": "MKLWTTAVGCLAVSAGGLFFGYDTGVISGAMPFIQKEFNLSSLQEGLVVSSLLVGA"})
+    df = load_dataset(cfg)
+    a = df.attrs["normalization"]["score"]
+    assert a["syn_source"] == "wild_type_row"
+    assert not df.attrs["normalization_fallback"]
+    assert df.loc[df.vclass == "nonsense", "score_z"].median() == pytest.approx(-1, abs=1e-9)
+
+
+def test_without_a_wild_type_row_the_fallback_is_still_flagged(tmp_path):
+    cfg = _cfg(tmp_path, _no_syn(tmp_path, with_wt=False),
+               protein={"sequence": "MKLWTTAVGCLAVSAGGLFFGYDTGVISGAMPFIQKEFNLSSLQEGLVVSSLLVGA"})
+    df = load_dataset(cfg)
+    assert df.attrs["normalization"]["score"]["syn_source"] == "missense_median_FALLBACK"
+    assert df.attrs["normalization_fallback"]
+
+
+def test_zero_anchor_can_be_asked_for_explicitly(tmp_path):
+    t = _no_syn(tmp_path)
+    cfg = _cfg(tmp_path, t, protein={"sequence": "MKLWTTAVGCLAVSAGGLFFGYDTGVISGAMPFIQKEFNLSSLQEGLVVSSLLVGA"},
+               normalization={"zero_anchor": "wild_type"})
+    df = load_dataset(cfg)
+    assert df.attrs["normalization"]["score"]["syn_source"] == "wild_type"
