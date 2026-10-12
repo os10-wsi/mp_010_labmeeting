@@ -329,50 +329,72 @@ one that catches a model that looks accurate and is overconfident.
 
 ```bash
 python -m mpdms environ \
-  configs/AQR1_fitness.yaml configs/HXT1.yaml configs/HXT2.yaml \
-  configs/HXT3.yaml configs/HXT7.yaml
+  configs/AQR1_fitness.yaml configs/HXT2.yaml \
+  configs/HXT1.yaml configs/HXT3.yaml
 ```
+
+Ten analyses, each one panel per protein, **laid out in the order the configs are
+given**: with four proteins and the default two columns that is top-left, top-right,
+bottom-left, bottom-right. Nothing is pooled across proteins — these assays differ in
+dynamic range, and a comparison between proteins belongs in a model that says so
+(`bayes`, `famstruct`) rather than in a box plot. Colour is the project's abundance
+scale throughout: dark red at the stop-codon level, white at no effect, blue above.
 
 A membrane protein has several kinds of buried and several kinds of exposed, and RSA
 cannot tell them apart. Each position is classified with the membrane frame instead:
 
 | class | what it is |
 | --- | --- |
-| helix-helix core | in a TM helix, RSA < 0.15: packed against other helices |
-| cavity-lining | in a TM helix, exposed, inside the median TM radius: facing the central pathway, which in a transporter is water |
-| lipid-facing | in a TM helix, exposed, outside it: facing acyl chains |
-| cytosolic / lumenal loop | outside the membrane, by side from the topology |
+| core | in a TM helix, RSA < 0.15: packed against other helices |
+| cavity | in a TM helix, exposed, inside the median TM radius: facing the central pathway, which in a transporter is water |
+| lipid | in a TM helix, exposed, outside it: facing acyl chains |
+| cyto / lumen | outside the membrane, by side from the topology |
 
-RSA merges the middle two, and they are the two with opposite chemistry — a polar residue
-is at home in the cavity and out of place against lipid. Separating them is what the
-`radial` coordinate is for. The radial cut is each protein's own median TM radius, not a
+RSA merges cavity and lipid, and they are the two with opposite chemistry — a polar
+residue is at home in the cavity and out of place against lipid. Separating them is what
+the `radial` coordinate is for. The cut is each protein's own median TM radius, not a
 fixed number of angstroms, and it is printed and stored. Positions with pLDDT < 70 are
 left unclassified rather than placed on geometry the model is unsure of.
 
 | figure | question |
 | --- | --- |
-| E01 | mean effect per position by class, per protein and pooled |
-| E02 | burial against depth together: does burial cost more in the bilayer centre than at its edge? |
+| E01 | mean effect per position by class; each violin filled by its own median |
+| E02a/b | burial against depth together: does burial cost more in the bilayer centre than at its edge? |
 | E03 | Δ hydrophobicity against effect, in three bands of burial, with the quadratic term |
 | E04 | polar→hydrophobic and back, by class, each against that class's own baseline |
 | E05 | effect against contact number, with RSA partialled out |
-| E06 | where the ten largest ESM-1v residuals sit, and whether they cluster |
+| E06a/b/c | where the ten largest ESM-1v residuals sit, and whether they cluster |
+| E07 | is a helix's intolerance on one face? the 3.6-residue moment, with a wheel |
+| E08 | every residue placed in the membrane, coloured by what it costs |
+| E09 | the 20 × 20 substitution matrix, ordered by hydrophobicity |
+| E10 | what a charge costs, against how deep it is buried |
 
-E04 is the one that states the hypothesis directly. Every direction is reported relative
-to the average substitution at the same kind of position: a class that is intolerant of
-everything would otherwise look intolerant of each direction in turn, which says nothing
-about chemistry. E05 reports the partial correlation as well as the raw one, because
-contacts and RSA are two views of the same thing and only the partial is news.
+E04 states the hypothesis directly. Each cell carries two numbers: the mean effect, and
+in brackets the same minus the average substitution at that kind of position. The second
+is the one about chemistry — a class intolerant of everything is intolerant of each
+direction in turn, which says nothing. E05 reports the partial Spearman given RSA as well
+as the raw one, because contacts and RSA are two views of the same thing.
 
-E06 asks whether the positions where ESM-1v expects more constraint than abundance shows
-form a network. Mean pairwise Cα distance against a permutation null, and it is scored
-against **two** nulls: ten positions drawn from anywhere measured, and ten drawn with the
-same TM/loop composition as the observed set. The second is the one to believe — ten TM
-residues are close together because TM residues are close together, and on the test
-fixture that alone takes p from 0.016 to 0.089. Each protein also gets a PyMOL `.pml` and
-a ChimeraX `.cxc` script under `structures/<protein>/`, with the ten residues as spheres
-and every pair under 10 Å as a real distance object, so the network in the figure can be
-turned around in the model.
+E07 is the classic membrane-protein question made quantitative. An α-helix turns 100° per
+residue, so a helix with one face against other helices and one against lipid has its
+intolerance repeating every 3.6 residues. The moment is 1 if every intolerant residue is
+on one side and 0 if they are spread evenly; effects are centred first, so a uniformly
+dead helix — which has no face at all — scores 0 rather than 1. The null shuffles effects
+*within the same helix*, keeping its mean, spread and length, so the p-value is about the
+arrangement and nothing else.
+
+E08 is the most direct picture the data allows: horizontal is distance from the bundle
+axis, vertical is depth, colour is the mean effect, the bilayer is shaded, and a strip
+down the side gives the depth profile. E10 turns the textbook claim into a measurement —
+a charge buried mid-bilayer should cost more than the same charge near the headgroups,
+and a hydrophobic substitution should be flat with depth.
+
+E06 scores clustering against **two** nulls: ten positions drawn from anywhere measured,
+and ten drawn with the same TM/loop composition as the observed set. The second is the
+one to believe — ten TM residues are close together because TM residues are close
+together, and on the test fixture that alone takes p from 0.016 to 0.089. Each protein
+also gets a PyMOL `.pml` and a ChimeraX `.cxc` script under `structures/<protein>/`, with
+the ten residues as spheres and every pair under 10 Å as a real distance object.
 
 ### Can the structure make the family model better - and does it beat ESM-1v?
 

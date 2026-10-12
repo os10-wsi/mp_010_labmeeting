@@ -114,16 +114,6 @@ def test_the_matched_null_is_skipped_when_a_stratum_is_too_small(monkeypatch):
     assert "p_clustered_matched" not in st       # only 8 TM positions, 9 were picked
 
 
-def test_pooling_reports_the_meta_analysis_the_figure_draws():
-    rows = pd.DataFrame({"estimate": [-0.4, -0.5, -0.45, -0.42],
-                         "se": [0.05, 0.06, 0.05, 0.07]})
-    m = E._pool(rows)
-    assert m["n_proteins"] == 4
-    assert m["lo"] < m["pooled"] < m["hi"]
-    assert m["pooled"] == pytest.approx(-0.44, abs=0.05)
-    assert E._pool(rows.iloc[:1]) == {"n_proteins": 1}
-
-
 def test_the_command_runs_end_to_end_and_writes_what_it_says_it_does(tmp_path, monkeypatch):
     monkeypatch.setattr(E, "N_PERM", 300)
     rc = E.main(["configs/SYN1.yaml", "configs/SYN2.yaml", "configs/SYN3.yaml",
@@ -135,12 +125,53 @@ def test_the_command_runs_end_to_end_and_writes_what_it_says_it_does(tmp_path, m
     assert [k for k, v in out.items() if v["status"] == "error"] == []
     for f in ("e01_environment_by_protein.csv", "e01_environment_contrasts.csv",
               "e02_burial_slopes.csv", "e03_hydrophobicity_slopes.csv",
-              "e04_direction_pooled.csv", "e05_contacts.csv", "positions.csv"):
+              "e04_direction_by_protein.csv", "e05_contacts.csv", "e07_helix_face.csv",
+              "e08_depth_profile.csv", "e09_substitution_matrix.csv",
+              "e10_charge_depth.csv", "positions.csv"):
         assert (tmp_path / f).exists(), f
     figs = {p.stem for p in tmp_path.glob("*.png")}
-    assert {"e01_environment", "e02_burial_depth", "e03_hydrophobicity_burial",
-            "e04_substitution_direction", "e05_contacts"} <= figs
+    assert {"e01_environment", "e02a_burial_depth", "e02b_burial_slope_by_depth",
+            "e03_hydrophobicity_burial", "e04_substitution_direction", "e05_contacts",
+            "e07_helix_face", "e08_membrane_map", "e09_substitution_matrix",
+            "e10_charge_depth"} <= figs
     # SYN1 is the only fixture with ESM scores, so it is the only one with a network
     assert (tmp_path / "structures" / "SYN1" / "e06_network.pml").exists()
+    assert {"e06a_esm_residual_network", "e06b_residual_distances",
+            "e06c_clustering_null"} <= figs
     pos = pd.read_csv(tmp_path / "positions.csv")
     assert set(pos.environ.dropna()) <= set(E.CLASSES)
+
+
+def test_panels_follow_the_order_the_configs_were_given_not_the_alphabet():
+    """Which protein sits where is a decision about the figure, so order is the caller's."""
+    fig, pairs, axes = E.grid(["Z", "A", "M", "B"], cols=2)
+    assert [n for n, _ in pairs] == ["Z", "A", "M", "B"]
+    assert pairs[0][1] is axes[0][0] and pairs[1][1] is axes[0][1]
+    assert pairs[2][1] is axes[1][0] and pairs[3][1] is axes[1][1]
+    import matplotlib.pyplot as plt
+    plt.close(fig)
+    # an odd number leaves the spare panel blank rather than reflowing the rest
+    fig, pairs, axes = E.grid(["Z", "A", "M"], cols=2)
+    assert not axes[1][1].get_visible()
+    plt.close(fig)
+
+
+def test_a_helix_with_one_intolerant_face_scores_higher_than_a_uniform_one():
+    """The moment is about the arrangement, not about how intolerant a helix is."""
+    n = 18
+    ang = np.deg2rad(100.0) * np.arange(n)
+    faced = -1.0 * (np.cos(ang) > 0)                 # one face dead, the other fine
+    uniform = np.full(n, -1.0)                       # every residue dead
+    noisy = np.random.default_rng(0).normal(-0.5, 0.3, n)
+    assert E.helix_moment(faced) > 0.5
+    assert np.isnan(E.helix_moment(uniform))         # nothing to arrange: no face
+    assert E.helix_moment(noisy) < E.helix_moment(faced)
+    # and it is blind to a constant offset, since only the arrangement should matter
+    assert E.helix_moment(faced) == pytest.approx(E.helix_moment(faced - 3.0))
+
+
+def test_the_colour_of_an_effect_is_the_projects_red_white_blue_scale():
+    import numpy as np
+    dead, neutral = E.effect_color(-1.0), E.effect_color(0.0)
+    assert dead[0] > 0.4 and dead[2] < 0.1          # dark red
+    assert np.allclose(neutral[:3], 1.0, atol=0.02)  # white at zero

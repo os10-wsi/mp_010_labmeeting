@@ -419,3 +419,22 @@ def test_density_scatter_ignores_missing_values_and_refuses_tiny_input():
     assert len(density_scatter(ax, x, y).get_offsets()) == 200
     assert density_scatter(ax, [1.0, 2.0], [1.0, 2.0]) is None
     plt.close(fig)
+
+
+def test_zero_is_white_on_the_fitness_scale():
+    """fitness_cmap stitches white to where zero falls, so the norm must be linear.
+
+    With a TwoSlopeNorm the two corrections compound: zero is drawn pink and an
+    improvement of about +0.17 is drawn white. Nothing about the figure looks wrong when
+    that happens, which is why it is asserted here.
+    """
+    import numpy as np
+
+    from mpdms import plotting as P
+    for vmin, vmax in ((-1.0, 0.5), (-1.5, 0.25), (-1.0, 1.0)):
+        c = P.fitness_cmap(vmin, vmax)(P.fitness_norm(vmin, vmax)(0.0))
+        assert np.allclose(c[:3], 1.0, atol=0.02), (vmin, vmax, c)
+    # and the ends stay where they belong
+    assert P.fitness_cmap()(P.fitness_norm()(-1.0))[0] > 0.4
+    assert P.fitness_cmap()(P.fitness_norm()(-1.0))[2] < 0.05
+    assert P.fitness_cmap()(P.fitness_norm()(0.5))[2] > 0.7

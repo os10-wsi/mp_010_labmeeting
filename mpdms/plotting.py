@@ -11,7 +11,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
-from matplotlib.colors import LinearSegmentedColormap, TwoSlopeNorm  # noqa: E402
+from matplotlib.colors import LinearSegmentedColormap, Normalize  # noqa: E402
 from matplotlib.transforms import ScaledTranslation  # noqa: E402
 
 from .config import REPO_ROOT  # noqa: E402
@@ -78,7 +78,16 @@ def fitness_cmap(vmin: float = VMIN, vmax: float = VMAX):
 
 
 def fitness_norm(vmin: float = VMIN, vmax: float = VMAX):
-    return TwoSlopeNorm(vmin=vmin, vcenter=0.0, vmax=vmax)
+    """The companion of `fitness_cmap`, and it has to be the LINEAR one.
+
+    `fitness_cmap` already stitches white to the fraction of the ramp where zero falls,
+    so the norm's only job is to map [vmin, vmax] onto [0, 1] evenly. Pairing it with a
+    TwoSlopeNorm centres the colours a second time: zero then lands at the middle of a
+    map whose white is at 2/3, so a position with no effect is drawn pink and a real
+    improvement of about +0.17 is drawn white. Tested, because nothing about the figure
+    looks wrong when it happens.
+    """
+    return Normalize(vmin=vmin, vmax=vmax)
 
 
 def diverging_cmap():

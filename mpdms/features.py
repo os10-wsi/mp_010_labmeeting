@@ -86,12 +86,15 @@ def position_table(df: pd.DataFrame, cfg) -> pd.DataFrame:
         # the interpretable axis for a transporter - small means lining the central cavity,
         # large means facing lipid - and RSA cannot tell those apart, since both are
         # "exposed" to a solvent-accessibility calculation that knows nothing about lipid.
-        t = t.merge(rt[["pos", "rsa", "contacts", "plddt", "abs_z", "radial"]],
+        # zdepth is signed and abs_z is not: the sign says which leaflet, which matters
+        # for a picture of the protein in the membrane but not for a model feature, so it
+        # is merged here and deliberately left out of POSITION_FEATURES
+        t = t.merge(rt[["pos", "rsa", "contacts", "plddt", "abs_z", "radial", "zdepth"]],
                     on="pos", how="left")
         hx = t[t.plddt >= 70].groupby("helix").rsa.median().rename("helix_rsa")
         t = t.join(hx, on="helix")
     else:
-        for c in ("rsa", "contacts", "plddt", "abs_z", "radial", "helix_rsa"):
+        for c in ("rsa", "contacts", "plddt", "abs_z", "radial", "zdepth", "helix_rsa"):
             t[c] = np.nan
     return t
 

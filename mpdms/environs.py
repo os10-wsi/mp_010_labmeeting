@@ -27,10 +27,10 @@ The analyses:
     e05  effect against the number of structural contacts, with RSA partialled out
     e06  where the largest ESM-1v residuals sit in the structure, and whether they cluster
 
-Every pooled number is a random-effects meta-analysis of per-protein estimates, not a
-regression on the pooled variants: proteins differ in dynamic range and in how many
-positions they contribute, and pooling variants lets the largest dataset decide the
-answer.
+Nothing is pooled across proteins. Every figure is one panel per protein, in the order
+the configs are given on the command line, and every number in a panel comes from that
+protein alone: these assays differ in dynamic range, and a comparison between proteins
+belongs in a model that says so (see `bayes` and `famstruct`) rather than in a box plot.
 """
 from __future__ import annotations
 
@@ -49,7 +49,6 @@ from .analyses.base import missense
 from .config import REPO_ROOT, load_config
 from .features import position_table
 from .io import load_dataset
-from .stats import meta_analysis
 
 OUT = REPO_ROOT / "outputs" / "_environ"
 RSA_BURIED = 0.15     # below this, a TM residue is packed against other helices
@@ -122,189 +121,200 @@ def protein_frame(cfg) -> tuple[pd.DataFrame, pd.DataFrame]:
     return v, pos
 
 
-def _pool(rows: pd.DataFrame, value: str = "estimate", var: str = "se") -> dict:
-    """Random-effects pooling of one per-protein estimate."""
-    d = rows.dropna(subset=[value, var])
-    d = d[d[var] > 0]
-    if len(d) < 2:
-        return {"n_proteins": int(len(d))}
-    m = meta_analysis(d[value].to_numpy(), d[var].to_numpy() ** 2)
-    return {"n_proteins": int(m["k"]), "pooled": m["mu"], "lo": m["lo"], "hi": m["hi"],
-            "p": m["p"], "i2": m["I2"], "tau2": m["tau2"]}
+# ------------------------------------------------------------------- layout
+def grid(names: list[str], w: float = 3.1, h: float = 2.9, cols: int = 2,
+         extra: float = 0.0, polar: bool = False):
+    """One panel per protein, in the order the proteins were given on the command line.
+
+    The order is the caller's, never sorted: a four-protein figure is read as a 2x2 and
+    which protein sits where is a decision about the figure, not about the alphabet.
+    """
+    rows = int(np.ceil(len(names) / cols))
+    fig, axes = plt.subplots(rows, cols, figsize=(w * cols + 1.0, h * rows + 0.7 + extra),
+                             layout="constrained", squeeze=False,
+                             subplot_kw={"projection": "polar"} if polar else None)
+    flat = [axes[i // cols][i % cols] for i in range(rows * cols)]
+    for ax in flat[len(names):]:
+        ax.set_visible(False)
+    return fig, list(zip(names, flat)), axes
+
+
+def panel(ax, i: int, name: str, extra: str = "", size: float = 8.5):
+    ax.set_title(f"({chr(97 + i)}) {name.replace('_fitness', '')}"
+                 + (f"  {extra}" if extra else ""), loc="left", fontsize=size)
+
+
+def effect_color(v: float):
+    """The project's fitness colours: dark red at -1, white at 0, light blue above."""
+    return P.fitness_cmap()(P.fitness_norm()(v))
 
 
 # ------------------------------------------------------------------ e01 environment
-def e01_environment(pos: dict, outdir: Path) -> dict:
-    """Mean effect per position, by what the position is surrounded by."""
+def e01_environment(pos: dict, names: list[str], outdir: Path) -> dict:
+    """Mean effect per position, by what the position is surrounded by.
+
+    Each violin is filled by its own median, on the same red-white-blue scale the
+    heatmaps use, so the colour of a class carries the same meaning everywhere.
+    """
     rows, contrasts = [], []
-    for g, d in pos.items():
+    fig, pairs, _ = grid(names)
+    for i, (g, ax) in enumerate(pairs):
+        d = pos[g]
+        groups, cols = {}, {}
         for c in CLASSES:
-            s = d.loc[d.environ == c, "effect"]
+            s = d.loc[d.environ == c, "effect"].dropna()
             if len(s) < 5:
                 continue
+            groups[SHORT[c]] = s.to_numpy()
+            cols[SHORT[c]] = effect_color(float(s.median()))
             rows.append({"protein": g, "environ": c, "n": int(len(s)),
                          "estimate": float(s.mean()),
                          "se": float(s.std(ddof=1) / np.sqrt(len(s))),
                          "median": float(s.median())})
-        # the contrast the question is really about: is the core less tolerant than lipid?
+        if groups:
+            P.violin_box(ax, groups, colors=cols)
         for a, b in (("helix-helix core", "lipid-facing"),
                      ("cavity-lining", "lipid-facing"),
                      ("helix-helix core", "cavity-lining")):
             x = d.loc[d.environ == a, "effect"]; y = d.loc[d.environ == b, "effect"]
             if len(x) < 5 or len(y) < 5:
                 continue
-            se = float(np.sqrt(x.var(ddof=1) / len(x) + y.var(ddof=1) / len(y)))
             contrasts.append({"protein": g, "contrast": f"{a} - {b}",
-                              "estimate": float(x.mean() - y.mean()), "se": se,
+                              "estimate": float(x.mean() - y.mean()),
+                              "se": float(np.sqrt(x.var(ddof=1) / len(x)
+                                                  + y.var(ddof=1) / len(y))),
                               "n_a": int(len(x)), "n_b": int(len(y)),
                               "p": float(ss.mannwhitneyu(x, y).pvalue)})
-    per = pd.DataFrame(rows)
-    con = pd.DataFrame(contrasts)
-    if not len(per):
-        return {"status": "skipped", "reason": "no protein has enough classified positions"}
-    pooled = {c: _pool(con[con.contrast == c]) for c in con.contrast.unique()} if len(con) else {}
-
-    n = len(pos)
-    fig = plt.figure(figsize=(11.0, 3.2 + 2.6 * ((n + 2) // 3)), layout="constrained")
-    gs = fig.add_gridspec((n + 2) // 3 + 1, 3, height_ratios=[1] * ((n + 2) // 3) + [1.15])
-    for i, (g, d) in enumerate(sorted(pos.items())):
-        ax = fig.add_subplot(gs[i // 3, i % 3])
-        groups = {SHORT[c]: d.loc[d.environ == c, "effect"].dropna().to_numpy()
-                  for c in CLASSES}
-        groups = {k: v for k, v in groups.items() if len(v) >= 5}
-        back = {v: k for k, v in SHORT.items()}
-        if groups:
-            P.violin_box(ax, groups, colors={k: CLASS_COLORS[back[k]] for k in groups})
         ax.axhline(0, color=P.MUTED, lw=0.6)
-        ax.axhline(-1, color=P.FIT_RED, lw=0.6, ls=(0, (1, 2)))
-        ax.tick_params(axis="x", labelsize=6.5)
-        ax.set_title(f"({chr(97 + i)}) {g.replace('_fitness', '')}", loc="left", fontsize=8.5)
-        if i % 3 == 0:
+        ax.axhline(-1, color=P.INK, lw=0.6, ls=(0, (1, 2)))
+        ax.tick_params(axis="x", labelsize=7)
+        n_core = len(d[d.environ == "helix-helix core"])
+        panel(ax, i, g, f"n = {len(d):,} positions, {n_core} core")
+        if i % 2 == 0:
             ax.set_ylabel("Mean effect at the position")
-    ax = fig.add_subplot(gs[-1, :])
-    labs, est, lo, hi = [], [], [], []
-    for c, m in pooled.items():
-        if "pooled" not in m:
-            continue
-        labs.append(f"{c}   (I² = {m['i2']:.0f}%)"); est.append(m["pooled"])
-        lo.append(m["lo"]); hi.append(m["hi"])
-    if labs:
-        forest(ax, labs, est, lo, hi)
-        ax.axvline(0, color=P.MUTED, lw=0.8)
-        ax.set_xlabel("Difference in mean position effect (negative = the first class is "
-                      "less tolerant)")
-    ax.set_title(f"({chr(97 + n)}) pooled across {len(pos)} proteins, random effects "
-                 "(core = helix-helix interface, cavity = lining the central pathway, "
-                 "lipid = facing acyl chains)", loc="left", fontsize=8.5)
+    fig.suptitle("core = helix-helix interface · cavity = lining the central pathway · "
+                 "lipid = facing acyl chains · dotted line = the stop-codon level",
+                 fontsize=7, x=0.01, ha="left")
     P.save(fig, outdir, "e01_environment", None, "E01")
     plt.close(fig)
+    per, con = pd.DataFrame(rows), pd.DataFrame(contrasts)
     per.to_csv(outdir / "e01_environment_by_protein.csv", index=False)
     con.to_csv(outdir / "e01_environment_contrasts.csv", index=False)
-    head = "; ".join(f"{c}: {m['pooled']:+.3f} [{m['lo']:+.3f}, {m['hi']:+.3f}]"
-                     for c, m in pooled.items() if "pooled" in m)
-    return {"status": "ok", "pooled": pooled, "headline": head}
+    key = "helix-helix core - lipid-facing"
+    head = "; ".join(f"{r.protein.replace('_fitness', '')} {r.estimate:+.3f} (p = {r.p:.1g})"
+                     for r in con[con.contrast == key].itertuples())
+    return {"status": "ok", "headline": f"core − lipid: {head}" if head else "",
+            "by_protein": per.to_dict("records")}
 
 
 # ------------------------------------------------------- e02 burial against depth
-def e02_burial_depth(pos: dict, outdir: Path) -> dict:
+ZB = np.array([0, 4, 8, 12, 16, 25])
+RB = np.array([0, 0.05, 0.15, 0.30, 0.50, 1.01])
+
+
+def e02_burial_depth(pos: dict, names: list[str], outdir: Path) -> dict:
     """The two membrane axes at once: how buried, and how deep.
 
-    A single scatter of effect against RSA mixes the bilayer centre with the headgroup
-    region, and a single scatter against depth mixes buried with exposed. Binning on both
-    keeps them apart, and the question - whether burial costs more in the middle of the
+    A scatter of effect against RSA alone mixes the bilayer centre with the headgroup
+    region, and one against depth alone mixes buried with exposed. Binning on both keeps
+    them apart, and the question - whether burial costs more in the middle of the
     membrane than at its edge - is a property of the two together.
     """
-    rows, cells = [], []
-    names = sorted(pos)
-    fig, axes = plt.subplots(2, len(names), figsize=(2.5 * len(names) + 1.4, 5.4),
-                             layout="constrained", squeeze=False, sharey="row")
-    zb = np.array([0, 4, 8, 12, 16, 25])
-    rb = np.array([0, 0.05, 0.15, 0.30, 0.50, 1.01])
-    mats = []
-    for d in pos.values():
-        t = d.dropna(subset=["effect", "rsa", "abs_z"])
-        m = np.full((len(zb) - 1, len(rb) - 1), np.nan)
-        for i in range(len(zb) - 1):
-            for j in range(len(rb) - 1):
-                s = t[(t.abs_z >= zb[i]) & (t.abs_z < zb[i + 1])
-                      & (t.rsa >= rb[j]) & (t.rsa < rb[j + 1])].effect
-                if len(s) >= 4:
-                    m[i, j] = s.mean()
-        mats.append(m)
-    lim = np.nanpercentile(np.concatenate([m[np.isfinite(m)] for m in mats if np.isfinite(m).any()]),
-                           [2, 98]) if mats else (-1, 0)
-    vmax = float(max(abs(lim[0]), abs(lim[1])))
+    rows = []
+    fig, pairs, axes = grid(names, w=3.0, h=2.7)
     im = None
-    for k, g in enumerate(names):
-        d, m = pos[g], mats[k]
-        ax = axes[0][k]
-        im = ax.imshow(m, origin="lower", aspect="auto", cmap=P.diverging_cmap(),
-                       vmin=-vmax, vmax=vmax,
-                       extent=(0, len(rb) - 1, 0, len(zb) - 1))
-        ax.set_xticks(np.arange(len(rb) - 1) + 0.5)
-        ax.set_xticklabels([f"{rb[j]:.2f}" for j in range(len(rb) - 1)], fontsize=5.5)
-        ax.set_yticks(np.arange(len(zb) - 1) + 0.5)
-        ax.set_yticklabels([f"{zb[i]}-{zb[i+1]}" for i in range(len(zb) - 1)], fontsize=5.5)
-        ax.set_title(f"({chr(97 + k)}) {g.replace('_fitness', '')}", loc="left", fontsize=8)
-        ax.set_xlabel("RSA (lower bound of bin)", fontsize=7)
-        if k == 0:
-            ax.set_ylabel("depth |z| from the bilayer centre (Å)", fontsize=7)
+    for i, (g, ax) in enumerate(pairs):
+        t = pos[g].dropna(subset=["effect", "rsa", "abs_z"])
+        m = np.full((len(ZB) - 1, len(RB) - 1), np.nan)
+        for a in range(len(ZB) - 1):
+            for b in range(len(RB) - 1):
+                s = t[(t.abs_z >= ZB[a]) & (t.abs_z < ZB[a + 1])
+                      & (t.rsa >= RB[b]) & (t.rsa < RB[b + 1])].effect
+                if len(s) >= 4:
+                    m[a, b] = s.mean()
+                rows.append({"protein": g, "z_lo": ZB[a], "z_hi": ZB[a + 1],
+                             "rsa_lo": RB[b], "rsa_hi": RB[b + 1], "n": int(len(s)),
+                             "mean_effect": float(s.mean()) if len(s) else np.nan})
+        im = ax.imshow(m, origin="lower", aspect="auto", cmap=P.fitness_cmap(),
+                       norm=P.fitness_norm(), extent=(0, len(RB) - 1, 0, len(ZB) - 1))
+        for a in range(len(ZB) - 1):
+            for b in range(len(RB) - 1):
+                if np.isfinite(m[a, b]):
+                    ax.text(b + 0.5, a + 0.5, f"{m[a, b]:.2f}", ha="center", va="center",
+                            fontsize=5.5,
+                            color="white" if m[a, b] < -0.55 else P.INK)
+        ax.set_xticks(np.arange(len(RB) - 1) + 0.5)
+        ax.set_xticklabels([f"{RB[b]:.2f}–{RB[b+1]:.2f}" for b in range(len(RB) - 1)],
+                           fontsize=5.5)
+        ax.set_yticks(np.arange(len(ZB) - 1) + 0.5)
+        ax.set_yticklabels([f"{ZB[a]}–{ZB[a+1]}" for a in range(len(ZB) - 1)], fontsize=6)
+        panel(ax, i, g)
+        if i // 2 == (len(names) - 1) // 2:
+            ax.set_xlabel("RSA", fontsize=7.5)
+        if i % 2 == 0:
+            ax.set_ylabel("depth |z| from the bilayer centre (Å)", fontsize=7.5)
+    if im is not None:
+        fig.colorbar(im, ax=axes, fraction=0.025, pad=0.01).set_label(
+            "Mean effect", fontsize=8, fontweight="bold")
+    P.save(fig, outdir, "e02a_burial_depth", None, "E02")
+    plt.close(fig)
 
-        # the marginal that answers the question directly: burial slope by depth band
-        ax = axes[1][k]
-        t = d.dropna(subset=["effect", "rsa", "abs_z"])
-        for lab, sub, col in (("|z| < 10 Å (centre)", t[t.abs_z < 10], P.SERIES[0]),
-                              ("|z| ≥ 10 Å (edge)", t[t.abs_z >= 10], P.SERIES[1])):
+    slopes = []
+    fig, pairs, _ = grid(names, w=2.9, h=2.6)
+    for i, (g, ax) in enumerate(pairs):
+        t = pos[g].dropna(subset=["effect", "rsa", "abs_z"])
+        for lab, sub, col in (("|z| < 10 Å (bilayer centre)", t[t.abs_z < 10], P.DARK_RED),
+                              ("|z| ≥ 10 Å (headgroups, loops)", t[t.abs_z >= 10],
+                               P.LIGHT_BLUE)):
             if len(sub) < 20:
                 continue
-            b = pd.cut(sub.rsa, [0, 0.05, 0.15, 0.30, 0.50, 1.01])
+            b = pd.cut(sub.rsa, RB)
             mm = sub.groupby(b, observed=True).agg(x=("rsa", "mean"), y=("effect", "mean"),
                                                    e=("effect", "sem")).dropna()
-            ax.errorbar(mm.x, mm.y, yerr=mm.e, fmt="-o", ms=3.5, lw=1.1, color=col,
-                        capsize=2, label=lab)
+            ax.errorbar(mm.x, mm.y, yerr=mm.e, fmt="-o", ms=4, lw=1.3, color=col,
+                        capsize=2, label=lab, mec=P.INK, mew=0.4)
             sl = ss.linregress(sub.rsa, sub.effect)
-            rows.append({"protein": g, "band": lab, "estimate": float(sl.slope),
-                         "se": float(sl.stderr), "p": float(sl.pvalue), "n": int(len(sub))})
+            slopes.append({"protein": g, "band": lab, "estimate": float(sl.slope),
+                           "se": float(sl.stderr), "p": float(sl.pvalue),
+                           "n": int(len(sub))})
         ax.axhline(0, color=P.MUTED, lw=0.6)
-        ax.set_xlabel("RSA", fontsize=7)
-        if k == 0:
-            ax.set_ylabel("Mean effect", fontsize=7)
-            ax.legend(frameon=False, fontsize=5.5)
-    if im is not None:
-        fig.colorbar(im, ax=axes[0], fraction=0.02, pad=0.01).set_label(
-            "Mean effect", fontsize=7, fontweight="bold")
-    P.save(fig, outdir, "e02_burial_depth", None, "E02")
+        d = [r for r in slopes if r["protein"] == g]
+        panel(ax, i, g, "  ".join(f"slope {r['estimate']:+.2f}" for r in d), size=8)
+        if i // 2 == (len(names) - 1) // 2:
+            ax.set_xlabel("RSA", fontsize=7.5)
+        if i % 2 == 0:
+            ax.set_ylabel("Mean effect", fontsize=7.5)
+        if i == 0:
+            ax.legend(frameon=False, fontsize=6)
+    P.save(fig, outdir, "e02b_burial_slope_by_depth", None, "E02")
     plt.close(fig)
-    per = pd.DataFrame(rows)
-    per.to_csv(outdir / "e02_burial_slopes.csv", index=False)
-    pooled = {b: _pool(per[per.band == b]) for b in per.band.unique()} if len(per) else {}
-    head = "; ".join(f"{b}: RSA slope {m['pooled']:+.3f} [{m['lo']:+.3f}, {m['hi']:+.3f}]"
-                     for b, m in pooled.items() if "pooled" in m)
-    return {"status": "ok", "pooled": pooled, "headline": head}
+    pd.DataFrame(rows).to_csv(outdir / "e02_burial_depth_cells.csv", index=False)
+    sl = pd.DataFrame(slopes)
+    sl.to_csv(outdir / "e02_burial_slopes.csv", index=False)
+    head = "; ".join(f"{r.protein.replace('_fitness', '')} {r.band.split('(')[0].strip()} "
+                     f"{r.estimate:+.2f}" for r in sl.itertuples())
+    return {"status": "ok", "headline": head, "slopes": sl.to_dict("records")}
 
 
 # -------------------------------------------- e03 hydrophobicity against burial
-def e03_hydrophobicity(var: dict, outdir: Path) -> dict:
+BANDS = [("buried (RSA < 0.15)", lambda t: t.rsa < 0.15, "#B2182B"),
+         ("intermediate", lambda t: (t.rsa >= 0.15) & (t.rsa < 0.35), P.MUTED),
+         ("exposed (RSA ≥ 0.35)", lambda t: t.rsa >= 0.35, "#2166AC")]
+
+
+def e03_hydrophobicity(var: dict, names: list[str], outdir: Path) -> dict:
     """Change in hydrophobicity against effect, in three bands of burial.
 
     `delta_kd` is mutant minus wild-type on the Kyte-Doolittle scale, so positive means
-    the substitution is more hydrophobic. The expectation a membrane protein sets up is
-    that the sign of the cost should flip with the environment, and that a buried position
-    should care about the size of the change whichever way it goes - which is why the
-    quadratic term is fitted as well as the slope.
+    the substitution is more hydrophobic. A buried position should care about the size of
+    the change whichever way it goes, which is a curve rather than a slope, so the
+    quadratic term is fitted alongside and reported.
     """
-    bands = [("buried (RSA < 0.15)", lambda t: t.rsa < 0.15),
-             ("intermediate", lambda t: (t.rsa >= 0.15) & (t.rsa < 0.35)),
-             ("exposed (RSA ≥ 0.35)", lambda t: t.rsa >= 0.35)]
-    names = sorted(var)
     rows = []
-    fig, axes = plt.subplots(1, len(names), figsize=(2.6 * len(names) + 1.0, 3.2),
-                             layout="constrained", squeeze=False, sharey=True)
-    cols = dict(zip([b for b, _ in bands], P.series_colors(3)))
-    for k, g in enumerate(names):
-        ax = axes[0][k]
+    fig, pairs, _ = grid(names, w=3.0, h=2.7)
+    for i, (g, ax) in enumerate(pairs):
         t = var[g].dropna(subset=["score_z", "delta_kd", "rsa"])
-        for lab, f in bands:
+        for lab, f, col in BANDS:
             sub = t[f(t)]
             if len(sub) < 50:
                 continue
@@ -312,28 +322,30 @@ def e03_hydrophobicity(var: dict, outdir: Path) -> dict:
             m = sub.groupby(b, observed=True).agg(x=("delta_kd", "mean"),
                                                   y=("score_z", "mean"),
                                                   e=("score_z", "sem")).dropna()
-            ax.errorbar(m.x, m.y, yerr=m.e, fmt="-o", ms=3, lw=1.0, color=cols[lab],
-                        capsize=1.5, label=lab)
+            ax.errorbar(m.x, m.y, yerr=m.e, fmt="-o", ms=3.4, lw=1.1, color=col,
+                        capsize=1.5, label=lab, mec=P.INK, mew=0.3)
             sl = ss.linregress(sub.delta_kd, sub.score_z)
             q = np.polyfit(sub.delta_kd, sub.score_z, 2)
             rows.append({"protein": g, "band": lab, "estimate": float(sl.slope),
                          "se": float(sl.stderr), "p": float(sl.pvalue),
                          "curvature": float(q[0]), "n": int(len(sub))})
         ax.axhline(0, color=P.MUTED, lw=0.6)
-        ax.axvline(0, color=P.MUTED, lw=0.6, ls=(0, (1, 2)))
-        ax.set_xlabel("Δ hydrophobicity (Kyte-Doolittle, mutant − WT)", fontsize=7)
-        ax.set_title(f"({chr(97 + k)}) {g.replace('_fitness', '')}", loc="left", fontsize=8.5)
-        if k == 0:
-            ax.set_ylabel("Mean effect")
+        ax.axvline(0, color=P.INK, lw=0.6, ls=(0, (1, 2)))
+        panel(ax, i, g)
+        if i // 2 == (len(names) - 1) // 2:
+            ax.set_xlabel("Δ hydrophobicity (Kyte-Doolittle, mutant − WT)", fontsize=7.5)
+        if i % 2 == 0:
+            ax.set_ylabel("Mean effect", fontsize=7.5)
+        if i == 0:
             ax.legend(frameon=False, fontsize=6)
     P.save(fig, outdir, "e03_hydrophobicity_burial", None, "E03")
     plt.close(fig)
     per = pd.DataFrame(rows)
     per.to_csv(outdir / "e03_hydrophobicity_slopes.csv", index=False)
-    pooled = {b: _pool(per[per.band == b]) for b in per.band.unique()} if len(per) else {}
-    head = "; ".join(f"{b}: {m['pooled']:+.4f} per KD unit [{m['lo']:+.4f}, {m['hi']:+.4f}]"
-                     for b, m in pooled.items() if "pooled" in m)
-    return {"status": "ok", "pooled": pooled, "headline": head}
+    head = "; ".join(f"{r.protein.replace('_fitness', '')} {r.band.split(' ')[0]} "
+                     f"{r.estimate:+.3f}/KD unit, curvature {r.curvature:+.4f}"
+                     for r in per.itertuples())
+    return {"status": "ok", "headline": head, "by_protein": per.to_dict("records")}
 
 
 # ------------------------------------- e04 the polar/hydrophobic direction by environment
@@ -356,90 +368,82 @@ def direction(wt: pd.Series, mut: pd.Series) -> pd.Series:
     return out
 
 
-def e04_direction(var: dict, outdir: Path) -> dict:
-    """The hypothesis stated directly: which environments tolerate which direction?
+def e04_direction(var: dict, names: list[str], outdir: Path) -> dict:
+    """Which environments tolerate which direction of change, one protein at a time.
 
-    Reported against that environment's own baseline, as the difference between the mean
-    effect of a direction and the mean effect of every substitution at the same kind of
-    position. A class that is intolerant of everything would otherwise look intolerant of
-    each direction in turn, which says nothing about chemistry.
+    Two numbers per cell. The colour is the absolute mean effect, so a cell can be read
+    against every other figure. The number printed under it is the difference from the
+    average substitution at the same kind of position, which is the one that is about
+    chemistry: a class that is intolerant of everything is intolerant of each direction
+    in turn, and that says nothing.
     """
     rows = []
-    for g, t in var.items():
-        t = t.dropna(subset=["score_z", "environ"]).copy()
+    for g in names:
+        t = var[g].dropna(subset=["score_z", "environ"]).copy()
         t["direction"] = direction(t.wt, t.mut)
         for c in CLASSES:
             base = t[t.environ == c]
             if len(base) < 50:
                 continue
             mu = float(base.score_z.mean())
-            for dname in DIRECTIONS:
-                s = base.loc[base.direction == dname, "score_z"]
+            for dn in DIRECTIONS:
+                s = base.loc[base.direction == dn, "score_z"]
                 if len(s) < 15:
                     continue
-                rows.append({"protein": g, "environ": c, "direction": dname,
+                rows.append({"protein": g, "environ": c, "direction": dn,
                              "n": int(len(s)), "mean": float(s.mean()),
                              "estimate": float(s.mean() - mu),
                              "se": float(s.std(ddof=1) / np.sqrt(len(s)))})
     per = pd.DataFrame(rows)
     if not len(per):
         return {"status": "skipped", "reason": "too few variants per environment"}
-    pooled = []
-    for (c, dn), g in per.groupby(["environ", "direction"]):
-        m = _pool(g)
-        if "pooled" in m:
-            pooled.append({"environ": c, "direction": dn, **m})
-    pl = pd.DataFrame(pooled)
-
-    classes = [c for c in CLASSES if c in set(pl.environ)]
-    fig, axes = plt.subplots(1, 2, figsize=(11.0, 3.2 + 0.22 * len(per.environ.unique())),
-                             layout="constrained", gridspec_kw={"width_ratios": [1.15, 1]})
-    ax = axes[0]
-    cols = dict(zip(DIRECTIONS, P.series_colors(len(DIRECTIONS))))
-    y = np.arange(len(classes))[::-1]
-    for i, dn in enumerate(DIRECTIONS):
-        off = (i - 1.5) * 0.17
-        d = pl[pl.direction == dn].set_index("environ").reindex(classes)
-        ax.hlines(y + off, d.lo, d.hi, color=cols[dn], lw=1.2)
-        ax.scatter(d.pooled, y + off, s=22, color=cols[dn], label=dn, zorder=4,
-                   edgecolor=P.INK, linewidth=0.4)
-    ax.axvline(0, color=P.INK, lw=0.8, ls=(0, (4, 3)))
-    ax.set_yticks(y); ax.set_yticklabels(classes, fontsize=7.5)
-    ax.set_xlabel("Effect relative to the average substitution at that kind of position")
-    ax.legend(frameon=False, fontsize=6.5, ncol=2, loc="lower left")
-    ax.set_title("(a) pooled across proteins, random effects", loc="left", fontsize=8.5)
-
-    ax = axes[1]
-    piv = per.pivot_table(index="environ", columns="direction", values="mean",
-                          aggfunc="mean").reindex(classes)
-    piv = piv[[d for d in DIRECTIONS if d in piv.columns]]
-    v = float(np.nanmax(np.abs(piv.to_numpy())))
-    im = ax.imshow(piv.to_numpy(), cmap=P.diverging_cmap(), vmin=-v, vmax=v, aspect="auto")
-    ax.set_xticks(range(piv.shape[1]))
-    ax.set_xticklabels([c.replace(" → ", "\n→ ") for c in piv.columns], fontsize=6.5)
-    ax.set_yticks(range(len(piv))); ax.set_yticklabels(piv.index, fontsize=7.5)
-    for i in range(piv.shape[0]):
-        for j in range(piv.shape[1]):
-            if np.isfinite(piv.iat[i, j]):
-                ax.text(j, i, f"{piv.iat[i, j]:+.2f}", ha="center", va="center", fontsize=6.5)
-    fig.colorbar(im, ax=ax, fraction=0.04).set_label("Mean effect", fontsize=7,
-                                                     fontweight="bold")
-    ax.set_title("(b) absolute mean effect, averaged over proteins", loc="left", fontsize=8.5)
+    fig, pairs, axes = grid(names, w=3.4, h=2.7, extra=0.3)
+    im = None
+    for i, (g, ax) in enumerate(pairs):
+        d = per[per.protein == g]
+        classes = [c for c in CLASSES if c in set(d.environ)]
+        mean = d.pivot_table(index="environ", columns="direction", values="mean").reindex(
+            classes)[[c for c in DIRECTIONS if c in set(d.direction)]]
+        rel = d.pivot_table(index="environ", columns="direction",
+                            values="estimate").reindex(mean.index)[mean.columns]
+        im = ax.imshow(mean.to_numpy(), cmap=P.fitness_cmap(), norm=P.fitness_norm(),
+                       aspect="auto")
+        for a in range(mean.shape[0]):
+            for b in range(mean.shape[1]):
+                v, r = mean.iat[a, b], rel.iat[a, b]
+                if not np.isfinite(v):
+                    continue
+                col = "white" if v < -0.55 else P.INK
+                ax.text(b, a - 0.13, f"{v:.2f}", ha="center", va="center", fontsize=7,
+                        color=col)
+                ax.text(b, a + 0.22, f"({r:+.2f})", ha="center", va="center", fontsize=5.5,
+                        color=col)
+        ax.set_xticks(range(mean.shape[1]))
+        ax.set_xticklabels([c.replace(" → ", "\n→ ") for c in mean.columns], fontsize=6)
+        ax.set_yticks(range(len(mean)))
+        ax.set_yticklabels([SHORT[c] for c in mean.index], fontsize=7.5)
+        panel(ax, i, g)
+    if im is not None:
+        fig.colorbar(im, ax=axes, fraction=0.025, pad=0.01).set_label(
+            "Mean effect", fontsize=8, fontweight="bold")
+    fig.suptitle("Top number: the mean effect of that kind of substitution there. In "
+                 "brackets: the same, minus the average substitution at that kind of "
+                 "position.", fontsize=7, x=0.01, ha="left")
     P.save(fig, outdir, "e04_substitution_direction", None, "E04")
     plt.close(fig)
     per.to_csv(outdir / "e04_direction_by_protein.csv", index=False)
-    pl.to_csv(outdir / "e04_direction_pooled.csv", index=False)
-    bits = []
-    for c in classes:
-        d = pl[(pl.environ == c) & (pl.direction == "polar → hydrophobic")]
-        if len(d):
-            r = d.iloc[0]
-            bits.append(f"{c}: polar→hydrophobic {r.pooled:+.3f} [{r.lo:+.3f}, {r.hi:+.3f}]")
-    return {"status": "ok", "pooled": pl.to_dict("records"), "headline": "; ".join(bits)}
+    d = per[(per.direction == "polar → hydrophobic")
+            & (per.environ.isin(["lipid-facing", "helix-helix core"]))]
+    head = "; ".join(f"{r.protein.replace('_fitness', '')} {SHORT[r.environ]} "
+                     f"{r.estimate:+.3f}" for r in d.itertuples())
+    return {"status": "ok",
+            "headline": (f"polar→hydrophobic, relative: {head}" if head else
+                         "no protein has enough variants in a TM class to compare"),
+            "by_protein": per.to_dict("records")}
 
 
 # --------------------------------------------------------------- e05 contacts
-def e05_contacts(pos: dict, outdir: Path) -> dict:
+def e05_contacts(pos: dict, names: list[str], outdir: Path) -> dict:
     """Effect against the number of structural contacts, with RSA partialled out.
 
     Contacts and solvent accessibility are two views of the same thing and correlate
@@ -447,19 +451,18 @@ def e05_contacts(pos: dict, outdir: Path) -> dict:
     are reported: the raw Spearman, and the partial correlation given RSA.
     """
     rows = []
-    names = sorted(pos)
-    fig, axes = plt.subplots(1, len(names), figsize=(2.5 * len(names) + 1.0, 3.1),
-                             layout="constrained", squeeze=False, sharey=True)
-    for k, g in enumerate(names):
-        ax = axes[0][k]
+    fig, pairs, _ = grid(names, w=3.0, h=2.7)
+    for i, (g, ax) in enumerate(pairs):
         t = pos[g].dropna(subset=["effect", "contacts"])
         if len(t) < 20:
             continue
-        P.density_scatter(ax, t.contacts.to_numpy(), t.effect.to_numpy(), s=6)
+        ax.scatter(t.contacts, t.effect, s=9, lw=0, alpha=0.75,
+                   c=[effect_color(v) for v in t.effect], edgecolor=P.INK)
         b = pd.cut(t.contacts, 8)
         m = t.groupby(b, observed=True).agg(x=("contacts", "mean"), y=("effect", "mean"),
                                             e=("effect", "sem")).dropna()
-        ax.errorbar(m.x, m.y, yerr=m.e, fmt="-o", ms=3.5, lw=1.4, color=P.FIT_RED, capsize=2)
+        ax.errorbar(m.x, m.y, yerr=m.e, fmt="-o", ms=4, lw=1.5, color=P.INK, capsize=2,
+                    zorder=5)
         ax.axhline(0, color=P.MUTED, lw=0.6)
         rho = float(ss.spearmanr(t.contacts, t.effect)[0])
         part, n_part = np.nan, 0
@@ -472,23 +475,22 @@ def e05_contacts(pos: dict, outdir: Path) -> dict:
             part = float(ss.pearsonr(ec, ee)[0]); n_part = len(u)
         sl = ss.linregress(t.contacts, t.effect)
         rows.append({"protein": g, "estimate": float(sl.slope), "se": float(sl.stderr),
-                     "p": float(sl.pvalue), "spearman": rho, "partial_spearman_given_rsa": part,
-                     "n": int(len(t)), "n_partial": n_part})
-        ax.set_title(f"({chr(97 + k)}) {g.replace('_fitness', '')}\nρ = {rho:+.2f}, "
-                     f"partial ρ | RSA = {part:+.2f}", loc="left", fontsize=7.5)
-        ax.set_xlabel("Contacts (heavy atoms < 8 Å, |i−j| > 4)", fontsize=7)
-        if k == 0:
-            ax.set_ylabel("Mean effect at the position")
+                     "p": float(sl.pvalue), "spearman": rho,
+                     "partial_spearman_given_rsa": part, "n": int(len(t)),
+                     "n_partial": n_part})
+        panel(ax, i, g, f"ρ = {rho:+.2f}, partial ρ | RSA = {part:+.2f}", size=8)
+        if i // 2 == (len(names) - 1) // 2:
+            ax.set_xlabel("Contacts (heavy atoms < 8 Å, |i−j| > 4)", fontsize=7.5)
+        if i % 2 == 0:
+            ax.set_ylabel("Mean effect at the position", fontsize=7.5)
     P.save(fig, outdir, "e05_contacts", None, "E05")
     plt.close(fig)
     per = pd.DataFrame(rows)
     per.to_csv(outdir / "e05_contacts.csv", index=False)
-    m = _pool(per)
-    head = (f"slope {m['pooled']:+.4f} per contact [{m['lo']:+.4f}, {m['hi']:+.4f}], "
-            f"I² = {m.get('i2', float('nan')):.0f}%; mean ρ {per.spearman.mean():+.2f}, "
-            f"mean partial ρ given RSA {per.partial_spearman_given_rsa.mean():+.2f}"
-            if "pooled" in m else "")
-    return {"status": "ok", "pooled": m, "headline": head}
+    head = "; ".join(f"{r.protein.replace('_fitness', '')} ρ {r.spearman:+.2f} "
+                     f"(partial {r.partial_spearman_given_rsa:+.2f})"
+                     for r in per.itertuples())
+    return {"status": "ok", "headline": head, "by_protein": per.to_dict("records")}
 
 
 # ------------------------------------------------ e06 where the ESM outliers sit
@@ -527,8 +529,6 @@ def esm_residuals(cfg) -> pd.DataFrame | None:
                              median_z=("z", "median"),
                              median_abundance=("score_z", "median")).reset_index()
     return g[g.n_variants >= A15_MIN]
-
-
 def network_stats(xyz: np.ndarray, pick: np.ndarray, pool: np.ndarray,
                   strata: np.ndarray | None = None, seed: int = 6) -> dict:
     """Are these positions closer together than the same number drawn at random?
@@ -573,18 +573,16 @@ def network_stats(xyz: np.ndarray, pick: np.ndarray, pool: np.ndarray,
     return out
 
 
-def e06_esm_network(cfgs: dict, pos: dict, outdir: Path) -> dict:
+def e06_esm_network(cfgs: dict, pos: dict, names: list[str], outdir: Path) -> dict:
     """The ten largest ESM-1v residuals, placed in the structure.
 
-    A residual is a position where ESM expects more constraint than abundance shows (or
-    the reverse). Scattered residuals are noise, or they are positions whose function the
-    abundance assay cannot see one at a time. A cluster is a different claim: a set of
-    residues that sit together, which is what a binding site or a gate looks like.
+    A residual is a position where ESM-1v expects more constraint than abundance shows.
+    Scattered residuals are noise, or positions whose function the abundance assay cannot
+    see one at a time. A cluster is a different claim: residues that sit together, which
+    is what a binding site or a gate looks like.
     """
-    from .structure import residue_table
-    rows, per = [], {}
-    names = [g for g in sorted(cfgs) if g in pos]
-    panels = []
+    from .structure import membrane_frame, residue_table
+    rows, per, panels = [], {}, []
     for g in names:
         cfg = cfgs[g]
         res = esm_residuals(cfg)
@@ -593,7 +591,6 @@ def e06_esm_network(cfgs: dict, pos: dict, outdir: Path) -> dict:
             continue
         rt = residue_table(sp, cfg.get_path("structure.chain", "A"),
                            int(cfg.get_path("structure.numbering_offset", 0) or 0))
-        from .structure import membrane_frame
         rt, _ = membrane_frame(rt, cfg)
         t = res.merge(rt[["pos", "x", "y", "z", "zdepth", "radial", "plddt"]], on="pos",
                       how="inner").merge(pos[g][["pos", "seg_type", "environ"]], on="pos",
@@ -601,88 +598,89 @@ def e06_esm_network(cfgs: dict, pos: dict, outdir: Path) -> dict:
         if len(t) < 3 * TOP_N:
             continue
         xyz = t[["x", "y", "z"]].to_numpy(float)
-        order = t.median_z.to_numpy().argsort()          # most negative = most constrained
-        pick = order[:TOP_N]
+        pick = t.median_z.to_numpy().argsort()[:TOP_N]   # most negative = most constrained
         st = network_stats(xyz, pick, np.arange(len(t)),
                            strata=t.seg_type.fillna("unannotated").to_numpy())
-        top = t.iloc[pick].assign(protein=g, rank=np.arange(1, TOP_N + 1))
-        rows.append(top)
+        rows.append(t.iloc[pick].assign(protein=g, rank=np.arange(1, TOP_N + 1)))
         per[g] = {k: v for k, v in st.items() if k not in ("null", "dmat")}
         panels.append((g, t, pick, st))
-        write_network_structure(cfg, top, st, outdir)
-
+        write_network_structure(cfg, rows[-1], st, outdir)
     if not panels:
         return {"status": "skipped", "reason": "no protein has both ESM scores and a structure"}
-    n = len(panels)
-    fig, axes = plt.subplots(3, n, figsize=(2.9 * n + 0.8, 8.4), layout="constrained",
-                             squeeze=False)
-    for k, (g, t, pick, st) in enumerate(panels):
-        ax = axes[0][k]
-        ax.scatter(t.radial, t.zdepth, s=5, color=P.MUTED, alpha=0.45, lw=0)
+
+    have = [g for g, _, _, _ in panels]
+    fig, pairs, _ = grid(have, w=3.2, h=3.0, extra=0.3)
+    for i, ((g, t, pick, st), (_, ax)) in enumerate(zip(panels, pairs)):
+        ax.scatter(t.radial, t.zdepth, s=7, color="#D9D9D9", lw=0)
         p10 = t.iloc[pick]
         c = p10[["x", "y", "z"]].to_numpy(float)
         d = np.linalg.norm(c[:, None, :] - c[None, :, :], axis=-1)
-        for i in range(TOP_N):
-            for j in range(i + 1, TOP_N):
-                if d[i, j] < NEAR:
-                    ax.plot([p10.radial.iloc[i], p10.radial.iloc[j]],
-                            [p10.zdepth.iloc[i], p10.zdepth.iloc[j]],
-                            color=P.FIT_RED, lw=0.8, alpha=0.7, zorder=3)
-        ax.scatter(p10.radial, p10.zdepth, s=34, color=P.FIT_RED, zorder=5,
+        for a in range(TOP_N):
+            for b in range(a + 1, TOP_N):
+                if d[a, b] < NEAR:
+                    ax.plot([p10.radial.iloc[a], p10.radial.iloc[b]],
+                            [p10.zdepth.iloc[a], p10.zdepth.iloc[b]],
+                            color=P.DARK_RED, lw=1.0, alpha=0.75, zorder=3)
+        ax.scatter(p10.radial, p10.zdepth, s=38, color=P.DARK_RED, zorder=5,
                    edgecolor=P.INK, linewidth=0.5)
         P.label_points(ax, p10.radial.to_numpy(), p10.zdepth.to_numpy(),
                        [f"{r.wt}{int(r.pos)}" for r in p10.itertuples()], fontsize=6)
         ax.axhline(0, color=P.INK, lw=0.6, ls=(0, (3, 3)))
-        ax.set_xlabel("distance from the bundle axis (Å)", fontsize=7)
-        if k == 0:
-            ax.set_ylabel("depth z across the membrane (Å)", fontsize=7)
-        ax.set_title(f"({chr(97 + k)}) {g.replace('_fitness', '')}: "
-                     f"{st['n_pairs_within']}/{st['n_pairs']} pairs < {NEAR:.0f} Å",
-                     loc="left", fontsize=7.5)
+        panel(ax, i, g, f"{st['n_pairs_within']}/{st['n_pairs']} pairs < {NEAR:.0f} Å",
+              size=8)
+        if i // 2 == (len(have) - 1) // 2:
+            ax.set_xlabel("distance from the bundle axis (Å)", fontsize=7.5)
+        if i % 2 == 0:
+            ax.set_ylabel("depth z across the membrane (Å)", fontsize=7.5)
+    fig.suptitle("Dark red = the ten positions whose ESM-1v residual is most negative; "
+                 "a line joins every pair of them closer than 10 Å.",
+                 fontsize=7, x=0.01, ha="left")
+    P.save(fig, outdir, "e06a_esm_residual_network", None, "E06")
+    plt.close(fig)
 
-        ax = axes[1][k]
+    fig, pairs, _ = grid(have, w=2.9, h=2.8)
+    from scipy.cluster.hierarchy import leaves_list, linkage
+    from scipy.spatial.distance import squareform
+    for i, ((g, t, pick, st), (_, ax)) in enumerate(zip(panels, pairs)):
         lab = [f"{r.wt}{int(r.pos)}" for r in t.iloc[pick].itertuples()]
         # ordered by how the distances cluster, so a sub-network reads as a dark block
-        # instead of being scattered over the matrix by the order the sites were ranked
-        from scipy.cluster.hierarchy import leaves_list, linkage
-        from scipy.spatial.distance import squareform
+        # rather than being scattered over the matrix by the order the sites were ranked
         o = leaves_list(linkage(squareform(st["dmat"], checks=False), "average"))
-        lab = [lab[i] for i in o]
         im = ax.imshow(st["dmat"][np.ix_(o, o)], cmap=P.sequential_cmap(), vmin=0, vmax=40)
-        ax.set_xticks(range(TOP_N)); ax.set_xticklabels(lab, rotation=90, fontsize=5.5)
-        ax.set_yticks(range(TOP_N)); ax.set_yticklabels(lab, fontsize=5.5)
-        if k == n - 1:
-            fig.colorbar(im, ax=ax, fraction=0.045).set_label("CA distance (Å)", fontsize=7,
-                                                              fontweight="bold")
-        ax.set_title(f"({chr(97 + n + k)}) pairwise distances", loc="left", fontsize=7.5)
-
-        ax = axes[2][k]
-        ax.hist(st["null"], bins=40, color=P.MUTED, alpha=0.55, lw=0)
-        ax.axvline(st["observed_mean_distance"], color=P.FIT_RED, lw=1.6)
-        ax.set_xlabel("mean pairwise distance of 10 positions (Å)", fontsize=7)
-        if k == 0:
-            ax.set_ylabel("random draws", fontsize=7)
-        if "null_matched_mean" in st:
-            ax.axvline(st["null_matched_mean"], color=P.SERIES[0], lw=1.0,
-                       ls=(0, (4, 3)))
-        ax.set_title(f"({chr(97 + 2 * n + k)}) observed "
-                     f"{st['observed_mean_distance']:.1f} Å, null "
-                     f"{st['null_mean']:.1f} Å, p = {st['p_clustered']:.3f}"
-                     + (f"\n     matched on topology: {st['null_matched_mean']:.1f} Å, "
-                        f"p = {st['p_clustered_matched']:.3f}"
-                        if "null_matched_mean" in st else ""),
-                     loc="left", fontsize=7.5)
-    fig.suptitle("Red = the ten positions whose ESM-1v residual is most negative. The null "
-                 "draws ten positions at random from those with enough variants to be "
-                 "scored.", fontsize=7, x=0.01, ha="left")
-    P.save(fig, outdir, "e06_esm_residual_network", None, "E06")
+        ax.set_xticks(range(TOP_N))
+        ax.set_xticklabels([lab[k] for k in o], rotation=90, fontsize=6)
+        ax.set_yticks(range(TOP_N)); ax.set_yticklabels([lab[k] for k in o], fontsize=6)
+        fig.colorbar(im, ax=ax, fraction=0.045).set_label("CA distance (Å)", fontsize=7,
+                                                          fontweight="bold")
+        panel(ax, i, g)
+    P.save(fig, outdir, "e06b_residual_distances", None, "E06")
     plt.close(fig)
-    top = pd.concat(rows, ignore_index=True)
-    top.to_csv(outdir / "e06_top_residual_positions.csv", index=False)
+
+    fig, pairs, _ = grid(have, w=2.9, h=2.4, extra=0.3)
+    for i, ((g, t, pick, st), (_, ax)) in enumerate(zip(panels, pairs)):
+        ax.hist(st["null"], bins=40, color="#D9D9D9", lw=0)
+        ax.axvline(st["observed_mean_distance"], color=P.DARK_RED, lw=1.8)
+        if "null_matched_mean" in st:
+            ax.axvline(st["null_matched_mean"], color=P.INK, lw=1.0, ls=(0, (4, 3)))
+        panel(ax, i, g, f"p = {st['p_clustered']:.3f}"
+              + (f", matched p = {st['p_clustered_matched']:.3f}"
+                 if "p_clustered_matched" in st else ""), size=8)
+        if i // 2 == (len(have) - 1) // 2:
+            ax.set_xlabel("mean pairwise distance of 10 positions (Å)", fontsize=7.5)
+        if i % 2 == 0:
+            ax.set_ylabel("random draws", fontsize=7.5)
+    fig.suptitle("Grey = ten positions drawn at random from those with enough variants to "
+                 "be scored. Dashed = the mean of the null matched on TM/loop composition, "
+                 "which is the comparison to believe.", fontsize=7, x=0.01, ha="left")
+    P.save(fig, outdir, "e06c_clustering_null", None, "E06")
+    plt.close(fig)
+
+    pd.concat(rows, ignore_index=True).to_csv(outdir / "e06_top_residual_positions.csv",
+                                              index=False)
     pd.DataFrame(per).T.rename_axis("protein").to_csv(outdir / "e06_clustering.csv")
-    head = "; ".join(f"{g}: {v['observed_mean_distance']:.1f} Å vs null "
-                     f"{v['null_mean']:.1f} Å, p = {v['p_clustered']:.3f}"
-                     + (f" (matched p = {v['p_clustered_matched']:.3f})"
+    head = "; ".join(f"{g.replace('_fitness', '')}: {v['observed_mean_distance']:.1f} Å vs "
+                     f"null {v['null_mean']:.1f} Å, p = {v['p_clustered']:.3f}"
+                     + (f" (matched {v['p_clustered_matched']:.3f})"
                         if "p_clustered_matched" in v else "")
                      for g, v in per.items())
     return {"status": "ok", "per_protein": per, "headline": head}
@@ -738,21 +736,273 @@ def write_network_structure(cfg, top: pd.DataFrame, st: dict, outdir: Path) -> l
     return [sdir / "e06_network.pml", sdir / "e06_network.cxc"]
 
 
-ANALYSES = {"e01": "environment classes", "e02": "burial against depth",
-            "e03": "hydrophobicity against burial", "e04": "substitution direction",
-            "e05": "contacts", "e06": "ESM-1v residual network"}
+# ----------------------------------------------- e07 is one face of the helix buried?
+def helix_moment(effects: np.ndarray, period: float = 3.6) -> float:
+    """How one-sided a helix's intolerance is, as a fraction between 0 and 1.
+
+    An alpha helix turns 100 degrees per residue, so a helix with one face against other
+    helices and one against lipid has its intolerance repeating every 3.6 residues.
+    Placing each residue's effect at its own angle and adding the vectors gives the
+    classic moment: 1 if every intolerant residue is on one side, 0 if they are spread
+    evenly around. Effects are centred first, so a uniformly intolerant helix - which has
+    no face at all - scores 0 rather than 1.
+    """
+    e = np.asarray(effects, float)
+    e = e - e.mean()
+    ang = np.deg2rad(360.0 / period) * np.arange(len(e))
+    v = np.abs(np.sum(e * np.exp(1j * ang)))
+    return float(v / np.sum(np.abs(e))) if np.sum(np.abs(e)) > 0 else np.nan
+
+
+def e07_helix_face(pos: dict, names: list[str], outdir: Path, n_perm: int = 2000) -> dict:
+    """Per TM helix: is the intolerance on one face, and is that more than chance?
+
+    The null shuffles the effects within the same helix, which keeps its mean, its
+    spread and its length and destroys only the arrangement - so the p-value is about
+    the arrangement and nothing else.
+    """
+    from .stats import bh_fdr
+    rows = []
+    rng = np.random.default_rng(7)
+    for g in names:
+        d = pos[g]
+        for h, sub in d[(d.is_tm > 0.5) & d.helix.notna()].groupby("helix"):
+            s = sub.sort_values("pos")
+            e = s.effect.dropna().to_numpy()
+            if len(e) < 8:
+                continue
+            obs = helix_moment(e)
+            null = np.array([helix_moment(rng.permutation(e)) for _ in range(n_perm)])
+            rows.append({"protein": g, "helix": h, "n": int(len(e)),
+                         "moment": obs, "null_mean": float(null.mean()),
+                         "p": float(((null >= obs).sum() + 1) / (n_perm + 1)),
+                         "mean_effect": float(np.mean(e)),
+                         "start": int(s.pos.min())})
+    per = pd.DataFrame(rows)
+    if not len(per):
+        return {"status": "skipped", "reason": "no TM helix has 8 scored positions"}
+    per["q"] = bh_fdr(per.p)
+    fig, pairs, _ = grid(names, w=3.2, h=2.7, extra=0.3)
+    for i, (g, ax) in enumerate(pairs):
+        d = per[per.protein == g].sort_values("start")
+        if not len(d):
+            continue
+        x = np.arange(len(d))
+        ax.bar(x, d.moment, color=[effect_color(v) for v in d.mean_effect],
+               edgecolor=P.INK, linewidth=0.5)
+        ax.plot(x, d.null_mean, "_", ms=11, color=P.INK, mew=1.2)
+        for k, r in enumerate(d.itertuples()):
+            if r.q < 0.05:
+                ax.text(k, r.moment + 0.015, "*", ha="center", fontsize=9)
+        ax.set_xticks(x); ax.set_xticklabels(d.helix, rotation=90, fontsize=6)
+        ax.set_ylim(0, max(0.5, float(d.moment.max()) * 1.95))   # headroom for the wheel
+        panel(ax, i, g, f"{int((d.q < 0.05).sum())}/{len(d)} helices one-sided", size=8)
+        if i % 2 == 0:
+            ax.set_ylabel("one-sidedness of intolerance\n(3.6-residue moment)", fontsize=7)
+        # the most one-sided helix, drawn as the wheel it is
+        top = d.loc[d.moment.idxmax()]
+        s = pos[g].query("helix == @top.helix").sort_values("pos").dropna(subset=["effect"])
+        wa = ax.inset_axes([0.66, 0.62, 0.32, 0.36], projection="polar")
+        ang = np.deg2rad(100.0) * np.arange(len(s))
+        e = s.effect.to_numpy()
+        wa.scatter(ang, np.ones(len(s)), s=22, c=[effect_color(v) for v in e],
+                   edgecolor=P.INK, linewidth=0.4, zorder=4)
+        # the arrow points at the intolerant face: the resultant of the centred effects,
+        # negated, so it points where mutations cost the most
+        v = np.sum(-(e - e.mean()) * np.exp(1j * ang))
+        wa.annotate("", xy=(np.angle(v), 0.82), xytext=(0, 0),
+                    arrowprops=dict(arrowstyle="-|>", color=P.INK, lw=1.0))
+        wa.set_rticks([]); wa.set_xticks([]); wa.set_ylim(0, 1.2)
+        wa.grid(alpha=0.25)
+        wa.set_title(f"{top.helix}", fontsize=6, pad=1.5)
+    fig.suptitle("Bars coloured by the helix's mean effect; the tick is the mean of the "
+                 "within-helix shuffled null; * is q < 0.05. Inset: the most one-sided "
+                 "helix as a wheel, 100° per residue, the arrow pointing at its intolerant face.", fontsize=7, x=0.01, ha="left")
+    P.save(fig, outdir, "e07_helix_face", None, "E07")
+    plt.close(fig)
+    per.to_csv(outdir / "e07_helix_face.csv", index=False)
+    head = "; ".join(f"{g.replace('_fitness', '')} {int((d.q < 0.05).sum())}/{len(d)}"
+                     for g, d in per.groupby("protein"))
+    return {"status": "ok", "headline": f"one-sided helices (q < 0.05): {head}",
+            "by_helix": per.to_dict("records")}
+
+
+# ------------------------------------------- e08 the protein in the membrane, coloured
+def e08_membrane_map(pos: dict, names: list[str], outdir: Path) -> dict:
+    """Every residue placed where it sits in the membrane, coloured by what it costs.
+
+    The most direct picture the data allows: the horizontal axis is distance from the
+    bundle axis, the vertical axis is depth, and the colour is the mean effect. The
+    bilayer is shaded. It answers "where does it hurt" without a model in between.
+    """
+    rows = []
+    fig, pairs, axes = grid(names, w=3.2, h=3.0, extra=0.3)
+    sc = None
+    for i, (g, ax) in enumerate(pairs):
+        t = pos[g].dropna(subset=["effect", "radial", "abs_z"]).copy()
+        # signed where the structure gives a side, unsigned otherwise, so a protein
+        # without a membrane frame still draws rather than silently losing half its range
+        t["z"] = t.zdepth if "zdepth" in t and t.zdepth.notna().any() else t.abs_z
+        t = t.dropna(subset=["z"])
+        tm = t[t.is_tm > 0.5]
+        half = float(tm.abs_z.quantile(0.9)) if len(tm) else 15.0
+        ax.axhspan(-half, half, color="#F2F2F2", zorder=0)
+        for y in (-half, half):
+            ax.axhline(y, color=P.MUTED, lw=0.7, ls=(0, (4, 3)))
+        sc = ax.scatter(t.radial, t.z, s=16, c=t.effect, cmap=P.fitness_cmap(),
+                        norm=P.fitness_norm(), edgecolor=P.INK, linewidth=0.25)
+        # the depth profile, as a strip down the side of the same panel
+        pa = ax.inset_axes([1.01, 0, 0.16, 1.0], sharey=ax)
+        b = pd.cut(t.z, 14)
+        m = t.groupby(b, observed=True).agg(y=("z", "mean"), x=("effect", "mean")).dropna()
+        pa.plot(m.x, m.y, "-o", ms=2.5, lw=1.0, color=P.INK)
+        pa.axvline(0, color=P.MUTED, lw=0.6)
+        pa.tick_params(labelleft=False, labelsize=5.5)
+        pa.set_xlabel("mean", fontsize=5.5)
+        rows += [{"protein": g, "z": float(r.y), "mean_effect": float(r.x)}
+                 for r in m.itertuples()]
+        panel(ax, i, g, f"bilayer ±{half:.0f} Å", size=8)
+        if i // 2 == (len(names) - 1) // 2:
+            ax.set_xlabel("distance from the bundle axis (Å)", fontsize=7.5)
+        if i % 2 == 0:
+            ax.set_ylabel("depth z across the membrane (Å)", fontsize=7.5)
+    if sc is not None:
+        fig.colorbar(sc, ax=axes, fraction=0.022, pad=0.06).set_label(
+            "Mean effect at the position", fontsize=8, fontweight="bold")
+    P.save(fig, outdir, "e08_membrane_map", None, "E08")
+    plt.close(fig)
+    pd.DataFrame(rows).to_csv(outdir / "e08_depth_profile.csv", index=False)
+    return {"status": "ok", "headline": "every scored residue placed in the membrane frame "
+                                        "and coloured by its mean effect"}
+
+
+# -------------------------------------------------- e09 which substitutions are allowed
+def e09_substitution_matrix(var: dict, names: list[str], outdir: Path,
+                            min_n: int = 3) -> dict:
+    """Mean effect of every wild-type to mutant pair, 20 x 20, one protein at a time.
+
+    Rows and columns are ordered by hydrophobicity rather than alphabetically, which is
+    what turns the matrix into a picture: in a membrane protein the top-right and
+    bottom-left corners - hydrophobic to polar and back - are where the cost lives, and
+    alphabetical order scatters them.
+    """
+    from .annot import KYTE_DOOLITTLE
+    aas = sorted(KYTE_DOOLITTLE, key=lambda a: -KYTE_DOOLITTLE[a])
+    fig, pairs, axes = grid(names, w=3.4, h=3.2, extra=0.3)
+    im, rows = None, []
+    for i, (g, ax) in enumerate(pairs):
+        t = var[g].dropna(subset=["score_z"])
+        m = t.pivot_table(index="wt", columns="mut", values="score_z", aggfunc="mean")
+        n = t.pivot_table(index="wt", columns="mut", values="score_z", aggfunc="size")
+        m = m.reindex(index=aas, columns=aas)
+        n = n.reindex(index=aas, columns=aas)
+        m = m.where(n.fillna(0) >= min_n)
+        im = ax.imshow(m.to_numpy(), cmap=P.fitness_cmap(), norm=P.fitness_norm())
+        ax.set_xticks(range(len(aas))); ax.set_xticklabels(aas, fontsize=5.5)
+        ax.set_yticks(range(len(aas))); ax.set_yticklabels(aas, fontsize=5.5)
+        ax.set_xlabel("mutant (hydrophobic → polar)", fontsize=7)
+        if i % 2 == 0:
+            ax.set_ylabel("wild type (hydrophobic → polar)", fontsize=7)
+        panel(ax, i, g, f"{int(np.isfinite(m.to_numpy()).sum())}/400 pairs with ≥ {min_n}",
+              size=8)
+        long = m.stack().rename("mean_effect").reset_index()
+        rows.append(long.assign(protein=g))
+    if im is not None:
+        fig.colorbar(im, ax=axes, fraction=0.022, pad=0.01).set_label(
+            "Mean effect", fontsize=8, fontweight="bold")
+    P.save(fig, outdir, "e09_substitution_matrix", None, "E09")
+    plt.close(fig)
+    out = pd.concat(rows, ignore_index=True)
+    out.to_csv(outdir / "e09_substitution_matrix.csv", index=False)
+    worst = (out.groupby(["protein", "mut"]).mean_effect.mean().reset_index()
+             .sort_values("mean_effect").groupby("protein").head(1))
+    head = "; ".join(f"{r.protein.replace('_fitness', '')} worst mutant {r.mut} "
+                     f"({r.mean_effect:.2f})" for r in worst.itertuples())
+    return {"status": "ok", "headline": head}
+
+
+# ------------------------------------------- e10 the cost of a charge in the membrane
+GROUPS = [("charged (D E K R)", set("DEKR"), "#B2182B"),
+          ("polar (N Q S T)", set("NQST"), "#E8A33D"),
+          ("hydrophobic (A V L I F M)", set("AVLIFM"), "#2166AC")]
+
+
+def e10_charge_depth(var: dict, names: list[str], outdir: Path) -> dict:
+    """What it costs to introduce a charge, as a function of how deep it is placed.
+
+    The textbook expectation, stated as a measurement: burying a charge in the middle of
+    a bilayer is expensive, burying one near the headgroups much less so, and a
+    hydrophobic substitution should be flat with depth. Restricted to buried positions,
+    since an exposed residue at the same depth is not in the lipid at all.
+    """
+    rows = []
+    fig, pairs, _ = grid(names, w=3.0, h=2.7, extra=0.3)
+    for i, (g, ax) in enumerate(pairs):
+        t = var[g].dropna(subset=["score_z", "abs_z", "rsa"])
+        t = t[t.rsa < 0.25]
+        for lab, aas, col in GROUPS:
+            s = t[t.mut.isin(list(aas))]
+            if len(s) < 40:
+                continue
+            b = pd.cut(s.abs_z, [0, 5, 10, 15, 22, 40])
+            m = s.groupby(b, observed=True).agg(x=("abs_z", "mean"), y=("score_z", "mean"),
+                                                e=("score_z", "sem"),
+                                                n=("score_z", "size")).dropna()
+            ax.errorbar(m.x, m.y, yerr=m.e, fmt="-o", ms=4, lw=1.3, color=col, capsize=2,
+                        label=lab, mec=P.INK, mew=0.4)
+            sl = ss.linregress(s.abs_z, s.score_z)
+            rows.append({"protein": g, "group": lab, "n": int(len(s)),
+                         "mean": float(s.score_z.mean()), "slope_per_A": float(sl.slope),
+                         "se": float(sl.stderr), "p": float(sl.pvalue)})
+        ax.axhline(0, color=P.MUTED, lw=0.6)
+        d = [r for r in rows if r["protein"] == g and r["group"].startswith("charged")]
+        panel(ax, i, g, (f"charge slope {d[0]['slope_per_A']:+.3f}/Å" if d else ""), size=8)
+        if i // 2 == (len(names) - 1) // 2:
+            ax.set_xlabel("depth |z| from the bilayer centre (Å)", fontsize=7.5)
+        if i % 2 == 0:
+            ax.set_ylabel("Mean effect of the substitution", fontsize=7.5)
+        if i == 0:
+            ax.legend(frameon=False, fontsize=6)
+    fig.suptitle("Buried positions only (RSA < 0.25). Depth increases to the right, so a "
+                 "rising line means the substitution is cheaper away from the bilayer "
+                 "centre.", fontsize=7, x=0.01, ha="left")
+    P.save(fig, outdir, "e10_charge_depth", None, "E10")
+    plt.close(fig)
+    per = pd.DataFrame(rows)
+    per.to_csv(outdir / "e10_charge_depth.csv", index=False)
+    d = per[per.group.str.startswith("charged")]
+    head = "; ".join(f"{r.protein.replace('_fitness', '')} charge {r.mean:.2f}, "
+                     f"{r.slope_per_A:+.3f}/Å" for r in d.itertuples())
+    return {"status": "ok", "headline": head, "by_protein": per.to_dict("records")}
+
+
+ANALYSES = {"e01": "effect by residue environment",
+            "e02": "burial against depth",
+            "e03": "hydrophobicity against burial",
+            "e04": "substitution direction by environment",
+            "e05": "contacts",
+            "e06": "ESM-1v residual network",
+            "e07": "one-sided helices",
+            "e08": "the protein in the membrane, coloured by effect",
+            "e09": "substitution matrix",
+            "e10": "the cost of a charge against depth"}
 
 
 def main(argv=None):
     import json
     warnings.filterwarnings("ignore", category=RuntimeWarning)
     warnings.filterwarnings("ignore", message=".*(Glyph|invalid value|Mean of empty|"
-                                              "Degrees of freedom|All-NaN).*")
+                                              "Degrees of freedom|All-NaN|tight_layout).*")
     ap = argparse.ArgumentParser(
         prog="python -m mpdms environ",
-        description="What a residue's surroundings say about how much a mutation costs.")
+        description="What a residue's surroundings say about how much a mutation costs. "
+                    "Every figure is one panel per protein, laid out in the order the "
+                    "configs are given: with four proteins and the default two columns "
+                    "that is top-left, top-right, bottom-left, bottom-right.")
     ap.add_argument("configs", nargs="+")
     ap.add_argument("--only", help=f"comma-separated: {','.join(ANALYSES)}")
+    ap.add_argument("--cols", type=int, default=2,
+                    help="panels per row (default 2, so four proteins make a 2x2)")
     ap.add_argument("--style", default="paper", choices=["default", "paper"])
     ap.add_argument("--outdir", default=str(OUT))
     a = ap.parse_args(argv)
@@ -764,7 +1014,7 @@ def main(argv=None):
     outdir = Path(a.outdir)
     outdir.mkdir(parents=True, exist_ok=True)
 
-    cfgs, var, pos = {}, {}, {}
+    cfgs, var, pos, names = {}, {}, {}, []
     for c in a.configs:
         cfg = load_config(Path(c))
         v, p_ = protein_frame(cfg)
@@ -774,33 +1024,49 @@ def main(argv=None):
                   "(needs a structure and topology)", flush=True)
             continue
         var[cfg.id], pos[cfg.id] = v, p_
+        names.append(cfg.id)
         counts = p_.environ.value_counts()
         print(f"  {cfg.id:<16} {len(p_):>4} positions  radial cut "
               f"{p_.attrs.get('radial_cut', float('nan')):.1f} Å  "
-              + "  ".join(f"{k.split()[0]} {n}" for k, n in counts.items())
+              + "  ".join(f"{SHORT[k]} {n}" for k, n in counts.items())
               + (f"  ({p_.attrs['n_low_plddt']} unclassified, pLDDT < {MIN_PLDDT:g})"
                  if p_.attrs.get("n_low_plddt") else ""), flush=True)
-    if len(pos) < 2:
-        raise SystemExit("need at least two proteins with a structure and topology")
+    if not names:
+        raise SystemExit("no protein could be classified; each needs a structure and a "
+                         "topology in its config")
+    rows = int(np.ceil(len(names) / a.cols))
+    print(f"\n  panels: " + " | ".join(
+        ", ".join(n.replace("_fitness", "") for n in names[r * a.cols:(r + 1) * a.cols])
+        for r in range(rows)), flush=True)
     pd.concat([p_.assign(protein=g) for g, p_ in pos.items()],
               ignore_index=True).to_csv(outdir / "positions.csv", index=False)
+
+    def call(k):
+        if k == "e01":
+            return e01_environment(pos, names, outdir)
+        if k == "e02":
+            return e02_burial_depth(pos, names, outdir)
+        if k == "e03":
+            return e03_hydrophobicity(var, names, outdir)
+        if k == "e04":
+            return e04_direction(var, names, outdir)
+        if k == "e05":
+            return e05_contacts(pos, names, outdir)
+        if k == "e06":
+            return e06_esm_network(cfgs, pos, names, outdir)
+        if k == "e07":
+            return e07_helix_face(pos, names, outdir)
+        if k == "e08":
+            return e08_membrane_map(pos, names, outdir)
+        if k == "e09":
+            return e09_substitution_matrix(var, names, outdir)
+        return e10_charge_depth(var, names, outdir)
 
     out = {}
     print()
     for k in keys:
         try:
-            if k == "e01":
-                r = e01_environment(pos, outdir)
-            elif k == "e02":
-                r = e02_burial_depth(pos, outdir)
-            elif k == "e03":
-                r = e03_hydrophobicity(var, outdir)
-            elif k == "e04":
-                r = e04_direction(var, outdir)
-            elif k == "e05":
-                r = e05_contacts(pos, outdir)
-            else:
-                r = e06_esm_network(cfgs, pos, outdir)
+            r = call(k)
         except Exception as e:
             r = {"status": "error", "reason": f"{type(e).__name__}: {e}"}
         out[k] = r
