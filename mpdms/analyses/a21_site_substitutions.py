@@ -197,6 +197,75 @@ def figure_local(cfg, v: pd.DataFrame, t: pd.DataFrame, how: str, figdir):
     return P.save(fig, figdir, "a21b_local_regression", cfg, "A21")
 
 
+def figure_global(cfg, v: pd.DataFrame, t: pd.DataFrame, allv: pd.DataFrame,
+                  marked: dict, figdir):
+    """The named sites placed on the fit over the whole protein, twice.
+
+    (a) is every measured variant with the named sites' substitutions picked out, so a
+    marked allele can be read against the cloud it came from. (b) collapses each position
+    to its median, which is the comparison that survives the fact that nineteen
+    substitutions at one site are not nineteen independent observations.
+    """
+    from .a15_esm_functional import loess_fit
+    x = allv.score_z.to_numpy()
+    y = allv.esm1v.to_numpy()
+    f = loess_fit(x, y)
+    grid = np.linspace(np.nanpercentile(x, 0.5), np.nanpercentile(x, 99.5), 150)
+    sites = sorted(set(t.pos))
+    pal = dict(zip(sites, P.series_colors(len(sites))))
+
+    fig, axes = plt.subplots(1, 2, figsize=(10.4, 4.5), layout="constrained")
+    ax = axes[0]
+    lx, ly, lt = [], [], []
+    P.scatter_fit(ax, x, y, fit=(grid, f(grid)),
+                  stat=f"Spearman's ρ = {ss.spearmanr(x, y)[0]:.2f}\nn = {len(allv):,}",
+                  s=1.6, alpha=0.22)
+    for pos in sites:
+        g = v[v.pos == pos]
+        wt = g.wt.iloc[0]
+        ax.scatter(g.score_z, g.esm1v, s=16, color=pal[pos], lw=0.3, edgecolor="white",
+                   zorder=4, label=f"{wt}{pos} ({len(g)} subs)")
+        m = g[g.mut == marked.get(pos)]
+        for r in m.itertuples():
+            ax.scatter([r.score_z], [r.esm1v], s=70, facecolor="none", edgecolor=HILITE,
+                       lw=1.5, zorder=6)
+            lx.append(r.score_z); ly.append(r.esm1v)
+            lt.append(f"{wt}{pos}{r.mut}  z = {r.z:+.1f}")
+    ax.set_xlabel("Abundance (normalised fitness)")
+    ax.set_ylabel("ESM-1v score")
+    ax.legend(frameon=False, fontsize=6, loc="lower right", ncol=2)
+    ax.autoscale_view()
+    P.label_points(ax, lx, ly, lt, colors=[HILITE] * len(lt), fontsize=6.5)
+    ax.set_title("(a) Every substitution, on the protein-wide fit", loc="left", fontsize=8.5)
+
+    ax = axes[1]
+    med = (allv.groupby("pos").agg(score_z=("score_z", "median"), esm1v=("esm1v", "median"),
+                                   z=("z", "median"), n=("z", "size")).reset_index())
+    med = med[med.n >= 5]
+    ax.scatter(med.score_z, med.esm1v, s=10, color=P.INK, alpha=0.30, lw=0)
+    gm = loess_fit(med.score_z.to_numpy(), med.esm1v.to_numpy())
+    g2 = np.linspace(np.nanpercentile(med.score_z, 1), np.nanpercentile(med.score_z, 99), 120)
+    ax.plot(g2, gm(g2), color=P.FIT_RED, lw=1.8, zorder=3)
+    bx, by, bt, bc = [], [], [], []
+    for r in t.itertuples():
+        hit = med[med.pos == r.pos]
+        if not len(hit):
+            continue
+        h = hit.iloc[0]
+        ax.scatter([h.score_z], [h.esm1v], s=55, color=pal[r.pos], edgecolor=P.INK,
+                   lw=0.6, zorder=5)
+        bx.append(h.score_z); by.append(h.esm1v)
+        bt.append(f"{r.wt}{r.pos}  z = {r.median_z:+.1f}"); bc.append(pal[r.pos])
+    ax.autoscale_view()
+    P.label_points(ax, bx, by, bt, colors=bc, fontsize=7)
+    ax.set_xlabel("Site median abundance")
+    ax.set_ylabel("Site median ESM-1v")
+    ax.set_title(f"(b) Site medians ({len(med)} positions with 5+ substitutions)",
+                 loc="left", fontsize=8.5)
+    P.title(cfg=cfg, fig=fig, text="A21c named sites on the protein-wide LOESS")
+    return P.save(fig, figdir, "a21c_sites_on_global_fit", cfg, "A21")
+
+
 def run(df: pd.DataFrame, cfg, outdir: Path) -> dict:
     figdir, tabdir = dirs(outdir)
     vp = Path(outdir) / "tables" / "a15_variants.csv"
@@ -233,7 +302,8 @@ def run(df: pd.DataFrame, cfg, outdir: Path) -> dict:
                    suffixes=("_global", "_local"))
     both.to_csv(tp, index=False)
     v.sort_values(["pos", "z"]).to_csv(vpo, index=False)
-    figs = figure(cfg, v, t, allv, figdir) + figure_local(cfg, v, tl, how, figdir)
+    figs = (figure(cfg, v, t, allv, figdir) + figure_local(cfg, v, tl, how, figdir)
+            + figure_global(cfg, v, t, allv, marked, figdir))
 
     missing = [p for p in sites if p not in set(t.pos)]
     caveats = list(bad) + ([f"positions not in the data: {missing}"] if missing else [])

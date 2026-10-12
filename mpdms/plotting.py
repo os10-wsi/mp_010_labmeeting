@@ -419,3 +419,48 @@ def class_legend_handles(classes=CLASS_ORDER):
 
 
 set_theme()
+
+
+def label_points(ax, xs, ys, texts, colors=None, fontsize=7, dx=10, min_gap=11,
+                 weight="bold"):
+    """Annotate points with leader lines, pushed apart so the labels do not overlap.
+
+    Offsets chosen by hand collide as soon as the data changes. This lays the labels out in
+    display space: they are sorted by height, given at least `min_gap` points of vertical
+    separation, and joined to their point by a hairline, so a label that had to move is
+    still unambiguous.
+    """
+    xs = np.asarray(xs, float)
+    ys = np.asarray(ys, float)
+    ok = np.isfinite(xs) & np.isfinite(ys)
+    if not ok.any():
+        return []
+    idx = np.where(ok)[0]
+    cols = list(colors) if colors is not None else [INK] * len(xs)
+    pts = ax.transData.transform(np.column_stack([xs[ok], ys[ok]]))
+    order = np.argsort(pts[:, 1])
+    placed = np.empty(len(order))
+    last = -np.inf
+    for k in order:                     # bottom to top, never closer than min_gap
+        placed[k] = max(pts[k, 1], last + min_gap)
+        last = placed[k]
+    # labels alternate sides so a dense cluster spreads horizontally too
+    out = []
+    x0, x1 = sorted(ax.transAxes.transform([(0, 0), (1, 1)])[:, 0])
+    for rank, k in enumerate(order):
+        side = 1 if rank % 2 == 0 else -1
+        # the label's own width decides whether it fits, not just the leader: a long label
+        # anchored near the edge overflows even when its anchor point is inside
+        w = 0.62 * fontsize * len(str(texts[idx[k]])) * (ax.figure.dpi / 72.0)
+        if pts[k, 0] - dx - w < x0 + 2:
+            side = 1
+        elif pts[k, 0] + dx + w > x1 - 2:
+            side = -1
+        tx, ty = ax.transData.inverted().transform((pts[k, 0] + side * dx, placed[k]))
+        out.append(ax.annotate(
+            texts[idx[k]], (xs[idx[k]], ys[idx[k]]), xytext=(tx, ty), textcoords="data",
+            ha="left" if side > 0 else "right", va="center", fontsize=fontsize,
+            fontweight=weight, color=cols[idx[k]], zorder=8,
+            arrowprops=dict(arrowstyle="-", lw=0.5, color=cols[idx[k]], alpha=0.7,
+                            shrinkA=0, shrinkB=3)))
+    return out

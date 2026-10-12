@@ -223,3 +223,69 @@ def test_titles_and_axis_labels_are_bold_in_both_styles():
             assert plt.rcParams["axes.labelweight"] == "bold", style
     finally:
         P.use_style(old)
+
+
+def _ax(n=5, seed=0):
+    import matplotlib.pyplot as plt
+    import numpy as np
+    r = np.random.default_rng(seed)
+    fig, ax = plt.subplots(figsize=(4, 3))
+    x, y = r.random(n), r.random(n)
+    ax.scatter(x, y)
+    ax.set_xlim(0, 1); ax.set_ylim(0, 1)
+    fig.canvas.draw()
+    return fig, ax, x, y
+
+
+def test_labels_are_pushed_apart_when_the_points_overlap():
+    """Points stacked on one another must not stack their labels too."""
+    import matplotlib.pyplot as plt
+    import numpy as np
+    from mpdms.plotting import label_points
+    fig, ax = plt.subplots(figsize=(4, 3))
+    ax.set_xlim(0, 1); ax.set_ylim(0, 1)
+    fig.canvas.draw()
+    y = [0.50, 0.501, 0.502, 0.503]
+    ann = label_points(ax, [0.5] * 4, y, [f"L{i}" for i in range(4)], min_gap=12)
+    fig.canvas.draw()
+    ys = sorted(ax.transData.transform([a.get_position() for a in ann])[:, 1])
+    assert all(b - a >= 11 for a, b in zip(ys, ys[1:]))
+    plt.close(fig)
+
+
+def test_every_label_is_drawn_and_carries_a_leader():
+    import matplotlib.pyplot as plt
+    from mpdms.plotting import label_points
+    fig, ax, x, y = _ax(6)
+    ann = label_points(ax, x, y, [f"P{i}" for i in range(6)])
+    assert len(ann) == 6
+    assert all(a.arrowprops is not None for a in ann)
+    assert {a.get_text() for a in ann} == {f"P{i}" for i in range(6)}
+    plt.close(fig)
+
+
+def test_a_label_at_the_edge_is_flipped_inside_the_axes():
+    """A long label anchored near the left edge must not run off the panel."""
+    import matplotlib.pyplot as plt
+    from mpdms.plotting import label_points
+    fig, ax = plt.subplots(figsize=(4, 3))
+    ax.set_xlim(0, 1); ax.set_ylim(0, 1)
+    fig.canvas.draw()
+    ann = label_points(ax, [0.02], [0.5], ["a very long label indeed z = -2.4"])
+    assert ann[0].get_position()[0] > 0.02          # placed to the right of its point
+    assert ann[0].get_ha() == "left"
+    fig.canvas.draw()
+    ann2 = label_points(ax, [0.98], [0.2], ["a very long label indeed z = -2.4"])
+    assert ann2[0].get_position()[0] < 0.98         # and to the left at the other edge
+    plt.close(fig)
+
+
+def test_label_points_ignores_non_finite_coordinates():
+    import matplotlib.pyplot as plt
+    import numpy as np
+    from mpdms.plotting import label_points
+    fig, ax, _, _ = _ax(3)
+    ann = label_points(ax, [0.2, np.nan, 0.6], [0.3, 0.4, np.nan], ["a", "b", "c"])
+    assert {a.get_text() for a in ann} == {"a"}
+    assert label_points(ax, [np.nan], [np.nan], ["x"]) == []
+    plt.close(fig)
