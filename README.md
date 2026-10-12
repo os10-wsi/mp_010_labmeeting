@@ -294,6 +294,31 @@ ones costing the score, and the terminal names them worst-first. The threshold s
 Youden's J on the same variants, so the `called` column describes the figure rather than
 predicting anything.
 
+### Variants of uncertain significance
+
+```bash
+python -m mpdms clinvar --family hexose=... --human SLC2A10=O95528 \
+  --table variant_summary.txt.gz --include-vus
+```
+
+`--include-vus` keeps the variants ClinVar itself calls uncertain, scores them with the
+same μ, and adds a panel placing them beside the benign and pathogenic sets. They never
+enter the AUROC, the position-level AUROC, the conservation control or the per-variant
+ranking: a VUS is not a negative, and counting it as one is the commonest way to make a
+predictor look good on ClinVar. One split in `run_one` separates them before any number
+is computed, and a test asserts every statistic is bit-identical with and without them.
+
+Conflicting interpretations stay excluded even with the flag. A variant two submitters
+disagree about is not the same as one nobody has called, and the model may well side
+with one of them.
+
+`<family>_uncertain.csv` gives each VUS its `beats_benign` and `beats_pathogenic` — the
+fraction of each reference set it is more constrained than — and `sits_with`, which is
+one of *with the benign set*, *between the two*, *with the pathogenic set*, or *beyond
+every pathogenic*. The gap between the two reference ranges gets its own answer rather
+than being rounded toward pathogenic. These are hypotheses about positions, not calls on
+variants, and the terminal says so.
+
 ### Boxed, square figures for slides
 
 ```bash

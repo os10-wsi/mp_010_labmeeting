@@ -16,7 +16,8 @@ from mpdms.clinvar import (classify_significance, evaluate, parse_protein_change
     ("Benign", "benign"),
     ("Likely benign", "benign"),
     ("Benign/Likely benign", "benign"),
-    ("Uncertain significance", None),
+    # uncertain is now a label of its own: it is scored and plotted, never compared
+    ("Uncertain significance", "uncertain"),
     ("Conflicting interpretations of pathogenicity", None),
     ("Conflicting classifications of pathogenicity", None),
     ("not provided", None),
@@ -320,3 +321,78 @@ def test_a_coarse_conservation_baseline_is_counted():
                                             rng.normal(0.0, 0.1, n // 2)]),
                       "conservation": rng.choice([0.42, 0.59, 1.0], n)})
     assert conservation_control(s)["n_conservation_levels"] == 3
+
+
+def test_uncertain_variants_are_read_only_when_asked_for(tmp_path):
+    from mpdms.clinvar import read_clinvar
+    f = tmp_path / "cv.txt"
+    f.write_text("GeneSymbol\tName\tClinicalSignificance\n"
+                 "SLC2A10\tNM_1(SLC2A10):c.1A>G (p.Gly23Asp)\tPathogenic\n"
+                 "SLC2A10\tNM_1(SLC2A10):c.2A>G (p.Ala106Ser)\tBenign\n"
+                 "SLC2A10\tNM_1(SLC2A10):c.3A>G (p.Ser81Arg)\tUncertain significance\n"
+                 "SLC2A10\tNM_1(SLC2A10):c.4A>G (p.Leu300Trp)\t"
+                 "Conflicting interpretations of pathogenicity\n")
+    assert set(read_clinvar(f, {"SLC2A10"}).label) == {"pathogenic", "benign"}
+    both = read_clinvar(f, {"SLC2A10"}, include_uncertain=True)
+    assert set(both.label) == {"pathogenic", "benign", "uncertain"}
+    # conflicting is never kept: two submitters disagreeing is not the same as nobody calling
+    assert 300 not in set(both.pos)
+
+
+def test_a_vus_is_scored_but_never_counted_in_the_comparison():
+    """The guard the whole design rests on: a VUS has no right answer to be flattered by."""
+    from mpdms.clinvar import (collapse_to_positions, conservation_control, evaluate,
+                               place_uncertain, rank_variants)
+    s = _panel_scored(["SLC2A10"], seed=11)
+    s["conservation"] = 0.6
+    plain = {"auroc": evaluate(s)["auroc"],
+             "cc": conservation_control(s)["auroc_abundance"],
+             "n_ranked": len(rank_variants(s)),
+             "n_pos": len(collapse_to_positions(s))}
+    with_vus = pd.concat([s, s.head(12).assign(label="uncertain", pos=range(900, 912))],
+                         ignore_index=True)
+    known = with_vus[with_vus.label.isin(["benign", "pathogenic"])]
+    assert evaluate(known)["auroc"] == pytest.approx(plain["auroc"])
+    assert conservation_control(known)["auroc_abundance"] == pytest.approx(plain["cc"])
+    assert len(rank_variants(known)) == plain["n_ranked"]
+    assert len(collapse_to_positions(known)) == plain["n_pos"]
+    placed = place_uncertain(with_vus)
+    assert len(placed) == 12
+    assert set(placed.label if "label" in placed else []) <= {"uncertain"}
+
+
+def test_where_a_vus_falls_is_described_not_decided():
+    from mpdms.clinvar import place_uncertain
+    rows = [{"gene": "G", "pos": p, "wt": "A", "mut": "V", "label": "benign", "mu": m}
+            for p, m in enumerate([-0.05, -0.02, 0.00, 0.02], start=1)]
+    rows += [{"gene": "G", "pos": p, "wt": "A", "mut": "V", "label": "pathogenic", "mu": m}
+             for p, m in enumerate([-0.20, -0.15, -0.12, -0.10], start=10)]
+    rows += [{"gene": "G", "pos": p, "wt": "A", "mut": "V", "label": "uncertain", "mu": m}
+             for p, m in enumerate([-0.40, -0.13, -0.06, 0.03], start=20)]
+    out = place_uncertain(pd.DataFrame(rows)).set_index("pos")
+    assert out.loc[20, "sits_with"] == "beyond every pathogenic"
+    assert out.loc[21, "sits_with"] == "with the pathogenic set"
+    assert out.loc[23, "sits_with"] == "with the benign set"
+    assert out.loc[22, "sits_with"] == "between the two"
+    assert out.loc[20, "beats_benign"] == 1.0 and out.loc[23, "beats_pathogenic"] == 0.0
+    assert out.mu.is_monotonic_increasing
+
+
+def test_the_figure_gains_a_panel_only_when_there_are_vus(tmp_path):
+    import matplotlib.image as mpimg
+
+    from mpdms import plotting as P
+    from mpdms.clinvar import evaluate, figure
+    P.use_style("default")
+    s = _panel_scored(["SLC2A10"], seed=2)
+    known = s[s.label.isin(["benign", "pathogenic"])]
+    by_gene = pd.DataFrame([{**evaluate(known), "gene": "SLC2A10"}])
+    figure(s, evaluate(known), by_gene, tmp_path, "a")
+    plain = mpimg.imread(tmp_path / "a_clinvar.png"
+                         if (tmp_path / "a_clinvar.png").exists()
+                         else tmp_path / "c01_a_clinvar.png").shape[1]
+    with_vus = pd.concat([s, s.head(8).assign(label="uncertain", pos=range(900, 908))],
+                         ignore_index=True)
+    figure(with_vus, evaluate(known), by_gene, tmp_path, "b")
+    wide = mpimg.imread(tmp_path / "c01_b_clinvar.png").shape[1]
+    assert wide > plain

@@ -48,15 +48,24 @@ BENIGN = ("benign",)
 
 
 def classify_significance(s: str) -> str | None:
-    """ClinVar's free text to pathogenic / benign / None.
+    """ClinVar's free text to pathogenic / benign / uncertain / None.
 
-    Anything conflicting, uncertain or otherwise hedged returns None: a variant of
-    uncertain significance is not a negative, and counting it as one is the commonest way
-    to make a predictor look good on ClinVar.
+    "uncertain" is returned for a variant ClinVar itself calls uncertain, and it is never
+    a label in any comparison: a variant of uncertain significance is not a negative, and
+    counting it as one is the commonest way to make a predictor look good on ClinVar.
+    Everything that reaches the evaluation drops it. It is kept so it can be SCORED, which
+    is a different question - what the model says about variants nobody has classified -
+    and that question has no right answer to be flattered by.
+
+    Conflicting interpretations stay None. A variant two submitters disagree about is not
+    the same thing as one nobody has called, and pooling them would hide a real signal:
+    the model may well side with one submitter.
     """
     t = str(s).strip().lower()
-    if not t or "conflict" in t or "uncertain" in t or "not provided" in t:
+    if not t or "conflict" in t or "not provided" in t:
         return None
+    if "uncertain" in t:
+        return "uncertain"
     has_p = "pathogenic" in t
     has_b = "benign" in t
     if has_p and has_b:
@@ -82,7 +91,7 @@ def _open(path: Path):
     return gzip.open(path, "rt") if str(path).endswith(".gz") else open(path)
 
 
-def read_clinvar(path: Path, genes: set[str]) -> pd.DataFrame:
+def read_clinvar(path: Path, genes: set[str], include_uncertain: bool = False) -> pd.DataFrame:
     """Missense ClinVar records for these genes, as (gene, wt, pos, mut, label).
 
     Reads the standard variant_summary.txt(.gz) by column name, and also accepts any table
@@ -121,7 +130,8 @@ def read_clinvar(path: Path, genes: set[str]) -> pd.DataFrame:
     t["change"] = t.name.map(parse_protein_change)
     # one mask for both, applied once: filtering the frame and the parsed changes
     # separately leaves them on different indices
-    t = t[t.label.notna() & t.change.notna()]
+    keep_labels = {"pathogenic", "benign"} | ({"uncertain"} if include_uncertain else set())
+    t = t[t.label.isin(keep_labels) & t.change.notna()]
     out = pd.DataFrame({"gene": t.gene.astype(str).str.upper(),
                         "wt": [c[0] for c in t.change],
                         "pos": [c[1] for c in t.change],
@@ -222,6 +232,43 @@ def conservation_control(scored: pd.DataFrame) -> dict:
     resid = mu - np.polyval(np.polyfit(cons, mu, 1), cons)
     out["auroc_abundance_given_conservation"] = float(roc_auc_score(y, resid))
     return out
+
+
+def place_uncertain(scored: pd.DataFrame) -> pd.DataFrame:
+    """Where each variant of uncertain significance falls against the two known sets.
+
+    Not a classification. For each VUS, `beats_benign` is the fraction of benign variants
+    it is more constrained than and `beats_pathogenic` the fraction of pathogenic ones -
+    the same quantity `rank_variants` computes, so a VUS can be read on the same axis as
+    the variants whose answer is known. `sits_with` says only which reference set it
+    resembles, and "beyond" marks a VUS more constrained than every pathogenic variant.
+
+    The honest reading of a high `beats_benign` is "this position behaves, in yeast, like
+    the positions where SLC2A10 variants are known to cause disease". It is a hypothesis
+    about a position, not a call on a patient's variant.
+    """
+    d = scored.dropna(subset=["mu"])
+    vus = d[d.label == "uncertain"].copy()
+    ben = d.loc[d.label == "benign", "mu"].to_numpy()
+    pat = d.loc[d.label == "pathogenic", "mu"].to_numpy()
+    if not len(vus) or not len(ben) or not len(pat):
+        return pd.DataFrame()
+    vus["beats_benign"] = [(np.sum(ben > m) + 0.5 * np.sum(ben == m)) / len(ben)
+                           for m in vus.mu]
+    vus["beats_pathogenic"] = [(np.sum(pat > m) + 0.5 * np.sum(pat == m)) / len(pat)
+                               for m in vus.mu]
+    # the gap between the two reference ranges is its own answer: a VUS more constrained
+    # than every benign variant but less than every pathogenic one resembles neither set,
+    # and calling it pathogenic-like on the first half of that sentence would overstate it
+    vus["sits_with"] = np.select(
+        [vus.mu < pat.min(),
+         (vus.beats_benign >= 1.0) & (vus.beats_pathogenic > 0.0),
+         (vus.beats_pathogenic <= 0.0) & (vus.beats_benign < 1.0)],
+        ["beyond every pathogenic", "with the pathogenic set", "with the benign set"],
+        default="between the two")
+    cols = ["gene", "pos", "wt", "mut", "mu", "tau", "J", "seg_type", "conservation",
+            "beats_benign", "beats_pathogenic", "sits_with", "col"]
+    return vus[[c for c in cols if c in vus.columns]].sort_values("mu").reset_index(drop=True)
 
 
 def collapse_to_positions(scored: pd.DataFrame) -> pd.DataFrame:
@@ -369,17 +416,52 @@ def evaluate(scored: pd.DataFrame, score: str = "mu") -> dict:
             "variants_per_position": float(len(d) / max(d.pos.nunique(), 1))}
 
 
+def _vus_panel(ax, known: pd.DataFrame, vus: pd.DataFrame, gene: str | None):
+    """The VUS placed beside the two reference sets, rather than classified.
+
+    Three strips of the same quantity, so the comparison is direct. Shaded full-range
+    bands were the obvious alternative and the wrong one: the pathogenic range runs from
+    the most constrained column in the gene up past the three variants the model misses,
+    so it covers the benign range entirely and the picture says nothing. Points and
+    medians say what the bands could not.
+    """
+    col = {"benign": "#1B9E77", "uncertain": P.INK, "pathogenic": "#C0392B"}
+    sets = [("benign", known.loc[known.label == "benign", "mu"].to_numpy()),
+            ("uncertain", vus.mu.to_numpy()),
+            ("pathogenic", known.loc[known.label == "pathogenic", "mu"].to_numpy())]
+    rng = np.random.default_rng(0)
+    floor = float(sets[0][1].min())
+    for k, (lab, v) in enumerate(sets):
+        below = v < floor
+        ax.scatter(k + rng.uniform(-0.19, 0.19, len(v)), v, s=22, color=col[lab],
+                   alpha=0.85, lw=np.where(below & (lab == "uncertain"), 0.9, 0.0),
+                   edgecolor=P.INK, zorder=4)
+        ax.plot([k - 0.3, k + 0.3], [np.median(v)] * 2, color=P.INK, lw=1.6, zorder=5)
+        ax.text(k, 1.01, f"n = {len(v)}", transform=ax.get_xaxis_transform(), ha="center",
+                va="bottom", fontsize=6.5, color=P.MUTED, clip_on=False)
+    ax.axhline(floor, color=P.INK, lw=0.8, ls=(0, (4, 3)))
+    n_below = int((vus.mu < floor).sum())
+    ax.set_xticks(range(3))
+    ax.set_xticklabels(["benign", "uncertain", "pathogenic"])
+    ax.set_xlim(-0.6, 2.6)
+    ax.set_ylabel("Yeast family constraint at that column (μ)")
+    ax.set_title(f"({'c' if gene else 'd'}) where the {len(vus)} VUS fall — {n_below} "
+                 "below every benign variant", loc="left", fontsize=9)
+
+
 def figure(scored: pd.DataFrame, res: dict, by_gene: pd.DataFrame, outdir: Path, name: str):
     from sklearn.metrics import roc_curve
     # with one query gene the per-gene panel is the same number as panel (b) drawn as a
     # bar, so it is dropped rather than repeated; the gene's name moves into the titles
     one = by_gene.dropna(subset=["auroc"]) if "auroc" in by_gene else by_gene
     single = str(one.gene.iloc[0]) if len(one) == 1 else None
-    n = 2 if single else 3
+    vus = scored[(scored.label == "uncertain") & scored.mu.notna()]
+    n = (2 if single else 3) + (1 if len(vus) else 0)
+    ratios = [1, 1] + ([] if single else [1.1]) + ([1] if len(vus) else [])
     fig, axes = plt.subplots(1, n, figsize=(3.4 * n + (0.3 if single else 0.6), 3.2),
-                             layout="constrained",
-                             gridspec_kw={"width_ratios": [1, 1] + ([] if single else [1.1])})
-    d = scored.dropna(subset=["mu"])
+                             layout="constrained", gridspec_kw={"width_ratios": ratios})
+    # the known variants carry the comparison; a VUS is scored but never counted in it
+    d = scored[scored.label.isin(["benign", "pathogenic"])].dropna(subset=["mu"])
     ax = axes[0]
     groups = {"benign": d.loc[d.label == "benign", "mu"].to_numpy(),
               "pathogenic": d.loc[d.label == "pathogenic", "mu"].to_numpy()}
@@ -405,6 +487,8 @@ def figure(scored: pd.DataFrame, res: dict, by_gene: pd.DataFrame, outdir: Path,
     ax.set_xlabel("False positive rate"); ax.set_ylabel("True positive rate")
     ax.set_title("(b) Pathogenic vs benign"
                  + (f" in {single}" if single else ""), loc="left", fontsize=9)
+    if len(vus):
+        _vus_panel(axes[2 if single else 3], d, vus, single)
     if single:
         P.save(fig, outdir, f"c01_{name}_clinvar", None, "C01")
         plt.close(fig)
@@ -446,6 +530,10 @@ def main(argv=None):
                     help="ClinVar variant_summary.txt(.gz), or any table with gene, "
                          "protein change and clinical significance columns")
     ap.add_argument("--min-proteins", type=int, default=3)
+    ap.add_argument("--include-vus", action="store_true",
+                    help="also score the variants ClinVar calls uncertain, and add a panel "
+                         "showing where they fall. They never enter the AUROC, the "
+                         "conservation control or any per-variant ranking")
     ap.add_argument("--style", default="paper", choices=["default", "paper"])
     ap.add_argument("--outdir", default=str(OUT))
     a = ap.parse_args(argv)
@@ -480,10 +568,12 @@ def main(argv=None):
         print(f"    {g:<10} {acc}  {len(seqs[g])} residues", flush=True)
 
     print(f"  reading {Path(a.table).name} ...", flush=True)
-    cv = read_clinvar(Path(a.table), set(seqs))
-    print(f"    {len(cv):,} classified missense variants: "
-          f"{(cv.label == 'pathogenic').sum():,} pathogenic, "
-          f"{(cv.label == 'benign').sum():,} benign", flush=True)
+    cv = read_clinvar(Path(a.table), set(seqs), include_uncertain=a.include_vus)
+    print(f"    {int(cv.label.isin(['pathogenic', 'benign']).sum()):,} classified missense "
+          f"variants: {(cv.label == 'pathogenic').sum():,} pathogenic, "
+          f"{(cv.label == 'benign').sum():,} benign"
+          + (f"; plus {(cv.label == 'uncertain').sum():,} of uncertain significance"
+             if a.include_vus else ""), flush=True)
 
     outdir = Path(a.outdir)
     outdir.mkdir(parents=True, exist_ok=True)
@@ -544,21 +634,27 @@ def run_one(name, members, seqs, cv, min_proteins, outdir):
           f"({mapped.mean():.0%})", flush=True)
 
     scored.to_csv(outdir / f"{name}_scored_variants.csv", index=False)
-    res = evaluate(scored)
-    res["conservation_control"] = conservation_control(scored)
+    # one split, before any number is computed: a variant of uncertain significance is
+    # scored and plotted, and never takes part in a comparison that has a right answer
+    known = scored[scored.label.isin(["benign", "pathogenic"])]
+    uncertain = place_uncertain(scored)
+    if len(uncertain):
+        uncertain.to_csv(outdir / f"{name}_uncertain.csv", index=False)
+    res = evaluate(known)
+    res["conservation_control"] = conservation_control(known)
     per = []
-    for g, gg in scored.groupby("gene"):
+    for g, gg in known.groupby("gene"):
         r = evaluate(gg)
         r["gene"] = g
         per.append(r)
     by_gene = pd.DataFrame(per)
     by_gene.to_csv(outdir / f"{name}_by_gene.csv", index=False)
-    at_pos = collapse_to_positions(scored)
+    at_pos = collapse_to_positions(known)
     if len(at_pos):
         res_pos = evaluate(at_pos)
         res["by_position"] = res_pos
         at_pos.to_csv(outdir / f"{name}_scored_positions.csv", index=False)
-    ranked = rank_variants(scored)
+    ranked = rank_variants(known)
     if len(ranked):
         ranked.to_csv(outdir / f"{name}_variant_ranking.csv", index=False)
         res["threshold_mu"] = ranked.attrs.get("threshold_mu")
@@ -640,6 +736,34 @@ def run_one(name, members, seqs, cv, min_proteins, outdir):
                           + (f"  [{r.seg_type}]" if isinstance(getattr(r, "seg_type", None), str)
                              else ""))
             print(f"    full table: {name}_variant_ranking.csv")
+        if len(uncertain):
+            ben_min = float(known.loc[known.label == "benign", "mu"].min())
+            below = int((uncertain.mu < ben_min).sum())
+            res["uncertain"] = {
+                "n": int(len(uncertain)),
+                "n_below_every_benign": below,
+                "n_with_pathogenic_set": int((uncertain.sits_with ==
+                                              "with the pathogenic set").sum()),
+                "n_beyond_every_pathogenic": int((uncertain.sits_with ==
+                                                  "beyond every pathogenic").sum()),
+                "median_mu": float(uncertain.mu.median())}
+            print(f"\n  {len(uncertain):,} variants of uncertain significance, scored but "
+                  "never counted in anything above:")
+            for k, v in uncertain.sits_with.value_counts().items():
+                print(f"    {k:<26} {v}")
+            print(f"    {below} sit below every benign variant (μ < {ben_min:+.3f}); "
+                  f"median μ {uncertain.mu.median():+.3f} against "
+                  f"{known.loc[known.label == 'benign', 'mu'].median():+.3f} benign and "
+                  f"{known.loc[known.label == 'pathogenic', 'mu'].median():+.3f} pathogenic")
+            if below:
+                print("    most constrained, worth a second look:")
+                for r in uncertain.head(min(below, 10)).itertuples():
+                    print(f"      {r.wt}{int(r.pos)}{r.mut:<4} μ {r.mu:+.3f}"
+                          f"  more constrained than {r.beats_benign:.0%} of benign and "
+                          f"{r.beats_pathogenic:.0%} of pathogenic"
+                          + (f"  [{r.seg_type}]"
+                             if isinstance(getattr(r, "seg_type", None), str) else ""))
+            print("    these are hypotheses about positions, not calls on variants")
         for r in by_gene.itertuples():
             if np.isfinite(getattr(r, "auroc", np.nan)):
                 print(f"    {r.gene:<10} AUROC {r.auroc:.3f}  "
