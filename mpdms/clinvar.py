@@ -750,9 +750,35 @@ def main(argv=None):
         from .analyses.a15_esm_functional import read_esm
         e = read_esm(Path(f))
         if e is None:
-            raise SystemExit(f"--esm {f}: need columns pos, mut and esm1v/llr/score")
-        esm[g.strip().upper()] = e
-        print(f"    {len(e):,} ESM-1v scores for {g.strip().upper()}", flush=True)
+            raise SystemExit(f"--esm {f}: need pos and mut (or a mutation column like "
+                             "M1A) plus a score column (esm1v/llr/score/mean)")
+        gene = g.strip().upper()
+        # The table is merged on position, so a file for the wrong protein would line up
+        # silently and score nonsense. Its wild-type residues are the check, and they
+        # are worth making because an id column can say one thing while the numbers are
+        # another: these files are routinely named and labelled by hand.
+        if "wt" in e and gene in seqs:
+            q = seqs[gene]
+            inb = e[(e.pos >= 1) & (e.pos <= len(q))]
+            agree = float((inb.wt.to_numpy() ==
+                           np.array([q[p - 1] for p in inb.pos])).mean()) if len(inb) else 0.0
+            print(f"    {len(e):,} ESM-1v scores for {gene} "
+                  f"({e.attrs.get('source_column', '?')} column); wild-type residues "
+                  f"agree with the sequence at {agree:.1%} of {len(inb):,} rows",
+                  flush=True)
+            if agree < 0.9:
+                raise SystemExit(
+                    f"--esm {f}: the wild-type residues match {gene} at only {agree:.1%}. "
+                    "That table is for a different protein, a different isoform, or a "
+                    "different numbering. Scoring it would merge on position and look "
+                    "fine, so it is refused.")
+            if e.pos.max() > len(q) or e.pos.nunique() < len(q):
+                print(f"    note: covers {e.pos.nunique()} of {len(q)} positions "
+                      f"(max {e.pos.max()})", flush=True)
+        else:
+            print(f"    {len(e):,} ESM-1v scores for {gene} (no wt column to check "
+                  "against the sequence)", flush=True)
+        esm[gene] = e
 
     outdir = Path(a.outdir)
     outdir.mkdir(parents=True, exist_ok=True)

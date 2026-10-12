@@ -47,14 +47,36 @@ FUNC_COLOR = "#D62728"
 
 
 def read_esm(path) -> pd.DataFrame | None:
+    """Per-variant ESM-1v scores, from this project's own csv or an ensemble table.
+
+    Two layouts are accepted. The one `mpdms esm` writes has pos, mut and esm1v. The
+    other is the ensemble layout - one row per variant with the substitution packed into
+    a `mutation` column (M1A) and the models averaged into `mean` - which is what comes
+    out of a batch ESM-1v run over many proteins. `mean` is only read as a score when a
+    `mutation` column is there to identify the layout, since `mean` on its own is far
+    too generic a name to claim.
+    """
     e = pd.read_csv(path)
     e.columns = [c.strip().lower() for c in e.columns]
-    col = next((c for c in ("esm1v", "esm1v_score", "llr", "esm_llr", "score", "esm_score") if c in e.columns), None)
+    mcol = next((c for c in ("mutation", "variant", "protein_variant") if c in e.columns),
+                None)
+    if mcol is not None and not {"pos", "mut"} <= set(e.columns):
+        v = e[mcol].astype(str).str.extract(r"^([A-Za-z])(\d+)([A-Za-z])$")
+        keep = v[0].notna()
+        e = e[keep].copy()
+        e["wt"], e["pos"], e["mut"] = (v[0][keep].str.upper(), v[1][keep].astype(int),
+                                       v[2][keep].str.upper())
+    names = ("esm1v", "esm1v_score", "llr", "esm_llr", "score", "esm_score")
+    col = next((c for c in names if c in e.columns), None)
+    if col is None and mcol is not None and "mean" in e.columns:
+        col = "mean"
     if col is None or not {"pos", "mut"} <= set(e.columns):
         return None
-    out = e[["pos", "mut"] + (["wt"] if "wt" in e.columns else []) + [col]].rename(columns={col: "esm1v"})
+    out = e[["pos", "mut"] + (["wt"] if "wt" in e.columns else []) + [col]].rename(
+        columns={col: "esm1v"})
     out["pos"] = out.pos.astype(int)
-    return out
+    out.attrs["source_column"] = col
+    return out.reset_index(drop=True)
 
 
 def loess_fit(x, y, frac=0.3):

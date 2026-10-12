@@ -206,3 +206,36 @@ def test_a_local_fasta_works_too_and_a_bad_spec_is_refused(tmp_path, monkeypatch
         E.main(["--fasta", "nogene"])
     with _pytest.raises(SystemExit):
         E.main([])
+
+
+def test_an_ensemble_table_with_a_mutation_column_is_read():
+    """The layout a batch ESM-1v run writes: id, mutation, delta_logp_1..5, mean."""
+    import pandas as pd
+
+    from mpdms.analyses.a15_esm_functional import read_esm
+    import tempfile
+    import pathlib
+    t = pathlib.Path(tempfile.mkdtemp()) / "ens.csv"
+    pd.DataFrame({"Unnamed: 0": [0, 1, 2], "id": ["P40107"] * 3,
+                  "mutation": ["M1A", "M1C", "junk"],
+                  "delta_logp_1": [-7.0, -8.5, 0.0],
+                  "mean": [-6.17, -7.73, 0.0]}).to_csv(t, index=False)
+    e = read_esm(t)
+    assert len(e) == 2                       # the unparseable row is dropped
+    assert e.attrs["source_column"] == "mean"
+    assert list(e.wt) == ["M", "M"] and list(e.mut) == ["A", "C"]
+    assert list(e.pos) == [1, 1]
+    assert e.esm1v.iloc[0] == pytest.approx(-6.17)
+
+
+def test_mean_alone_is_not_taken_as_a_score():
+    """`mean` is too generic a name to claim without the layout that identifies it."""
+    import pandas as pd
+    import pathlib
+    import tempfile
+
+    from mpdms.analyses.a15_esm_functional import read_esm
+    t = pathlib.Path(tempfile.mkdtemp()) / "x.csv"
+    pd.DataFrame({"pos": [1, 2], "mut": ["A", "C"], "mean": [1.0, 2.0]}).to_csv(t,
+                                                                                index=False)
+    assert read_esm(t) is None
