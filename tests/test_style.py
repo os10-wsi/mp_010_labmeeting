@@ -296,6 +296,22 @@ def test_every_module_reads_the_same_functional_site_threshold():
     from mpdms.analyses.a15_esm_functional import Z_SITE
     from mpdms.analyses.a19_literature import Z_SITE as z19
     from mpdms.analyses.a21_site_substitutions import Z_SITE as z21
-    from mpdms.multipanel import panel_a15  # noqa: F401  (imports Z_SITE at call time)
-    assert Z_SITE == z19 == z21 == -1.5
+    assert Z_SITE == z19 == z21 == -1.0
     assert Z_SITE < 0, "the threshold is a lower bound on a residual, so it is negative"
+
+
+def test_the_threshold_can_be_set_from_the_environment(monkeypatch):
+    from mpdms.analyses.a15_esm_functional import _z_site
+    monkeypatch.setenv("MPDMS_Z_SITE", "1.5")
+    assert _z_site() == -1.5
+    monkeypatch.setenv("MPDMS_Z_SITE", "-2")       # either sign means the same threshold
+    assert _z_site() == -2.0
+    monkeypatch.delenv("MPDMS_Z_SITE")
+    assert _z_site() == -1.0
+
+
+def test_a_nonsense_threshold_falls_back_rather_than_crashing(monkeypatch, capsys):
+    from mpdms.analyses.a15_esm_functional import _z_site
+    monkeypatch.setenv("MPDMS_Z_SITE", "strict")
+    assert _z_site() == -1.0
+    assert "not a number" in capsys.readouterr().out

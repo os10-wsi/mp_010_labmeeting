@@ -22,11 +22,24 @@ from .. import plotting as P
 from ..stats import bh_fdr
 from .base import dirs, fmt_p, missense, result, skipped
 
-# A site is called functional when its median residual is at least this far below the
-# ESM-1v-versus-abundance fit, in MAD-scaled units. Raising the magnitude calls fewer,
-# more confident sites; every figure and table that mentions a threshold reads it from
-# here, so the two can never disagree.
-Z_SITE = -1.5
+def _z_site() -> float:
+    """How far below the fit a site's median residual must sit to be called functional,
+    in MAD-scaled units. Raising the magnitude calls fewer, more confident sites.
+
+    Set MPDMS_Z_SITE=1.5 to change it for a run. It is read once, at import, so every
+    module that uses it sees the same number and no figure can draw a line its own table
+    did not use. The sign is taken care of here: the threshold is a lower bound on a
+    residual, so 1.5 and -1.5 both mean -1.5.
+    """
+    raw = os.environ.get("MPDMS_Z_SITE", "1.0")
+    try:
+        return -abs(float(raw))
+    except ValueError:
+        print(f"  note: MPDMS_Z_SITE={raw!r} is not a number; using 1.0")
+        return -1.0
+
+
+Z_SITE = _z_site()
 Q_SITE = 0.05
 TOLERANT = -0.5
 MIN_VARIANTS = 5

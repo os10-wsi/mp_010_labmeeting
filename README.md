@@ -215,6 +215,20 @@ a feature *adds*. And when the per-protein correlations disagree (high I2 in
 coefficient is drawn with its per-protein refits beside it and a sign-agreement warning
 when they do not point the same way.
 
+### The functional-site threshold
+
+A site is called functional when its median residual from the ESM-1v-versus-abundance fit
+sits at least `Z_SITE` MAD-scaled units below it. The default is 1.0; raise it to call
+fewer, more confident sites:
+
+```bash
+MPDMS_Z_SITE=1.5 python -m mpdms run configs/HXT1.yaml --only a15,a19,a21 --style paper
+```
+
+It is read once at import, so A15, A19, A21 and the cross-protein panels all see the same
+number and no figure can draw a line its own table did not use. Either sign works: 1.5 and
+-1.5 both mean -1.5.
+
 ### What does the family predict for one unmeasured protein?
 
 ```bash
