@@ -281,3 +281,27 @@ def test_a_column_with_no_topology_survives_the_filter():
     long.loc[long.col == 5, "seg_type"] = None
     cols = pool_columns(long, min_proteins=4, min_topology_agreement=0.8)
     assert 5 in set(cols.col)
+
+
+def test_holding_out_a_whole_group_removes_the_relatives_too():
+    """With paralogs in the set, holding out one leaves near-copies behind and the score
+    measures how alike paralogs are, not whether the family transfers."""
+    long = _long_seg(seed=11)
+    groups = {"P1": "A", "P2": "A", "P3": "B", "P4": "C"}
+    alone = predict_held_out(long, "P1")
+    grouped = predict_held_out(long, "P1", group_of=groups)
+    assert alone.n_train.max() == 3                 # P2, P3, P4 all train
+    assert grouped.n_train.max() == 2               # P2 goes with P1; P3 and P4 remain
+    assert len(grouped) <= len(alone)
+
+
+def test_without_groups_only_the_named_protein_is_dropped():
+    long = _long_seg(seed=12)
+    pr = predict_held_out(long, "P2")
+    assert pr.n_train.max() == 3
+
+
+def test_dropping_a_group_that_leaves_nothing_returns_empty_not_garbage():
+    long = _long_seg(seed=13)
+    groups = {p: "all" for p in ("P1", "P2", "P3", "P4")}
+    assert len(predict_held_out(long, "P1", group_of=groups)) == 0

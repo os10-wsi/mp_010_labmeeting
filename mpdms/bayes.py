@@ -233,13 +233,23 @@ def pool_columns(long: pd.DataFrame, min_proteins: int = MIN_PROTEINS,
     return t
 
 
-def predict_held_out(long: pd.DataFrame, held: str, min_proteins: int = 2) -> pd.DataFrame:
+def predict_held_out(long: pd.DataFrame, held: str, min_proteins: int = 2,
+                     group_of: dict | None = None) -> pd.DataFrame:
     """Fit each column on the rest of the family, then score the protein left out.
 
     This is the aggregate predictive power the family actually has: what the other members
     say about a member they have never seen.
+
+    `group_of` maps each protein to a group of close relatives. Pass it to hold out the
+    whole group: with four paralogs in a set of eight, holding out one of them leaves three
+    near-copies in the training set, and the resulting score measures how alike paralogs
+    are rather than whether the family transfers.
     """
-    rest = long[long.protein != held]
+    drop = {held}
+    if group_of:
+        g = group_of.get(held)
+        drop = {p for p, gg in group_of.items() if gg == g} or {held}
+    rest = long[~long.protein.isin(drop)]
     test = long[long.protein == held].set_index("col")
     rows = []
     for col, g in rest.groupby("col"):
@@ -423,7 +433,8 @@ def figure_diagnostic(name: str, preds: pd.DataFrame, scores: pd.DataFrame, outd
 
 def run_family(name: str, members: list[str], outdir: Path, min_proteins: int,
                standardise: bool = False, mafft_args: list[str] | None = None,
-               min_topology_agreement: float = 0.0) -> dict:
+               min_topology_agreement: float = 0.0,
+               leave_group_out: float | None = None) -> dict:
     cfgs = {}
     for c in members:
         cfg = load_config(Path(c))
@@ -447,17 +458,30 @@ def run_family(name: str, members: list[str], outdir: Path, min_proteins: int,
     long.to_csv(outdir / f"{name}_positions.csv", index=False)
     figure_family(name, cols, long, outdir)
 
-    rows, preds = [], []
+    group_of = None
+    if leave_group_out:
+        from .benchmark import assign_families
+        group_of, _ = assign_families(seqs, leave_group_out)
+        sizes = pd.Series(group_of).value_counts()
+        print(f"    holding out whole groups at {leave_group_out:.0%} identity: "
+              + ", ".join(f"{g} ({n})" for g, n in sizes.items()), flush=True)
+
+    rows, preds, unscorable = [], [], []
     grand = float(long.y.mean())
     for held in sorted(long.protein.unique()):
-        pr = predict_held_out(long, held)
+        pr = predict_held_out(long, held, group_of=group_of)
         if not len(pr):
+            # dropping a protein's whole group can leave too few behind to pool at all
+            unscorable.append(held)
             continue
         sc = score_predictions(pr, grand)
         sc.update(held_out=held)
         rows.append(sc)
         pr.insert(0, "held_out", held)
         preds.append(pr)
+    if unscorable:
+        print(f"    not scored, too few proteins left after dropping their group: "
+              f"{', '.join(unscorable)}", flush=True)
     scores = pd.DataFrame(rows)
     if len(scores) and "spearman" in scores:
         allp = pd.concat(preds, ignore_index=True)
@@ -466,6 +490,7 @@ def run_family(name: str, members: list[str], outdir: Path, min_proteins: int,
         figure_predictive(name, scores, outdir)
         figure_diagnostic(name, allp, scores, outdir)
     return {"status": "ok", "method": aln.attrs.get("method", "?"),
+            "unscorable": unscorable,
             "n_proteins": len(seqs), "n_columns": int(len(cols)),
             "n_dropped_topology": int(cols.attrs.get("n_dropped_topology", 0)),
             "median_topology_agreement": (float(cols.topology_agreement.median())
@@ -508,6 +533,12 @@ def main(argv=None):
                     help="drop alignment columns where fewer than this fraction of the "
                          "proteins agree on transmembrane-or-not; 0.8 is a reasonable "
                          "filter for a cross-family alignment")
+    ap.add_argument("--leave-group-out", type=float, nargs="?", const=0.40, default=None,
+                    metavar="IDENTITY",
+                    help="when scoring a protein, also drop its close relatives from the "
+                         "training set (default 0.40 identity). Without this, holding out "
+                         "one of several paralogs measures how alike paralogs are, not "
+                         "whether the family transfers")
     ap.add_argument("--standardise", action="store_true",
                     help="scale each protein's position effects by their own spread before "
                          "pooling, so assays of different dynamic range are comparable")
@@ -537,7 +568,7 @@ def main(argv=None):
         try:
             r = run_family(name, members, outdir, a.min_proteins, a.standardise,
                            (a.mafft_args.split() if a.mafft_args else None),
-                           a.min_topology_agreement)
+                           a.min_topology_agreement, a.leave_group_out)
         except Exception as e:
             r = {"status": "error", "reason": f"{type(e).__name__}: {e}"}
         out[name] = r
