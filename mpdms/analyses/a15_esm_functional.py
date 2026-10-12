@@ -22,7 +22,11 @@ from .. import plotting as P
 from ..stats import bh_fdr
 from .base import dirs, fmt_p, missense, result, skipped
 
-Z_SITE = -1.0
+# A site is called functional when its median residual is at least this far below the
+# ESM-1v-versus-abundance fit, in MAD-scaled units. Raising the magnitude calls fewer,
+# more confident sites; every figure and table that mentions a threshold reads it from
+# here, so the two can never disagree.
+Z_SITE = -1.5
 Q_SITE = 0.05
 TOLERANT = -0.5
 MIN_VARIANTS = 5

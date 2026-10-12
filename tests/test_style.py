@@ -289,3 +289,13 @@ def test_label_points_ignores_non_finite_coordinates():
     assert {a.get_text() for a in ann} == {"a"}
     assert label_points(ax, [np.nan], [np.nan], ["x"]) == []
     plt.close(fig)
+
+
+def test_every_module_reads_the_same_functional_site_threshold():
+    """A figure and the table beside it must never disagree about where the line is."""
+    from mpdms.analyses.a15_esm_functional import Z_SITE
+    from mpdms.analyses.a19_literature import Z_SITE as z19
+    from mpdms.analyses.a21_site_substitutions import Z_SITE as z21
+    from mpdms.multipanel import panel_a15  # noqa: F401  (imports Z_SITE at call time)
+    assert Z_SITE == z19 == z21 == -1.5
+    assert Z_SITE < 0, "the threshold is a lower bound on a residual, so it is negative"
