@@ -368,3 +368,54 @@ def test_the_grid_reports_one_row_per_pair_not_per_cell(tmp_path):
     assert len(stats) == 6                       # 4 choose 2
     assert len({frozenset((r.rep_x, r.rep_y)) for r in stats.itertuples()}) == 6
     plt.close("all")
+
+
+def test_density_scatter_colours_each_point_by_its_neighbourhood():
+    """A dense core must come out brighter than the tail, or the mark says nothing."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    import numpy as np
+    from mpdms.plotting import density_scatter
+    r = np.random.default_rng(0)
+    core = r.normal(0, 0.1, 3000)
+    tail = r.normal(0, 3.0, 300)
+    x = np.concatenate([core, tail])
+    y = np.concatenate([core, tail]) + r.normal(0, 0.05, len(x))
+    fig, ax = plt.subplots()
+    sc = density_scatter(ax, x, y)
+    z = sc.get_array()
+    near = np.abs(sc.get_offsets()[:, 0]) < 0.2
+    assert z[near].mean() > 5 * z[~near].mean()
+    plt.close(fig)
+
+
+def test_density_scatter_draws_the_dense_points_last():
+    """Otherwise the core is buried under the outliers drawn on top of it."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    import numpy as np
+    from mpdms.plotting import density_scatter
+    r = np.random.default_rng(1)
+    x = np.concatenate([r.normal(0, 0.1, 500), r.normal(0, 2.0, 100)])
+    y = x + r.normal(0, 0.05, len(x))
+    fig, ax = plt.subplots()
+    z = density_scatter(ax, x, y).get_array()
+    assert np.all(np.diff(z) >= -1e-9)          # drawn in increasing density
+    plt.close(fig)
+
+
+def test_density_scatter_ignores_missing_values_and_refuses_tiny_input():
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    import numpy as np
+    from mpdms.plotting import density_scatter
+    fig, ax = plt.subplots()
+    r = np.random.default_rng(2)
+    x = np.concatenate([r.normal(size=200), [np.nan]])
+    y = np.concatenate([r.normal(size=200), [1.0]])
+    assert len(density_scatter(ax, x, y).get_offsets()) == 200
+    assert density_scatter(ax, [1.0, 2.0], [1.0, 2.0]) is None
+    plt.close(fig)

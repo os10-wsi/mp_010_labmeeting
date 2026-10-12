@@ -48,6 +48,7 @@ def replicate_grid(df, cfg, reps, figdir, name="qc_replicate_correlation", label
     fig, axes = plt.subplots(n, n, figsize=(size * n + 0.9, size * n + 0.8), squeeze=False,
                              layout="constrained")
     stats_rows = []
+    mappable = None
     for i, j in itertools.product(range(n), range(n)):
         ax = axes[i, j]
         if i == j:
@@ -66,11 +67,19 @@ def replicate_grid(df, cfg, reps, figdir, name="qc_replicate_correlation", label
                     va="center", fontsize=10.5, color="#4C5BA8", style="italic")
             ax.set_xticks([]); ax.set_yticks([])
         else:
-            ax.hexbin(x[ok], y[ok], gridsize=50, extent=(*lim, *lim),
-                      cmap=P.sequential_cmap(), bins="log", mincnt=1, linewidths=0,
-                      rasterized=True)
+            im = P.density_scatter(ax, x[ok], y[ok], s=3.0)
+            ax.plot(lim, lim, ls=(0, (5, 4)), color=P.INK, lw=1.0,
+                    label="y = x" if not stats_rows else None)
+            for v, col in ((0.0, P.INK), (-1.0, "#C0392B")):
+                ax.axhline(v, color=col, lw=0.7, ls=(0, (1, 2)), zorder=0)
+                ax.axvline(v, color=col, lw=0.7, ls=(0, (1, 2)), zorder=0)
             ax.set_xlim(lim); ax.set_ylim(lim)
             ax.set_aspect("equal")
+            ax.set_title(f"r = {r:.2f}, \u03c1 = {rho:.2f}, n = {int(ok.sum()):,}",
+                         fontsize=7)
+            if not stats_rows:
+                ax.legend(frameon=False, fontsize=6, loc="upper left")
+                mappable = im
             stats_rows.append({"rep_x": reps[j], "rep_y": reps[i], "pearson": r,
                                "spearman": rho, "n": int(ok.sum())})
             if i != n - 1:
@@ -82,6 +91,9 @@ def replicate_grid(df, cfg, reps, figdir, name="qc_replicate_correlation", label
             sp.set_color(P.INK)
             sp.set_linewidth(0.8)
         ax.tick_params(labelsize=6.5)
+    if mappable is not None:
+        fig.colorbar(mappable, ax=axes, fraction=0.025, pad=0.01).set_label(
+            "Density", fontsize=8, fontweight="bold")
     fig.supxlabel(label, fontsize=8, fontweight="bold")
     fig.supylabel(label, fontsize=8, fontweight="bold")
     P.title(fig, cfg, "replicate reproducibility")

@@ -464,3 +464,31 @@ def label_points(ax, xs, ys, texts, colors=None, fontsize=7, dx=10, min_gap=11,
             arrowprops=dict(arrowstyle="-", lw=0.5, color=cols[idx[k]], alpha=0.7,
                             shrinkA=0, shrinkB=3)))
     return out
+
+
+def density_scatter(ax, x, y, bins: int = 110, s: float = 3.0, cmap=None, sort: bool = True):
+    """Points coloured by how many neighbours they have, with the densest drawn last.
+
+    A hexbin hides how many points there are and where the stragglers sit; a plain scatter
+    of ten thousand points is a solid blob. Colouring each point by the local count keeps
+    both. The density is read off a 2D histogram rather than a kernel estimate, which is
+    the same picture at a fraction of the cost for this many points.
+
+    Returns the mappable, so one colour bar can serve a whole grid of these.
+    """
+    from scipy.interpolate import interpn
+    x = np.asarray(x, float)
+    y = np.asarray(y, float)
+    ok = np.isfinite(x) & np.isfinite(y)
+    x, y = x[ok], y[ok]
+    if len(x) < 3:
+        return None
+    h, xe, ye = np.histogram2d(x, y, bins=bins)
+    z = interpn((0.5 * (xe[1:] + xe[:-1]), 0.5 * (ye[1:] + ye[:-1])), h,
+                np.column_stack([x, y]), method="linear", bounds_error=False, fill_value=None)
+    z = np.nan_to_num(z, nan=0.0)
+    if sort:                      # dense points on top, or the core is hidden by outliers
+        o = z.argsort()
+        x, y, z = x[o], y[o], z[o]
+    return ax.scatter(x, y, c=z, s=s, cmap=cmap or sequential_cmap(), lw=0,
+                      rasterized=True)
