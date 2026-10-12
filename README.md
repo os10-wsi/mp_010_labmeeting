@@ -509,6 +509,42 @@ together, and on the test fixture that alone takes p from 0.016 to 0.089. Each p
 also gets a PyMOL `.pml` and a ChimeraX `.cxc` script under `structures/<protein>/`, with
 the ten residues as spheres and every pair under 10 Å as a real distance object.
 
+### Ten structural questions, asked within one protein
+
+```bash
+python -m mpdms arch configs/AQR1_fitness.yaml configs/HXT1.yaml configs/HXT3.yaml
+```
+
+| | question | what the answer looks like |
+| --- | --- | --- |
+| S01 | which helix–helix interfaces are load-bearing? | a 12 × 12 matrix; the diagonal is each helix alone |
+| S02 | is there room to make a small interface residue bigger? | two slopes of effect on Δvolume, interface vs not |
+| S03 | proline, both directions | introducing one by position in the helix; removing a native kink |
+| S04 | holding your own helix, or holding the fold together? | two coefficients, each at the other's fixed value |
+| S05 | is too big worse than too small? | two slopes either side of zero, and their asymmetry |
+| S06 | do salt-bridge partners matter, and is reversal worse than a swap? | paired vs unpaired charged residues; K→R vs K→D |
+| S07 | does the fold treat its two bundles the same way? | effect at structurally equivalent positions, with the CA RMSD |
+| S08 | how far does constraint travel through space? | a correlogram in ångströms, against a topology-matched null |
+| S09 | which burial measure actually predicts tolerance? | |ρ| alone against |β| with the other four |
+| S10 | how fast does sensitivity decay away from the pathway? | mean effect by shell outward from the cavity lining |
+
+**S07 searches the pairing rather than assuming it.** The textbook MFS inverted repeat
+pairs TM1 with TM7, TM2 with TM8 and so on; here every one-to-one pairing of the first
+six helices against the second six is scored by a Kabsch fit on helix centroids, the
+best is kept, and the canonical pairing's own RMSD is reported next to it. So the
+figure can say whether the textbook answer is what the structure gives. Residues are
+then matched inside each paired helix by rank along the helix, and the CA RMSD of that
+correspondence is the number to judge it by.
+
+**S08's null shuffles effects within transmembrane and non-transmembrane separately.**
+TM residues are both closer together and less tolerant, so an unstratified shuffle
+would manufacture a patch out of the topology alone.
+
+**Nothing here is pooled across proteins**, and the run prints a warning for any
+dataset normalised against a wild-type anchor rather than synonymous variants — HXT1 is
+one, so its absolute effect sizes are not on the same scale as the others even though
+ranks within its panel are fine.
+
 ### Does insertion energetics set a floor on what a helix tolerates?
 
 ```bash
