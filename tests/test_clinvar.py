@@ -200,3 +200,42 @@ def test_column_conservation_is_one_when_every_member_agrees():
     assert c.loc[1, "conservation"] == pytest.approx(1.0)     # all M
     assert c.loc[2, "conservation"] == pytest.approx(0.0)     # all different
     assert np.isnan(c.loc[3, "conservation"])                 # only one residue present
+
+
+def _panel_scored(genes, seed=0):
+    rng = np.random.default_rng(seed)
+    rows = []
+    for g in genes:
+        for k in range(40):
+            path = k % 2 == 0
+            rows.append({"gene": g, "pos": k + 1, "wt": "A", "mut": "V",
+                         "label": "pathogenic" if path else "benign",
+                         "col": k + 1, "wt_matches_uniprot": True,
+                         "mu": rng.normal(-0.6 if path else -0.1, 0.25),
+                         "tau": 0.2, "J": 4, "seg_type": "TM"})
+    return pd.DataFrame(rows)
+
+
+def test_one_query_gene_drops_the_per_gene_panel(tmp_path):
+    """With a single gene that panel is panel (b)'s number redrawn as one bar."""
+    import matplotlib
+    matplotlib.use("Agg")
+    from mpdms import plotting as P
+    from mpdms.clinvar import evaluate, figure
+    P.use_style("default")
+    for genes, want in ((["SLC2A10"], 2), (["SLC2A10", "SLC2A1"], 3)):
+        s = _panel_scored(genes)
+        res = evaluate(s)
+        by_gene = pd.DataFrame([{**evaluate(gg), "gene": g} for g, gg in s.groupby("gene")])
+        figure(s, res, by_gene, tmp_path, "hexose")
+        import matplotlib.image as mpimg
+        png = tmp_path / "figures" / "c01_hexose_clinvar.png"
+        png = png if png.exists() else tmp_path / "c01_hexose_clinvar.png"
+        assert png.exists()
+        # the two-panel figure is narrower than the three-panel one, which is the
+        # observable consequence of the panel being dropped
+        w = mpimg.imread(png).shape[1]
+        if want == 2:
+            narrow = w
+        else:
+            assert w > narrow

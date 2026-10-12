@@ -285,6 +285,16 @@ missense variant is mapped to its alignment column, and pathogenic and benign va
 compared by the constraint the yeast data assigns to that column. Reported as an AUROC with
 a bootstrap interval, overall and per gene.
 
+One gene is a perfectly good run, and the figure adapts: with a single `--human` the
+per-gene panel (c) is dropped, since it would be panel (b)'s AUROC redrawn as one bar,
+and the gene's name moves into the titles of (a) and (b).
+
+```bash
+python -m mpdms clinvar \
+  --family hexose=configs/HXT1.yaml,configs/HXT2.yaml,configs/HXT3.yaml,configs/HXT7.yaml \
+  --human SLC2A10=O95528 --table variant_summary.txt.gz
+```
+
 Only unambiguous calls are used: anything uncertain or conflicting is dropped rather than
 counted as benign, which is the usual way a predictor is flattered on ClinVar. Variants
 whose wild-type residue disagrees with the UniProt sequence (a different transcript) are
