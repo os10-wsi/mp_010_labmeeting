@@ -296,6 +296,30 @@ predicting anything.
 
 ### Against AlphaMissense and ESM-1v
 
+Getting the two inputs. **AlphaMissense** is a download — `AlphaMissense_aa_substitutions.tsv.gz`
+(1.2 GB, CC BY 4.0) from the DeepMind bucket, keyed by UniProt accession:
+
+```bash
+curl -L -C - -O https://storage.googleapis.com/dm_alphamissense/AlphaMissense_aa_substitutions.tsv.gz
+# or keep ~10 KB instead of 1.2 GB:
+curl -sL https://storage.googleapis.com/dm_alphamissense/AlphaMissense_aa_substitutions.tsv.gz \
+  | zcat | awk -F'\t' 'NR==1 || /^#/ || $1=="O95528"' > SLC2A10_alphamissense.tsv
+```
+
+**ESM-1v is not a download** — there are no precomputed scores for an arbitrary protein,
+so the model has to be run. A query protein has no config, so `esm` takes an accession
+directly:
+
+```bash
+export TORCH_HOME=/lustre/.../torch        # weights are 2.6 GB per model, five models
+python -m mpdms esm --human SLC2A10=O95528 --device cuda
+```
+
+It prints the `--esm GENE=FILE` string to paste into the clinvar command. `--models 1`
+scores with one model instead of the ensemble of five, which is five times faster and
+usually within a few hundredths of an AUROC.
+
+
 ```bash
 python -m mpdms clinvar \
   --family hexose=configs/HXT1.yaml,configs/HXT2.yaml,configs/HXT3.yaml,configs/HXT7.yaml \

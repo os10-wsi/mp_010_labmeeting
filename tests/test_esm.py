@@ -156,3 +156,53 @@ def test_mutation_parsing_matches_the_regex_it_replaced():
     assert got.loc[keep, "wt"].tolist() == ref.loc[keep, 0].tolist()
     assert got.loc[keep, "mut"].tolist() == ref.loc[keep, 2].tolist()
     assert got.loc[keep, "pos"].tolist() == pd.to_numeric(ref.loc[keep, 1]).tolist()
+
+
+def test_a_protein_with_no_config_can_be_scored_by_accession(tmp_path, monkeypatch):
+    """A human family member has no config, but still has to be scored the same way."""
+    import pandas as pd
+
+    from mpdms import esm_score as E
+    seq = "MAKTLVIGAGSLSWFPRQDEKNMHYC" * 2
+    calls = {}
+
+    def fake_fetch(acc):
+        calls["acc"] = acc
+        return seq
+
+    def fake_score(s, models, device, batch):
+        calls["len"] = len(s)
+        return pd.DataFrame({"pos": [1, 1], "wt": ["M", "M"], "mut": ["A", "V"],
+                             "esm1v": [-1.0, -2.0]})
+
+    monkeypatch.setattr("mpdms.clinvar.fetch_sequence", fake_fetch)
+    monkeypatch.setattr(E, "score_sequence", fake_score)
+    monkeypatch.setattr(E, "REPO_ROOT", tmp_path)
+    E.main(["--human", "slc2a10=O95528"])
+    assert calls == {"acc": "O95528", "len": len(seq)}
+    out = tmp_path / "data" / "external" / "SLC2A10" / "SLC2A10_esm1v.csv"
+    assert out.exists()
+    # the file lands where the clinvar reader expects it, and reads back
+    from mpdms.analyses.a15_esm_functional import read_esm
+    assert len(read_esm(out)) == 2
+
+
+def test_a_local_fasta_works_too_and_a_bad_spec_is_refused(tmp_path, monkeypatch):
+    import pandas as pd
+    import pytest as _pytest
+
+    from mpdms import esm_score as E
+    f = tmp_path / "q.fasta"
+    f.write_text(">sp|X|QUERY\nMAKTLV\nIGAGSL\n")
+    seen = {}
+    monkeypatch.setattr(E, "score_sequence",
+                        lambda s, m, d, b: seen.setdefault("seq", s) and None
+                        or pd.DataFrame({"pos": [1], "wt": ["M"], "mut": ["A"],
+                                         "esm1v": [-1.0]}))
+    monkeypatch.setattr(E, "REPO_ROOT", tmp_path)
+    E.main(["--fasta", f"QUERY={f}"])
+    assert seen["seq"] == "MAKTLVIGAGSL"      # header dropped, lines joined
+    with _pytest.raises(SystemExit):
+        E.main(["--fasta", "nogene"])
+    with _pytest.raises(SystemExit):
+        E.main([])

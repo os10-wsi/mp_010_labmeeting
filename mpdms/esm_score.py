@@ -1,4 +1,5 @@
 """`python -m mpdms esm configs/QDR2.yaml configs/AQR1.yaml [--models 1,2,3,4,5] [--device cuda]`
+`python -m mpdms esm --human SLC2A10=O95528 --device cuda`   (a protein with no config)
 `python -m mpdms esm configs/QDR2.yaml configs/AQR1.yaml --from-table all_esm1v_predictions_with_mean.csv`
 
 ESM-1v variant effect scores by the masked-marginal method (Meier et al. 2021, NeurIPS):
@@ -361,7 +362,14 @@ def _report_match(cfg_id: str, why: str, found: str | None, info: dict) -> str |
 
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="python -m mpdms esm")
-    ap.add_argument("configs", nargs="+")
+    ap.add_argument("configs", nargs="*", default=[])
+    ap.add_argument("--human", action="append", default=[], metavar="GENE=ACCESSION",
+                    help="score a protein that has no config, by UniProt accession, e.g. "
+                         "SLC2A10=O95528. The sequence is fetched and cached under "
+                         "data/external/_uniprot, and the csv is written where "
+                         "`mpdms clinvar --esm GENE=FILE` wants it")
+    ap.add_argument("--fasta", action="append", default=[], metavar="GENE=FILE",
+                    help="the same, from a local fasta instead of an accession")
     ap.add_argument("--models", default="1,2,3,4,5", help="ESM-1v model numbers to ensemble (default all 5)")
     ap.add_argument("--device", default="auto")
     ap.add_argument("--batch", type=int, default=8)
@@ -375,6 +383,39 @@ def main(argv=None):
             import_from_table(a.from_table, Path(c), a.id)
         return
     models = [int(x) for x in a.models.split(",")]
+
+    # proteins with no config: a human family member scored so it can be compared
+    # against the yeast family's own prediction for the same variants
+    loose = {}
+    for spec in a.human:
+        g, _, acc = spec.partition("=")
+        if not acc:
+            raise SystemExit(f"--human {spec}: expected GENE=ACCESSION, e.g. SLC2A10=O95528")
+        from .clinvar import fetch_sequence
+        loose[g.strip().upper()] = fetch_sequence(acc.strip())
+    for spec in a.fasta:
+        g, _, f = spec.partition("=")
+        if not f:
+            raise SystemExit(f"--fasta {spec}: expected GENE=FILE")
+        txt = Path(f).read_text()
+        loose[g.strip().upper()] = "".join(
+            l.strip() for l in txt.splitlines() if not l.startswith(">"))
+    for gene, seq in loose.items():
+        out = REPO_ROOT / "data" / "external" / gene / f"{gene}_esm1v.csv"
+        if out.exists() and not a.force:
+            print(f"{gene}: {out.relative_to(REPO_ROOT)} exists (use --force to recompute)")
+        else:
+            print(f"{gene}: scoring {len(seq)} residues with ESM-1v models {models}",
+                  flush=True)
+            tab = score_sequence(seq, models, a.device, a.batch)
+            out.parent.mkdir(parents=True, exist_ok=True)
+            tab.to_csv(out, index=False)
+            print(f"  -> {out.relative_to(REPO_ROOT)}")
+        print(f"  pass to clinvar as:  --esm {gene}={out.relative_to(REPO_ROOT)}")
+    if not a.configs and not loose:
+        raise SystemExit("nothing to do: give a config, --human GENE=ACCESSION or "
+                         "--fasta GENE=FILE")
+
     for c in a.configs:
         cfg = load_config(Path(c))
         seq = protein_sequence(cfg)
