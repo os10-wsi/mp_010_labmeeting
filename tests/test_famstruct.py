@@ -169,3 +169,34 @@ def test_predictions_fall_back_to_the_flat_model_without_a_prior():
     b = predict_held_out(long, "P0", fn(feats.set_index("col")), fn.sigma)
     assert b.used_prior.all()
     assert not np.allclose(a.pred, b.pred)
+
+
+def test_esm_uncertainty_is_measured_out_of_sample():
+    """Within-protein correlated error makes the in-sample residual spread optimistic.
+
+    Each protein gets its own offset, which a fit that has seen it absorbs and a fit that
+    has not cannot. If the blend is handed the in-sample number it overweights ESM.
+    """
+    rng = np.random.default_rng(0)
+    rows = []
+    for j, off in enumerate([-0.5, 0.0, 0.5, 0.25]):
+        e = rng.normal(-6, 3, 200)
+        rows.append(pd.DataFrame({"protein": f"P{j}", "esm": e,
+                                  "y": off + 0.15 * e + rng.normal(0, 0.1, 200)}))
+    d = pd.concat(rows, ignore_index=True)
+    _, sd = calibrate_esm(d)
+    b, a = np.polyfit(d.esm, d.y, 1)
+    in_sample = float(np.std(d.y - (a + b * d.esm), ddof=2))
+    assert sd > in_sample
+    # with one protein there is nothing to hold out, and the in-sample value stands
+    one = d[d.protein == "P0"]
+    _, sd1 = calibrate_esm(one)
+    assert sd1 == pytest.approx(0.1, rel=0.3)
+
+
+def test_a_wider_esm_spread_pulls_the_blend_back_toward_the_family():
+    d = pd.DataFrame({"pred": [0.0], "mu_sd": [0.2], "tau": [0.3],
+                      "esm_pred": [1.0], "esm_sd": [0.4]})
+    near = blend(d).pred_blend[0]
+    far = blend(d.assign(esm_sd=[1.2])).pred_blend[0]
+    assert far < near                              # less trust in ESM, closer to 0

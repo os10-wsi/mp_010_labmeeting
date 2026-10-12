@@ -378,15 +378,34 @@ def calibrate_esm(train: pd.DataFrame):
 
     ESM is on an arbitrary log-likelihood-ratio scale, so it has to be put on the scale of
     the assay before it can be compared to the family model on anything but rank. The
-    residual spread of that fit is the honest uncertainty to give an ESM prediction, and it
-    is what lets ESM be weighed against the family posterior.
+    spread of that fit's error is the uncertainty an ESM prediction deserves, and it is
+    what lets ESM be weighed against the family posterior.
+
+    That spread has to be measured OUT of sample. The residual spread of the fit itself is
+    how far ESM misses on the proteins it was just fitted to, which is optimistic for a
+    protein it has not seen: ESM's errors are correlated within a protein, so a fit that
+    has seen three proteins is partly fitting their shared idiosyncrasies. Using the
+    in-sample number makes the blend overweight ESM, and that costs predictive density
+    exactly where the family model was already good. So the spread is estimated by holding
+    out one training protein at a time, and the in-sample value is only a fallback when
+    there are too few proteins for that.
     """
     d = train.dropna(subset=["esm", "y"])
     if len(d) < 30 or np.ptp(d.esm) == 0:
         return None
     b, a = np.polyfit(d.esm.to_numpy(), d.y.to_numpy(), 1)
-    resid = d.y.to_numpy() - (a + b * d.esm.to_numpy())
-    sd = float(np.std(resid, ddof=2)) or np.nan
+    sd = float(np.std(d.y.to_numpy() - (a + b * d.esm.to_numpy()), ddof=2)) or np.nan
+    if "protein" in d and d.protein.nunique() >= 3:
+        err = []
+        for q in d.protein.unique():
+            tr, te = d[d.protein != q], d[d.protein == q]
+            if len(tr) < 30 or len(te) < 10 or np.ptp(tr.esm) == 0:
+                continue
+            bb, aa = np.polyfit(tr.esm.to_numpy(), tr.y.to_numpy(), 1)
+            err.append(te.y.to_numpy() - (aa + bb * te.esm.to_numpy()))
+        if err:
+            oos = float(np.sqrt(np.mean(np.concatenate(err) ** 2)))
+            sd = max(sd, oos)
     return lambda x: a + b * np.asarray(x, dtype=float), sd
 
 
@@ -677,6 +696,8 @@ def run(name: str, members: list[str], queries: dict[str, str], outdir: Path,
         qres[g] = a
         s = summarise(a, g, -0.5); s["model"] = "structure"
         t = summarise(b, g, -0.5); t["model"] = "intercept only"
+        for r, f in ((s, a), (t, b)):
+            r["max_p_loss"] = float(f.p_loss.max()) if f.p_loss.notna().any() else np.nan
         # how often the structural prior changes the call at all
         s["n_calls_changed"] = int((a.call != b.call).sum())
         qsum += [t, s]
@@ -702,8 +723,15 @@ def run(name: str, members: list[str], queries: dict[str, str], outdir: Path,
                 gain[f"mean_elpd_gain_{key}"] = float(p[k].mean())
         if {"ESM-1v", "structure"} <= set(r.columns):
             gain["n_proteins_family_beats_esm"] = int((r["structure"] > r["ESM-1v"]).sum())
+    # why a protein can come back with nothing called: the calls are a property of where
+    # the pooled column means sit relative to the threshold, and that is worth seeing
+    # before anyone reads "0 loss" as a result about the protein
+    diag = {"mu_median": float(plain.mu.median()), "mu_p05": float(plain.mu.quantile(0.05)),
+            "mu_min": float(plain.mu.min()), "pred_sd_median": float(plain.pred_sd.median()),
+            "frac_columns_mu_below_threshold": float((plain.mu < -0.5).mean()),
+            "median_tau": float(plain.tau.median())}
     sig = coefs[(coefs.covariate != "intercept") & (coefs.p < 0.05)]
-    return {"status": "ok", "method": aln.attrs.get("method", "?"),
+    return {"status": "ok", "columns": diag, "method": aln.attrs.get("method", "?"),
             "n_proteins": len(seqs), "n_columns": int(len(plain)),
             "n_columns_with_structure": int(len(feats)),
             "prior_r2": float(coefs.r2.iloc[0]),
@@ -793,11 +821,25 @@ def main(argv=None):
                 print(f"    {held:<14} {cells}", flush=True)
             print("    (Spearman / elpd gain over predicting one number everywhere)",
                   flush=True)
+        d = r.get("columns")
+        if d:
+            print(f"    columns: median mu {d['mu_median']:+.2f}, 5th percentile "
+                  f"{d['mu_p05']:+.2f}, lowest {d['mu_min']:+.2f}, median predictive sd "
+                  f"{d['pred_sd_median']:.2f}, median tau {d['median_tau']:.2f}; "
+                  f"{d['frac_columns_mu_below_threshold']:.1%} of columns pool below -0.5",
+                  flush=True)
+            if d["frac_columns_mu_below_threshold"] < 0.01:
+                print("    NOTE: almost no column pools below the -0.5 threshold, so no "
+                      "residue can be called a loss whatever the prior does. Either this "
+                      "family's positions really are mild on this assay, or the scores are "
+                      "compressed - check the per-protein normalisation before reading the "
+                      "query calls", flush=True)
         for q in r.get("queries", []):
             print(f"    {q['gene']:<10} {q['model']:<16} "
                   f"{q['n_mapped']:,}/{q['n_residues']:,} mapped, "
                   f"{q['n_loss']:,} loss, {q['n_tolerated']:,} tolerated, "
-                  f"{q['n_uncertain']:,} uncertain"
+                  f"{q['n_uncertain']:,} uncertain, highest P(loss) "
+                  f"{q.get('max_p_loss', float('nan')):.2f}"
                   + (f", {q['n_calls_changed']:,} calls changed"
                      if "n_calls_changed" in q else ""), flush=True)
     (outdir / "famstruct.json").write_text(json.dumps(out, indent=2, default=str))
