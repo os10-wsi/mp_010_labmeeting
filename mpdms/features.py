@@ -18,7 +18,8 @@ VARIANT_FEATURES = ["delta_biological", "delta_kd", "delta_volume", "delta_charg
                     "wt_biological", "wt_volume", "mut_biological", "mut_volume", "is_pro", "is_gly",
                     "wt_is_hydrophobic", "mut_is_charged"]
 POSITION_FEATURES = ["is_tm", "is_loop", "rel_pos", "abs_rel", "dist_end", "frac_in_protein",
-                     "rsa", "contacts", "plddt", "abs_z", "helix_rsa", "hyd_window9", "dist_to_tm"]
+                     "rsa", "contacts", "plddt", "abs_z", "radial", "helix_rsa",
+                     "hyd_window9", "dist_to_tm"]
 FEATURES = VARIANT_FEATURES + POSITION_FEATURES
 HYDROPHOBIC = set("AVLIFMWC")
 CHARGED = set("DEKR")
@@ -81,11 +82,16 @@ def position_table(df: pd.DataFrame, cfg) -> pd.DataFrame:
                            int(cfg.get_path("structure.numbering_offset", 0) or 0))
         rt, _ = membrane_frame(rt, cfg)
         rt["abs_z"] = rt.zdepth.abs()
-        t = t.merge(rt[["pos", "rsa", "contacts", "plddt", "abs_z"]], on="pos", how="left")
+        # radial: distance from the axis of the helix bundle. Inside the membrane this is
+        # the interpretable axis for a transporter - small means lining the central cavity,
+        # large means facing lipid - and RSA cannot tell those apart, since both are
+        # "exposed" to a solvent-accessibility calculation that knows nothing about lipid.
+        t = t.merge(rt[["pos", "rsa", "contacts", "plddt", "abs_z", "radial"]],
+                    on="pos", how="left")
         hx = t[t.plddt >= 70].groupby("helix").rsa.median().rename("helix_rsa")
         t = t.join(hx, on="helix")
     else:
-        for c in ("rsa", "contacts", "plddt", "abs_z", "helix_rsa"):
+        for c in ("rsa", "contacts", "plddt", "abs_z", "radial", "helix_rsa"):
             t[c] = np.nan
     return t
 

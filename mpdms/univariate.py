@@ -43,7 +43,7 @@ LABELS = {
     "is_tm": "in a TM helix", "is_loop": "in a loop", "rel_pos": "position in segment",
     "abs_rel": "distance from segment centre", "dist_end": "distance from segment end",
     "frac_in_protein": "position in protein", "rsa": "solvent accessibility (RSA)",
-    "contacts": "contact number", "plddt": "AlphaFold pLDDT", "abs_z": "depth in membrane |z|",
+    "contacts": "contact number", "plddt": "AlphaFold pLDDT", "abs_z": "depth in membrane |z|", "radial": "distance from bundle axis",
     "helix_rsa": "helix-face RSA", "hyd_window9": "local hydrophobicity (9 aa)",
     "dist_to_tm": "distance to nearest TM", "esm1v": "ESM-1v score",
 }

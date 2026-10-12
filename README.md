@@ -325,6 +325,62 @@ density against predicting one number for the whole family, and by whether the 5
 credible intervals actually contain 50% and 90% of what happened. The last of these is the
 one that catches a model that looks accurate and is overconfident.
 
+### Can the structure make the family model better - and does it beat ESM-1v?
+
+```bash
+python -m mpdms famstruct \
+  --family hexose=configs/HXT1.yaml,configs/HXT2.yaml,configs/HXT3.yaml,configs/HXT7.yaml,configs/PHO84_fitness.yaml \
+  --human SLC2A1=P11166 --human SLC2A2=P11168 --human SLC2A9=Q9NRM0 --human SLC2A10=O95528 \
+  --mafft-args "--maxiterate 1000 --localpair"
+```
+
+The plain family model shrinks every alignment column toward one number. That number is a
+property of the column's measurements, not of the position, so the model has nothing to
+say where the family is thin and nothing to say at all about geometry. `famstruct` gives
+each column a prior mean predicted from the structures instead:
+
+    theta_jc ~ Normal(m_c, tau^2),    m_c = beta0 + beta . x_c
+
+The features are the ones that mean something in a membrane protein, which is what makes
+the fitted `beta` worth reading (F03):
+
+| feature | what it distinguishes |
+| --- | --- |
+| distance from the bundle axis | lining the central cavity against facing lipid - RSA calls both "exposed" |
+| depth across the membrane | the middle of the bilayer against the interface |
+| contact number | packed against other helices against free to move |
+| solvent accessibility | the usual burial measure |
+| pLDDT | whether the model is confident enough for the rest to mean anything |
+| in a TM helix | the topology baseline, so the others are read on top of it |
+
+The prior has to be **proper**. Under the flat prior on `mu` used by `bayes`, a
+column-specific prior mean does exactly nothing: shifting the data by `m_c` and shifting
+the answer back returns the original posterior. So the prior's width is the residual
+spread of the structural regression - a regression that explains little gives a wide prior
+and the model reverts to the flat answer by itself. That is asserted in the tests, in both
+directions.
+
+Four models are then compared leave-one-protein-out, with the structural regression *and*
+the ESM calibration refitted without the held-out protein each time (F04, F06):
+
+| model | what it knows |
+| --- | --- |
+| intercept only | the plain family model |
+| structure | plus where the column sits in the membrane |
+| ESM-1v | no family data at all: ESM, put on the assay scale by a fit to the training proteins |
+| structure + ESM-1v | the two combined by precision, no new parameters |
+
+ESM is on a log-likelihood-ratio scale, so it is calibrated before anything but rank is
+compared, and the residual spread of that calibration is the uncertainty it is given. The
+combination is then just inverse-variance weighting of two predictions of the same
+quantity. Panel (c) of F06 is the one to look at first: the less the family model and ESM
+agree with each other, the more there is to gain by using both.
+
+Other outputs: F01 is the protein-by-protein grid of column effects (how much the family
+agrees at aligned positions at all), F02 is effect against depth, radial distance and RSA,
+and F05 is what each unmeasured human protein is predicted to be, under the structural
+prior and without it, with the number of residues whose call changes.
+
 ### What does each feature predict on its own?
 
 Before any model combines them:

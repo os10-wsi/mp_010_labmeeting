@@ -3,7 +3,7 @@ import sys
 
 
 def main():
-    if len(sys.argv) < 2 or sys.argv[1] not in ("init", "run", "helix", "esm", "validate", "bench", "family", "tmhmm", "report", "quickstart", "batch", "panel", "aggregate", "univariate", "bayes", "ladder", "clinvar", "identity", "predict"):
+    if len(sys.argv) < 2 or sys.argv[1] not in ("init", "run", "helix", "esm", "validate", "bench", "family", "tmhmm", "report", "quickstart", "batch", "panel", "aggregate", "univariate", "bayes", "ladder", "clinvar", "identity", "predict", "famstruct"):
         sys.exit("usage: python -m mpdms quickstart <fitness_file> --gff3 <file>   (start here)"
                  " | python -m mpdms batch <folder_of_dimsum_output>"
                  " | python -m mpdms panel configs/*.yaml --only a01,a15"
@@ -15,6 +15,7 @@ def main():
                  " | python -m mpdms validate configs/*.yaml"
                  " | python -m mpdms bench configs/*.yaml [--split protein]"
                  " | python -m mpdms family configs/AQR1.yaml configs/QDR2.yaml"
+                 " | python -m mpdms famstruct --family hexose=configs/HXT1.yaml,... --human SLC2A1=P11166"
                  " | python -m mpdms tmhmm configs/*.yaml"
                  " | python -m mpdms report configs/AQR1.yaml configs/QDR2.yaml")
     cmd, rest = sys.argv[1], sys.argv[2:]
@@ -28,6 +29,8 @@ def main():
         from .aggregate import main as m
     elif cmd == "univariate":
         from .univariate import main as m
+    elif cmd == "famstruct":
+        from .famstruct import main as m
     elif cmd == "bayes":
         from .bayes import main as m
     elif cmd == "ladder":
