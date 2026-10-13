@@ -237,43 +237,62 @@ def h01_whole_protein(t: pd.DataFrame, a: str, b: str, bits: dict,
     over all positions is guaranteed before any biology. The split-half ceiling says how
     much agreement the measurements could possibly have shown, and the ratio of the
     first to the third is the only one of the three that answers "how conserved is it".
+
+    The membrane and the loops get their own panel each, because they are the place
+    the topology argument lives: if the agreement were only the TM/loop contrast, the
+    correlation would collapse inside each of them separately.
     """
     from .family import _within_class_null
     rows = []
     subsets = {"all aligned": t.both_residues, "both TM": t.both_tm,
                "both loop/soluble": t.both_loop}
     cap = ceiling(bits[a]["reliability"], bits[b]["reliability"])
-    fig, axes = plt.subplots(1, 2, figsize=(7.4, 3.3), layout="constrained")
-    d = t[t.both_residues].dropna(subset=[f"{a}_mean_all", f"{b}_mean_all"])
-    ax = axes[0]
-    tm = d[d.both_tm]
-    ax.scatter(d[f"{a}_mean_all"], d[f"{b}_mean_all"], s=10, color="#D9D9D9", lw=0,
-               label="other aligned positions")
-    ax.scatter(tm[f"{a}_mean_all"], tm[f"{b}_mean_all"], s=14,
-               c=[effect_color((x + y) / 2) for x, y in
-                  zip(tm[f"{a}_mean_all"], tm[f"{b}_mean_all"])],
-               edgecolor=P.INK, linewidth=0.3, label="both in a TM helix")
-    lim = [min(d[f"{a}_mean_all"].min(), d[f"{b}_mean_all"].min()) - 0.05,
-           max(d[f"{a}_mean_all"].max(), d[f"{b}_mean_all"].max()) + 0.05]
-    ax.plot(lim, lim, ls=(0, (5, 4)), color=P.INK, lw=0.9)
-    ax.set_xlim(lim); ax.set_ylim(lim); ax.set_aspect("equal")
-    ax.set_xlabel(f"{short_name(a)} mean effect", fontsize=7.5)
-    ax.set_ylabel(f"{short_name(b)} mean effect", fontsize=7.5)
-    ax.legend(frameon=False, fontsize=6, loc="upper left")
     for lab, mask in subsets.items():
-        obs, p, _, n = _within_class_null(t, a, b, mask, n=N_PERM)
+        obs, p_, _, n = _within_class_null(t, a, b, mask, n=N_PERM)
         if not np.isfinite(obs):
             continue
         _, lo, hi = bootstrap_rho(t.loc[mask, f"{a}_mean_all"],
                                   t.loc[mask, f"{b}_mean_all"])
         rows.append({"subset": lab, "n": int(n), "spearman": obs, "lo": lo, "hi": hi,
-                     "p_within_class_null": p, "ceiling": cap,
+                     "p_within_class_null": p_, "ceiling": cap,
                      "fraction_of_ceiling": obs / cap if cap else np.nan})
-    key = [r for r in rows if r["subset"] == "all aligned"]
-    panel(ax, 0, f"{short_name(a)} vs {short_name(b)}",
-          (f"ρ = {key[0]['spearman']:+.2f}" if key else ""), size=8)
+    if not rows:
+        return {"status": "skipped", "reason": "too few aligned positions to correlate"}
+    by = {r["subset"]: r for r in rows}
 
-    ax = axes[1]
+    d_all = t[t.both_residues].dropna(subset=[f"{a}_mean_all", f"{b}_mean_all"])
+    lim = [float(min(d_all[f"{a}_mean_all"].min(), d_all[f"{b}_mean_all"].min())) - 0.05,
+           float(max(d_all[f"{a}_mean_all"].max(), d_all[f"{b}_mean_all"].max())) + 0.05]
+    fig, axes = plt.subplots(1, 3, figsize=(10.2, 3.5), layout="constrained",
+                             width_ratios=[1, 1, 1.15])
+    panels = (("both TM", t.both_tm, P.DARK_RED, "in a TM helix in both"),
+              ("both loop/soluble", t.both_loop, "#2166AC",
+               "outside the membrane in both"))
+    for i, (key, mask, col, title) in enumerate(panels):
+        ax = axes[i]
+        d = t[mask].dropna(subset=[f"{a}_mean_all", f"{b}_mean_all"])
+        ax.plot(lim, lim, ls=(0, (5, 4)), color=P.INK, lw=0.9, zorder=1)
+        # the other class behind, in grey, so each panel keeps the whole range in view
+        other = d_all[~d_all.index.isin(d.index)]
+        ax.scatter(other[f"{a}_mean_all"], other[f"{b}_mean_all"], s=8,
+                   color="#D9D9D9", lw=0, zorder=2)
+        if len(d):
+            ax.scatter(d[f"{a}_mean_all"], d[f"{b}_mean_all"], s=16, color=col,
+                       alpha=0.8, edgecolor=P.INK, linewidth=0.3, zorder=3)
+            xs = np.linspace(lim[0], lim[1], 20)
+            ax.plot(xs, np.polyval(np.polyfit(d[f"{a}_mean_all"],
+                                              d[f"{b}_mean_all"], 1), xs),
+                    color=col, lw=1.4, zorder=4)
+        ax.set_xlim(lim); ax.set_ylim(lim); ax.set_aspect("equal")
+        ax.set_xlabel(f"{short_name(a)} mean effect", fontsize=7.5)
+        if i == 0:
+            ax.set_ylabel(f"{short_name(b)} mean effect", fontsize=7.5)
+        r = by.get(key)
+        panel(ax, i, title,
+              (f"rho = {r['spearman']:+.2f}, n = {r['n']}, p = "
+               f"{r['p_within_class_null']:.3f}") if r else "too few positions", size=8)
+
+    ax = axes[2]
     y = np.arange(len(rows))[::-1]
     for k, r in enumerate(rows):
         ax.errorbar(r["spearman"], y[k],
@@ -281,29 +300,34 @@ def h01_whole_protein(t: pd.DataFrame, a: str, b: str, bits: dict,
                           [max((r["hi"] or r["spearman"]) - r["spearman"], 0)]],
                     fmt="o", ms=6, lw=0, elinewidth=1.1, capsize=3, color=P.DARK_RED,
                     mec=P.INK, mew=0.5)
-        ax.text(r["spearman"], y[k] + 0.22,
+        ax.text(r["spearman"], y[k] + 0.26,
                 f"{100 * r['fraction_of_ceiling']:.0f}% of attainable"
-                if np.isfinite(r["fraction_of_ceiling"]) else "", fontsize=6,
+                if np.isfinite(r["fraction_of_ceiling"]) else "", fontsize=6.5,
                 ha="center")
     if np.isfinite(cap):
         ax.axvline(cap, color=P.INK, lw=1.3, ls=(0, (4, 3)))
-        # in axis-fraction coordinates on y: the row positions are data coordinates and
-        # a label placed above the top row lands outside the axes and is clipped
-        ax.text(cap, 0.99, "split-half ceiling ", fontsize=6, va="top", ha="right",
+        # the label goes at the bottom: the top row's own annotation lives up there
+        ax.text(cap, 0.015, " split-half ceiling", fontsize=6, va="bottom", ha="left",
                 transform=ax.get_xaxis_transform())
     ax.axvline(0, color=P.MUTED, lw=0.7)
     ax.set_yticks(y); ax.set_yticklabels([r["subset"] for r in rows], fontsize=7)
-    ax.set_xlim(-0.05, 1.0)
-    ax.set_xlabel("Spearman ρ between the two proteins", fontsize=7.5)
-    panel(ax, 1, "against the attainable maximum", size=8)
-    fig.suptitle("The ceiling is what two noisy measurements of identical quantities "
-                 "could correlate at; the p-values are against a null that shuffles "
-                 "within TM and within loop separately.", fontsize=7, x=0.01, ha="left")
+    # headroom for the annotation above the top row, and room to the right in case a
+    # correlation lands above the ceiling - which it can, since the ceiling is itself
+    # an estimate
+    ax.set_ylim(-0.55, len(rows) - 0.35)
+    hi_edge = max([cap if np.isfinite(cap) else 0] +
+                  [r["hi"] if np.isfinite(r["hi"]) else r["spearman"] for r in rows])
+    ax.set_xlim(-0.05, max(1.0, hi_edge + 0.1))
+    ax.set_xlabel("Spearman rho between the two proteins", fontsize=7.5)
+    panel(ax, 2, "against the attainable maximum", size=8)
+    fig.suptitle("Grey points are the other class, kept in view so the two panels share "
+                 "a scale. A correlation that survives inside each class separately is "
+                 "not the TM/loop contrast in disguise.", fontsize=7, x=0.01, ha="left")
     P.save(fig, outdir, "h01_whole_protein", None, "H01")
     plt.close(fig)
     out = pd.DataFrame(rows)
     out.to_csv(outdir / "h01_whole_protein.csv", index=False)
-    head = "; ".join(f"{r.subset} ρ {r.spearman:+.2f} "
+    head = "; ".join(f"{r.subset} rho {r.spearman:+.2f} "
                      f"({100 * r.fraction_of_ceiling:.0f}% of ceiling {r.ceiling:.2f}, "
                      f"p {r.p_within_class_null:.3f})" for r in out.itertuples())
     return {"status": "ok", "headline": head, "subsets": out.to_dict("records")}
@@ -409,6 +433,24 @@ def h02_per_helix(t: pd.DataFrame, a: str, b: str, bits: dict, outdir: Path) -> 
 
 
 # ----------------------------------------------------- h03 per helix, the means
+def helix_palette(order: list[str], n_first: int = 6) -> dict:
+    """A colour per TM helix: the N-bundle in blues, the C-bundle in reds.
+
+    Twelve arbitrary colours are twelve things to look up. Ramping within each bundle
+    means the colour carries two facts at once - which half of the fold a helix is in,
+    and where in that half - and it matches the bundle colours h05 uses, so a reader
+    moving between the figures is not relearning the key.
+    """
+    import matplotlib.cm as cm
+    out = {}
+    for k, h in enumerate(order):
+        if k < n_first:
+            out[h] = cm.Blues(0.95 - 0.1 * k)
+        else:
+            out[h] = cm.Reds(0.95 - 0.1 * (k - n_first))
+    return out
+
+
 def h03_helix_means(t: pd.DataFrame, a: str, b: str, bits: dict, outdir: Path) -> dict:
     """Are the helix *means* conserved - a different question from h02.
 
@@ -428,29 +470,42 @@ def h03_helix_means(t: pd.DataFrame, a: str, b: str, bits: dict, outdir: Path) -
     g = g[g.n >= MIN_PER_HELIX]
     if len(g) < 4:
         return {"status": "skipped", "reason": "fewer than four comparable helices"}
+    order = [h for h in tm_names(bits[a]["cfg"]) if h in set(g.helix)]
+    order += [h for h in g.helix if h not in order]
+    g["rank"] = [order.index(h) for h in g.helix]
+    g = g.sort_values("rank")
+    n_first = len(tm_names(bits[a]["cfg"])) // 2
+    pal = helix_palette(order, n_first=min(n_first, len(order)))
     rho, lo, hi = bootstrap_rho(g.mean_a, g.mean_b)
-    fig, ax = plt.subplots(figsize=(4.0, 3.8), layout="constrained")
-    ax.errorbar(g.mean_a, g.mean_b, xerr=g.se_a, yerr=g.se_b, fmt="o", ms=7, lw=0,
-                elinewidth=0.8, capsize=2,
-                color=P.DARK_RED, mec=P.INK, mew=0.5)
-    P.label_points(ax, g.mean_a.to_numpy(), g.mean_b.to_numpy(), g.helix.tolist(),
-                   fontsize=7)
+
+    fig, ax = plt.subplots(figsize=(5.6, 3.9), layout="constrained")
     lim = [min(g.mean_a.min(), g.mean_b.min()) - 0.06,
            max(g.mean_a.max(), g.mean_b.max()) + 0.06]
-    ax.plot(lim, lim, ls=(0, (5, 4)), color=P.INK, lw=0.9)
+    ax.plot(lim, lim, ls=(0, (5, 4)), color=P.INK, lw=0.9, zorder=1)
+    for r in g.itertuples():
+        first = order.index(r.helix) < min(n_first, len(order))
+        ax.errorbar(r.mean_a, r.mean_b, xerr=r.se_a, yerr=r.se_b, fmt="o" if first
+                    else "s", ms=9, lw=0, elinewidth=0.9, capsize=2,
+                    color=pal[r.helix], mec=P.INK, mew=0.7, label=r.helix, zorder=3)
     ax.set_xlim(lim); ax.set_ylim(lim); ax.set_aspect("equal")
-    ax.set_xlabel(f"{short_name(a)}: mean effect over the helix", fontsize=7.5)
-    ax.set_ylabel(f"{short_name(b)}: mean effect over the helix", fontsize=7.5)
-    panel(ax, 0, "helix means", f"ρ = {rho:+.2f} [{lo:+.2f}, {hi:+.2f}], n = {len(g)}",
-          size=8)
-    fig.suptitle("One point per TM helix. This is the level of each helix; h02 is the "
-                 "pattern inside it, and the two can disagree.", fontsize=7, x=0.01,
-                 ha="left")
+    ax.set_xlabel(f"{short_name(a)}: mean effect over the helix", fontsize=8)
+    ax.set_ylabel(f"{short_name(b)}: mean effect over the helix", fontsize=8)
+    panel(ax, 0, "helix means", f"rho = {rho:+.2f} [{lo:+.2f}, {hi:+.2f}], "
+                                f"n = {len(g)}", size=8)
+    # the key sits outside the axes: twelve labels inside a square panel either collide
+    # with the points or push them into a corner
+    ax.legend(loc="upper left", bbox_to_anchor=(1.02, 1.0), frameon=False, fontsize=7,
+              handletextpad=0.4, labelspacing=0.45, borderaxespad=0,
+              title="N-bundle (circles)\nC-bundle (squares)",
+              title_fontsize=7)
+    fig.suptitle("One point per TM helix, coloured by which bundle it is in and where. "
+                 "This is the level of each helix; h02 is the pattern inside it, and "
+                 "the two can disagree.", fontsize=7, x=0.01, ha="left")
     P.save(fig, outdir, "h03_helix_means", None, "H03")
     plt.close(fig)
-    g.to_csv(outdir / "h03_helix_means.csv", index=False)
+    g.drop(columns="rank").to_csv(outdir / "h03_helix_means.csv", index=False)
     return {"status": "ok",
-            "headline": f"helix means ρ = {rho:+.2f} [{lo:+.2f}, {hi:+.2f}] over "
+            "headline": f"helix means rho = {rho:+.2f} [{lo:+.2f}, {hi:+.2f}] over "
                         f"{len(g)} helices",
             "by_helix": g.to_dict("records")}
 
@@ -664,15 +719,82 @@ def write_bundle_scripts(b: dict, sym: dict, outdir: Path) -> list[Path]:
 
 
 # ------------------------------------------------------------- h06 fold or lineage
+def calibrated_rmse(x, y) -> float:
+    """Error of predicting y from x after fitting a slope and intercept.
+
+    The two assays differ in dynamic range, so a raw difference between a protein and
+    its homologue would mostly measure that difference rather than any disagreement
+    about biology. Fitting the line first removes the scale and leaves the scatter,
+    which is the part worth comparing between a symmetry mate and an orthologue.
+    """
+    x = np.asarray(x, float); y = np.asarray(y, float)
+    ok = np.isfinite(x) & np.isfinite(y)
+    if ok.sum() < 10:
+        return np.nan
+    pred = np.polyval(np.polyfit(x[ok], y[ok], 1), x[ok])
+    return float(np.sqrt(np.mean((y[ok] - pred) ** 2)))
+
+
+def draw_quartet(ax, a: str, b: str, pair: tuple[str, str], colors: dict) -> None:
+    """What a symmetry pair is, and what the three comparisons are, in one picture.
+
+    Four boxes: a position, the structurally equivalent position in the other bundle of
+    the same protein, the aligned position in the other protein, and that one's mate.
+    Going down is the fold's own twofold; going across is the alignment. The three
+    arrows out of the top-left box are the three bars in the last panel, in the same
+    colours, so the diagram and the statistics are the same object twice.
+    """
+    from matplotlib.patches import FancyArrowPatch, FancyBboxPatch
+    ax.set_xlim(0, 10); ax.set_ylim(0, 10); ax.axis("off")
+    ha, hb = pair
+    boxes = {
+        "self": (1.6, 7.0, f"position i\nin {ha}", P.INK),
+        "mate": (1.6, 2.6, f"its mate\nin {hb}", colors["mate"]),
+        "ortholog": (6.6, 7.0, f"aligned position\nin {ha}", colors["ortholog"]),
+        "mate_of_ortholog": (6.6, 2.6, f"its mate\nin {hb}", colors["mate_of_ortholog"]),
+    }
+    w, h = 3.0, 1.5
+    for key, (x, y, label, col) in boxes.items():
+        ax.add_patch(FancyBboxPatch((x - w / 2, y - h / 2), w, h,
+                                    boxstyle="round,pad=0.08,rounding_size=0.18",
+                                    linewidth=1.6 if key == "self" else 1.2,
+                                    edgecolor=col, facecolor="none", zorder=3))
+        ax.text(x, y, label, ha="center", va="center", fontsize=7, zorder=4)
+    ax.text(1.6, 9.3, short_name(a), ha="center", fontsize=8.5, fontweight="bold")
+    ax.text(6.6, 9.3, short_name(b), ha="center", fontsize=8.5, fontweight="bold")
+
+    def arrow(p0, p1, col, rad=0.0):
+        ax.add_patch(FancyArrowPatch(p0, p1, arrowstyle="-|>", mutation_scale=11,
+                                     color=col, lw=1.6, zorder=2,
+                                     connectionstyle=f"arc3,rad={rad}",
+                                     shrinkA=3, shrinkB=3))
+
+    arrow((1.6, 7.0 - h / 2), (1.6, 2.6 + h / 2), colors["mate"])
+    arrow((1.6 + w / 2, 7.0), (6.6 - w / 2, 7.0), colors["ortholog"])
+    arrow((1.6 + w / 2, 7.0 - h / 2), (6.6 - w / 2, 2.6 + h / 2),
+          colors["mate_of_ortholog"], rad=-0.18)
+    ax.text(1.25, 4.8, "pseudo-twofold\n(the fold)", ha="right", va="center",
+            fontsize=6.5, color=colors["mate"], rotation=90, linespacing=1.4)
+    ax.text(4.1, 8.15, "alignment (the lineage)", ha="center", va="bottom",
+            fontsize=6.5, color=colors["ortholog"])
+    ax.text(5.0, 0.95,
+            f"{ha} and {hb} are the same helix built twice. A position is matched to "
+            f"its mate by\nrank along the helix, after superposing the two on each "
+            f"other.", ha="center", va="center", fontsize=6.3, color=P.MUTED,
+            linespacing=1.5)
+
+
 def h06_fold_or_lineage(t: pd.DataFrame, a: str, b: str, bits: dict,
                         outdir: Path) -> dict:
     """Is a position more like its own symmetry mate, or more like its orthologue?
 
     Every measured position has up to three partners: the structurally equivalent
     position in the other half of the same protein, the aligned position in the other
-    protein, and that position's own mate. Correlating the same set of positions
-    against each of the three puts architecture and lineage on one axis, measured on
-    exactly the same residues so the comparison is not about which set was easier.
+    protein, and that position's own mate. All three are scored on exactly the same
+    positions, so the comparison is about what each partner is and not about which set
+    was easier to measure. Two statistics, because they answer different questions: the
+    correlation says whether the partner ranks positions the same way, and the
+    calibrated error says how wrong you would be using it as a prediction.
     """
     orth = {}
     for r in t[t.both_residues].itertuples():
@@ -686,59 +808,106 @@ def h06_fold_or_lineage(t: pd.DataFrame, a: str, b: str, bits: dict,
         q = orth.get(p)
         m = ma.get(p)
         mo = mb.get(q) if q is not None else None
-        rows.append({"pos_a": p, "self": ea.get(p), "mate": ea.get(m),
+        rows.append({"pos_a": p, "mate_pos": m, "ortholog_pos": q,
+                     "self": ea.get(p), "mate": ea.get(m),
                      "ortholog": eb.get(q), "mate_of_ortholog": eb.get(mo)})
-    d = pd.DataFrame(rows).dropna()
+    d = pd.DataFrame(rows).dropna(subset=["self", "mate", "ortholog",
+                                          "mate_of_ortholog"])
     if len(d) < 20:
         return {"status": "skipped",
                 "reason": "fewer than twenty positions have all three partners"}
     cap_same = ceiling(bits[a]["reliability"], bits[a]["reliability"])
     cap_cross = ceiling(bits[a]["reliability"], bits[b]["reliability"])
-    comps = [("its symmetry mate\n(same protein, other bundle)", "mate", cap_same),
-             (f"its orthologue\n(other protein, same bundle)", "ortholog", cap_cross),
-             ("its orthologue's mate\n(other protein, other bundle)",
+    colors = {"mate": P.DARK_RED, "ortholog": "#2166AC", "mate_of_ortholog": "#6B6B6B"}
+    comps = [("its symmetry mate\nsame protein, other bundle", "mate", cap_same),
+             ("its orthologue\nother protein, same bundle", "ortholog", cap_cross),
+             ("the orthologue's mate\nother protein, other bundle",
               "mate_of_ortholog", cap_cross)]
     out = []
     for lab, col, cap in comps:
         rho, lo, hi = bootstrap_rho(d["self"], d[col])
-        out.append({"comparison": lab.replace("\n", " "), "column": col,
+        out.append({"comparison": lab.replace("\n", ", "), "column": col,
                     "n": int(len(d)), "spearman": rho, "lo": lo, "hi": hi,
+                    "rmse_calibrated": calibrated_rmse(d["self"], d[col]),
                     "ceiling": cap,
                     "fraction_of_ceiling": rho / cap if cap else np.nan})
-    fig, ax = plt.subplots(figsize=(5.0, 3.3), layout="constrained")
+    per = pd.DataFrame(out).set_index("column")
+
+    # which helix pair to name in the diagram: the one carrying the most positions here
+    sym = bits[a].get("symmetry") or {}
+    pair = ("TM k", "TM k+6")
+    if sym.get("pairs"):
+        hits = []
+        for pr in sym["pairs"]:
+            inside = set(pr["pos_a"]) | set(pr["pos_b"])
+            hits.append((len(set(d.pos_a) & inside), pr["helix_a"], pr["helix_b"]))
+        best = max(hits)
+        if best[0] > 0:
+            pair = (best[1], best[2])
+
+    fig, axes = plt.subplots(2, 2, figsize=(8.2, 7.0), layout="constrained")
+    draw_quartet(axes[0][0], a, b, pair, colors)
+    panel(axes[0][0], 0, "what a symmetry pair is", size=8.5)
+
+    lim = [float(min(d["self"].min(), d.mate.min(), d.ortholog.min())) - 0.05,
+           float(max(d["self"].max(), d.mate.max(), d.ortholog.max())) + 0.05]
+    for ax, col, title in ((axes[0][1], "mate", "predict from the symmetry mate"),
+                           (axes[1][0], "ortholog", "predict from the orthologue")):
+        ax.plot(lim, lim, ls=(0, (5, 4)), color=P.INK, lw=0.9, zorder=1)
+        ax.scatter(d["self"], d[col], s=15, color=colors[col], alpha=0.75,
+                   edgecolor=P.INK, linewidth=0.3, zorder=3)
+        r = per.loc[col]
+        xs = np.linspace(lim[0], lim[1], 20)
+        ax.plot(xs, np.polyval(np.polyfit(d["self"], d[col], 1), xs),
+                color=colors[col], lw=1.4, zorder=2)
+        ax.set_xlim(lim); ax.set_ylim(lim); ax.set_aspect("equal")
+        ax.set_xlabel(f"{short_name(a)}: effect at the position", fontsize=7.5)
+        ax.set_ylabel("effect at the partner", fontsize=7.5)
+        panel(ax, 1 if col == "mate" else 2, title,
+              f"rho = {r.spearman:+.2f}, RMSE = {r.rmse_calibrated:.3f}", size=8)
+
+    ax = axes[1][1]
     x = np.arange(len(out))
     ax.bar(x, [r["spearman"] for r in out],
            yerr=[[r["spearman"] - (r["lo"] if np.isfinite(r["lo"]) else r["spearman"])
                   for r in out],
                  [(r["hi"] if np.isfinite(r["hi"]) else r["spearman"]) - r["spearman"]
                   for r in out]],
-           color=[P.DARK_RED, "#2166AC", P.MUTED], edgecolor=P.INK, linewidth=0.6,
-           error_kw=dict(lw=0.9, capsize=3))
+           color=[colors[r["column"]] for r in out], edgecolor=P.INK, linewidth=0.6,
+           error_kw=dict(lw=0.9, capsize=3), width=0.62)
     for k, r in enumerate(out):
-        ax.plot([k - 0.4, k + 0.4], [r["ceiling"]] * 2, color=P.INK, lw=1.2,
+        ax.plot([k - 0.33, k + 0.33], [r["ceiling"]] * 2, color=P.INK, lw=1.3,
                 ls=(0, (3, 2)))
-        ax.text(k, r["spearman"] + 0.02, f"{r['spearman']:+.2f}", ha="center",
-                fontsize=7)
+        # above the error bar, not above the bar: the cap is the taller of the two
+        top = r["hi"] if np.isfinite(r["hi"]) else r["spearman"]
+        ax.text(k, top + 0.03, f"{r['spearman']:+.2f}", ha="center",
+                fontsize=7.5, fontweight="bold")
+        ax.text(k, -0.055, f"RMSE {r['rmse_calibrated']:.3f}", ha="center", fontsize=6.3,
+                color=P.MUTED)
     ax.set_xticks(x)
     ax.set_xticklabels([lab for lab, _, _ in comps], fontsize=6.5)
     ax.axhline(0, color=P.MUTED, lw=0.7)
-    ax.set_ylabel("ρ with the position's own effect", fontsize=7.5)
-    panel(ax, 0, f"{short_name(a)}: {len(d)} positions with all three partners", size=8)
-    fig.suptitle("The same positions throughout, so the three bars differ only in what "
-                 "they are compared with. Dashed = the attainable ceiling for that "
-                 "comparison.", fontsize=7, x=0.01, ha="left")
+    tops = [r["hi"] if np.isfinite(r["hi"]) else r["spearman"] for r in out]
+    tops += [r["ceiling"] for r in out]
+    ax.set_ylim(-0.1, max(0.4, float(np.nanmax(tops)) * 1.16))
+    ax.set_ylabel("rho with the position's own effect", fontsize=7.5)
+    panel(ax, 3, "fold or lineage", f"{len(d)} positions, all three partners", size=8)
+
+    fig.suptitle("Dashed = the ceiling for that comparison. RMSE is after fitting a "
+                 "slope, so it is scatter rather than a difference in assay scale.",
+                 fontsize=7, x=0.01, ha="left")
     P.save(fig, outdir, "h06_fold_or_lineage", None, "H06")
     plt.close(fig)
-    per = pd.DataFrame(out)
-    per.to_csv(outdir / "h06_fold_or_lineage.csv", index=False)
+    per.reset_index().to_csv(outdir / "h06_fold_or_lineage.csv", index=False)
     d.to_csv(outdir / "h06_quartets.csv", index=False)
-    win = per.loc[per.fraction_of_ceiling.idxmax()]
+    win = per.fraction_of_ceiling.idxmax()
     return {"status": "ok",
-            "headline": "; ".join(f"{r.column} ρ {r.spearman:+.2f} "
-                                  f"({100 * r.fraction_of_ceiling:.0f}% of ceiling)"
-                                  for r in per.itertuples())
-                        + f" — closest partner: {win.column}",
-            "comparisons": per.to_dict("records")}
+            "headline": "; ".join(f"{c} rho {r.spearman:+.2f} "
+                                  f"({100 * r.fraction_of_ceiling:.0f}% of ceiling, "
+                                  f"RMSE {r.rmse_calibrated:.3f})"
+                                  for c, r in per.iterrows())
+                        + f" - closest partner: {win}",
+            "comparisons": per.reset_index().to_dict("records")}
 
 
 # ----------------------------------------------- h07 where they disagree, and whether in patches

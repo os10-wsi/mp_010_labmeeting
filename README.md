@@ -790,12 +790,12 @@ possible, and H06 is the analysis that needs both.
 
 | | question | what the answer looks like |
 | --- | --- | --- |
-| H01 | the whole protein | ρ, a topology-matched null, and the split-half ceiling it is quoted against |
+| H01 | the whole protein | one scatter inside the membrane, one outside it, and both against the split-half ceiling |
 | H02 | per helix: the *pattern* | one ρ per TM helix over the aligned positions inside it, each with its own ceiling |
-| H03 | per helix: the *level* | twelve labelled points, helix mean against helix mean |
+| H03 | per helix: the *level* | twelve points, helix mean against helix mean, coloured by bundle |
 | H04 | the symmetry mates | per-pair ρ against per-pair Cα RMSD, six pairs per protein |
 | H05 | the bundle, seen | twelve discs where the helices really are, mates joined, width = agreement |
-| H06 | fold or lineage? | the same positions correlated with their mate, their orthologue, and their orthologue's mate |
+| H06 | fold or lineage? | a diagram of the quartet, then ρ and prediction error for the mate against the orthologue |
 | H07 | where they disagree | the residual mapped into both structures, with S08's correlogram |
 | H08 | does identity predict agreement? | ρ refitted inside identical / similar / dissimilar columns |
 | H09 | substitution profiles | the 19-vector correlated at each column, against a mismatched-position null |
@@ -864,11 +864,35 @@ A flat result says the disagreement is noise; a slope says the context is doing
 something specific, and the third panel puts the worst-disagreeing columns in the
 membrane frame so you can see where.
 
-**H06 is the one worth the trouble.** Every position has up to three partners — its
-symmetry mate in the same protein, its orthologue in the other, and that orthologue's
-own mate. All three correlations are computed on *exactly the same positions*, so the
-comparison is not about which set was easier to measure. If the mate wins, constraint
-is set by the architecture; if the orthologue wins, by the lineage.
+**H06 is the one worth the trouble**, and it opens with a diagram rather than a
+number. Panel (a) draws the quartet: a position, the structurally equivalent position in
+the other bundle of the same protein, the aligned position in the other protein, and
+that one's mate — with the arrows out of the first box in the same three colours as the
+bars in panel (d), so the picture and the statistics are the same object twice. Going
+down is the fold's own twofold, going across is the alignment. Panels (b) and (c) are
+the two predictions side by side, mate and orthologue, on a shared scale.
+
+Two statistics, because they answer different questions. The correlation says whether a
+partner ranks positions the same way; the **calibrated RMSE** says how wrong you would
+be using it as a prediction, after fitting a slope so that a difference in assay scale
+is not counted as disagreement. All three partners are scored on *exactly the same
+positions*, so the comparison is about what each partner is and not about which set was
+easier to measure. If the mate wins, constraint is set by the architecture; if the
+orthologue wins, by the lineage.
+
+**H01 splits the scatter by topology.** Both proteins have sensitive TM cores and
+tolerant loops, so a correlation over all aligned positions is partly guaranteed before
+any biology. One panel takes the positions that are in a TM helix in both, the other
+those outside the membrane in both, each with its own fit and its own permutation
+p-value, and the other class stays visible in grey so the two share a scale. A
+correlation that survives inside each class separately is not the TM/loop contrast in
+disguise.
+
+**H03 colours by bundle rather than labelling every point.** Twelve text labels on a
+square panel either collide or push the points into a corner. The N-bundle runs through
+a blue ramp and the C-bundle through a red one, circles against squares, with the key
+outside the axes — so the colour carries which half of the fold a helix is in and where
+in that half, and it matches the bundle colours H05 uses.
 
 ### Can the structure make the family model better - and does it beat ESM-1v?
 
