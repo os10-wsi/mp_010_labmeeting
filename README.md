@@ -776,6 +776,73 @@ something upstream is wrong.
 states is in the model, so the ΔRSA coefficient is about *moving* rather than about
 being exposed on average. Handing it the same file twice is refused rather than fitted.
 
+### Two homologues and two symmetries, asked together
+
+```bash
+python -m mpdms homolog configs/HXT1.yaml configs/HXT3.yaml
+```
+
+An MFS transporter carries its own internal replicate: two six-helix bundles related by
+a pseudo-twofold and joined by a cytosolic loop, so **TM1 and TM7 are the same helix
+built twice**. Two paralogues give a second replicate of a different kind — the same
+fold under a different sequence lineage. Having both at once is what makes this module
+possible, and H06 is the analysis that needs both.
+
+| | question | what the answer looks like |
+| --- | --- | --- |
+| H01 | the whole protein | ρ, a topology-matched null, and the split-half ceiling it is quoted against |
+| H02 | per helix: the *pattern* | one ρ per TM helix over the aligned positions inside it, each with its own ceiling |
+| H03 | per helix: the *level* | twelve labelled points, helix mean against helix mean |
+| H04 | the symmetry mates | per-pair ρ against per-pair Cα RMSD, six pairs per protein |
+| H05 | the bundle, seen | twelve discs where the helices really are, mates joined, width = agreement |
+| H06 | fold or lineage? | the same positions correlated with their mate, their orthologue, and their orthologue's mate |
+| H07 | where they disagree | the residual mapped into both structures, with S08's correlogram |
+| H08 | does identity predict agreement? | ρ refitted inside identical / similar / dissimilar columns |
+| H09 | substitution profiles | the 19-vector correlated at each column, against a mismatched-position null |
+| H10 | transfer | RMSE and AUROC for the worst tenth, both directions |
+
+**Everything is quoted against a split-half ceiling.** Two position means measured with
+noise cannot correlate at 1 even if the biology is identical, so each protein's
+variants are split at random, the two sets of means correlated, and the result
+Spearman-Brown corrected; the attainable maximum is the geometric mean of the two
+reliabilities. Without it, "TM5 is divergent" and "TM5 is poorly measured" look the
+same. H01 reports **ρ as a percentage of attainable** and H02 draws each helix's own
+ceiling as a tick on its bar.
+
+**Correlations are scale-free**, so unlike the violin figures this module is comparable
+across proteins even though HXT1 was normalised against a wild-type anchor rather than
+synonymous variants. Worth saying out loud, since the opposite caveat applies
+everywhere else.
+
+**H02 and H03 are different questions and the tests enforce it.** A helix can be the
+most sensitive one in both proteins while the arrangement of sensitivity inside it
+agrees not at all. `tests/test_homology.py` plants exactly that case — matched helix
+levels, independent within-helix patterns — and checks that H03 sees ρ > 0.7 while H02
+sees a median near zero.
+
+**H04 breaks out what S07 pools.** S07 superposes the two bundles and reports one
+correlation. H04 superposes each of the six mate pairs on its own and plots its ρ
+against its own Cα RMSD, so the figure can say whether the pairs that superpose best
+are the pairs whose constraint agrees. The pairing is **searched, not assumed** —
+every one-to-one correspondence of the six against the six is scored by a Kabsch fit on
+helix centroids — and whether the answer is the textbook TM1–TM7 is reported alongside;
+`--canonical` forces it. A helix pair carries only a dozen or so measured positions, so
+one pair in six reaching |ρ| = 0.7 by chance is ordinary: every pair gets a bootstrap
+interval and a single striking pair is not a finding.
+
+**H05 is the panel that shows the twofold instead of claiming it.** The membrane normal
+is recovered by regressing each residue's depth on its coordinates, and the twelve
+helix centroids are projected into the plane across it. Each disc is filled by its
+helix's mean effect and outlined by which bundle it belongs to; the line joining a pair
+is as wide as the pair agrees. PyMOL and ChimeraX scripts go to
+`structures/<protein>/h05_bundles.*`.
+
+**H06 is the one worth the trouble.** Every position has up to three partners — its
+symmetry mate in the same protein, its orthologue in the other, and that orthologue's
+own mate. All three correlations are computed on *exactly the same positions*, so the
+comparison is not about which set was easier to measure. If the mate wins, constraint
+is set by the architecture; if the orthologue wins, by the lineage.
+
 ### Can the structure make the family model better - and does it beat ESM-1v?
 
 ```bash
