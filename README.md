@@ -648,6 +648,73 @@ variant that fails to insert and one that inserts and then misfolds look identic
 and dsTβL was measured in a single-span reporter, while these are twelve-span
 transporters whose helices insert with help from their neighbours.
 
+### Burial in the centre of the protein, and hydrophobicity
+
+```bash
+python -m mpdms burial configs/AQR1_fitness.yaml configs/HXT1.yaml configs/HXT3.yaml
+```
+
+A membrane protein has three chemically different kinds of place to put a residue, and
+the whole module turns on telling them apart: **core** (inside the bundle, packed
+against other helices), **lipid** (inside the membrane, facing acyl chains) and
+**aqueous** (outside the membrane, in water). The lumenal and cytosolic loops are
+pooled into that one aqueous class on purpose — they differ in which side they are on,
+which matters for insertion and for the positive-inside rule but not for a
+hydrophobicity argument, since both are solvated. **Cavity-lining** is kept as a fourth
+class and plotted alongside: in a transporter the central pathway is full of water, and
+merging it with lipid would hide the most interesting positions in the protein.
+
+| | question | what the answer looks like |
+| --- | --- | --- |
+| B01 | does hydrophobicity tolerance differ between lipid, core and aqueous? | two slopes per class, hinged at zero: a one-sided V against a symmetric tent |
+| B02 | is that a boundary, or a gradient? | the same slope swept along the radial coordinate in sliding windows |
+| B03 | is the intolerant face of a helix its hydrophobic face? | one arrow per helix on a wheel, and the resultant against a within-helix null |
+| B04 | what does a charge cost, and does depth matter? | effect against \|z\| for buried and exposed separately; the interaction is the test |
+| B05 | buried polar: packing defect, or substrate site? | six violins, core/cavity/lipid × polar/hydrophobic wild type |
+| B06 | volume or hydrophobicity — which does each environment care about? | four standardised coefficients per class, signed and absolute |
+| B07 | small residues at close helix–helix approaches | three violins, and the slope of effect on Δvolume where there is no room |
+| B08 | the aromatic belt | losing the ring separated from losing hydrophobicity, by depth |
+| B09 | is the cost a mismatch with the surroundings rather than an absolute? | mean effect over mutant hydrophobicity × local hydrophobicity |
+| B10 | are ESM-1v's own errors structured by burial? | the residual against radius, and a model with burial, depth and buried-polar |
+
+**B01 fits two slopes, not one.** A single straight line through Δhydrophobicity assumes
+the cost of a change is the same in both directions, which is exactly the assumption the
+analysis exists to test. Both arms are reported as d(effect)/d(ΔKD) on their own side of
+zero, so a symmetric tent — bad in either direction — has one positive and one negative
+arm that cancel, and their **sum is the asymmetry**. A straight line through a tent
+reads as zero slope and would have missed it entirely; `tests/test_burial.py` plants one
+and checks that it does.
+
+**Standard errors are clustered by position throughout.** Variants at one position all
+inherit whatever that position is, so an ordinary variant-level error would treat a
+protein with 500 positions as though it had 9,500 independent observations. `cluster_ols`
+refuses outright when there are fewer than six positions behind a fit.
+
+**B02 is B01's own diagnostic.** B01 cuts the bundle at its median radius and calls one
+side cavity and the other lipid. If tolerance really is a property of facing lipid there
+should be a step near that cut; if it drifts smoothly, the three-class picture is a
+summary rather than a boundary, and B02 is where you find out which.
+
+**B09 is the one that changes how you read a substitution.** A leucine is not
+intrinsically a good substitution; it is a good substitution somewhere hydrophobic. The
+local environment is the mean Kyte-Doolittle hydrophobicity of everything whose Cα is
+within 8 Å, skipping the four residues either side in sequence — those are the same
+helix turn and would mostly measure the residue against itself. If mismatch is what
+matters, the pale diagonal runs bottom-left to top-right and the cost lives in the
+off-diagonal corners; the R² of the mismatch model is printed against the R² of
+\|ΔKD\| from the wild type, which is the conventional predictor it has to beat.
+
+**B10 is a criticism of the language model, stated as a measurement.** ESM-1v knows
+about evolution, not about the membrane. If its residuals were noise they would have
+nothing to do with where a position sits; if they line up with burial, depth or the
+polarity of what is being introduced, that is a specific account of what it is missing
+and an argument for putting structure into the prior rather than hoping the model has
+learnt it. The residual is defined exactly as A15 defines it, so a position A15 calls
+functional is the same position here.
+
+Nothing is pooled across proteins. Every panel is one protein, in the order the configs
+are given on the command line.
+
 ### Can the structure make the family model better - and does it beat ESM-1v?
 
 ```bash
