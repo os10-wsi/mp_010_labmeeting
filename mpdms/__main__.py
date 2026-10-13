@@ -3,7 +3,7 @@ import sys
 
 
 def main():
-    if len(sys.argv) < 2 or sys.argv[1] not in ("init", "run", "helix", "esm", "validate", "bench", "family", "tmhmm", "report", "quickstart", "batch", "panel", "aggregate", "univariate", "bayes", "ladder", "clinvar", "identity", "predict", "famstruct", "environ", "insertion", "arch", "burial"):
+    if len(sys.argv) < 2 or sys.argv[1] not in ("init", "run", "helix", "esm", "validate", "bench", "family", "tmhmm", "report", "quickstart", "batch", "panel", "aggregate", "univariate", "bayes", "ladder", "clinvar", "identity", "predict", "famstruct", "environ", "insertion", "arch", "burial", "access"):
         sys.exit("usage: python -m mpdms quickstart <fitness_file> --gff3 <file>   (start here)"
                  " | python -m mpdms batch <folder_of_dimsum_output>"
                  " | python -m mpdms panel configs/*.yaml --only a01,a15"
@@ -19,6 +19,7 @@ def main():
                  " | python -m mpdms insertion configs/HXT1.yaml ..."
                  " | python -m mpdms arch configs/AQR1_fitness.yaml configs/HXT1.yaml ..."
                  " | python -m mpdms burial configs/AQR1_fitness.yaml configs/HXT1.yaml ..."
+                 " | python -m mpdms access configs/AQR1_fitness.yaml configs/HXT1.yaml ..."
                  " | python -m mpdms famstruct --family hexose=configs/HXT1.yaml,... --human SLC2A1=P11166"
                  " | python -m mpdms tmhmm configs/*.yaml"
                  " | python -m mpdms report configs/AQR1.yaml configs/QDR2.yaml")
@@ -37,6 +38,8 @@ def main():
         from .architecture import main as m
     elif cmd == "burial":
         from .burial import main as m
+    elif cmd == "access":
+        from .accessibility import main as m
     elif cmd == "insertion":
         from .insertion import main as m
     elif cmd == "environ":

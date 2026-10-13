@@ -718,6 +718,64 @@ functional is the same position here.
 Nothing is pooled across proteins. Every panel is one protein, in the order the configs
 are given on the command line.
 
+### What solvent accessibility does, and does not, say
+
+```bash
+python -m mpdms access configs/AQR1_fitness.yaml configs/HXT1.yaml configs/HXT3.yaml
+```
+
+RSA is the strongest structural predictor of tolerance in a soluble protein, and in a
+membrane protein it is a **broken measurement**: it rolls a *water* probe over an
+isolated monomer, so a residue against acyl chains and a residue in the cytosol both
+score "exposed" while being in opposite chemical worlds, and in a transporter a residue
+lining the water-filled cavity scores exposed as well. That is not a reason to drop it.
+It is the reason these ten exist — most of them are about what RSA is confusing with
+what.
+
+| | question | what the answer looks like |
+| --- | --- | --- |
+| R01 | the dose–response | effect against RSA, fitted separately in TM and in loops; the slope ratio is the number |
+| R02 | water-facing against lipid-facing area | per-atom SASA split by each atom's own depth: one predictor becomes two with opposite meanings |
+| R03 | where is the knee? | a free breakpoint on RSA with a bootstrap interval, against the 0.15 cut used elsewhere |
+| R04 | your burial, or your neighbourhood's? | own RSA and mean RSA within 8 Å in one model, over a 2-D map |
+| R05 | unique and shared variance | Shapley (LMG) shares of R² across RSA, contacts, depth and radius, stacked |
+| R06 | the shape, not the mean | SD and skew of each position's own substitutions against RSA |
+| R07 | which residues care about being buried? | the RSA slope for each of the 20 mutant residues, ranked |
+| R08 | per helix | the within-helix slope against that helix's RSA range: no range, no prediction |
+| R09 | the fraction at stop level | fraction of substitutions ≤ −0.8 against RSA, beside the rescaled mean |
+| R10 | burial that moves | ΔRSA between two conformations, with mean RSA held fixed |
+
+**R02 is the point of the module.** Shrake–Rupley is run at the atom level and each
+exposed atom's area is assigned to lipid or water by its own depth in the membrane
+frame, with the slab half-thickness taken from the protein's own TM residues rather than
+assumed. A residue then has two accessibilities instead of one, and both go in the same
+model. Exposure to water should be protective; exposure to lipid should not be. If the
+two coefficients come out equal, the membrane adds nothing to the burial story.
+
+**R03 audits the rest of the pipeline.** The RSA < 0.15 "buried" cut used throughout
+`environ`, `arch` and `burial` is inherited from soluble-protein work and had never been
+checked against these data. The breakpoint is found by fitting a hinge at every
+candidate quantile and keeping the smallest residual sum of squares, with a bootstrap
+interval over positions. If the interval excludes 0.15, several existing figures are
+cutting in the wrong place and say so.
+
+**R05 answers "is RSA doing work, or is it a proxy?"** S09 compares burial measures;
+this one splits the overlap between them. The Shapley (LMG) share averages each
+predictor's marginal R² over every ordering, so the shares are non-negative and add to
+exactly the full model's R²; the tick inside each block is that predictor's *unique*
+contribution, what it adds entering last. A tall block with a tiny tick is a predictor
+doing nothing the others could not.
+
+**R07 is the sanity check as much as the figure.** Proline and the charged residues
+should be ruinous when buried and harmless when exposed — a steep positive slope —
+while alanine and serine should be nearly flat. If that ordering does not appear,
+something upstream is wrong.
+
+**R10 needs a second structure** and skips cleanly when there is none: set
+`structure.alt_path` in the config or pass `--alt GENE=FILE`. Mean RSA across the two
+states is in the model, so the ΔRSA coefficient is about *moving* rather than about
+being exposed on average. Handing it the same file twice is refused rather than fitted.
+
 ### Can the structure make the family model better - and does it beat ESM-1v?
 
 ```bash
