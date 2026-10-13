@@ -239,3 +239,40 @@ def test_mean_alone_is_not_taken_as_a_score():
     pd.DataFrame({"pos": [1, 2], "mut": ["A", "C"], "mean": [1.0, 2.0]}).to_csv(t,
                                                                                 index=False)
     assert read_esm(t) is None
+
+
+def test_highlight_positions_come_from_the_config_or_the_environment(monkeypatch):
+    from mpdms.analyses.a15_esm_functional import highlight_positions
+
+    class Cfg:
+        def __init__(self, v):
+            self.v = v
+
+        def get_path(self, key, default=None):
+            return self.v if key == "plotting.highlight_positions" else default
+
+    monkeypatch.delenv("MPDMS_HIGHLIGHT", raising=False)
+    assert highlight_positions(Cfg([370, 335, 336, 335])) == [335, 336, 370]
+    assert highlight_positions(Cfg(None)) == []
+    # the environment overrides the config entirely, for a one-off run
+    monkeypatch.setenv("MPDMS_HIGHLIGHT", "473, 209")
+    assert highlight_positions(Cfg([1, 2])) == [209, 473]
+    # and a value that is not a number is dropped with a note, not a crash
+    monkeypatch.setenv("MPDMS_HIGHLIGHT", "473,Q335A,")
+    assert highlight_positions(Cfg(None)) == [473]
+
+
+def test_a_wide_sequence_track_is_exempt_from_squaring(tmp_path, monkeypatch):
+    """MPDMS_SQUARE must not put 600 residues in a box as tall as it is wide."""
+    import matplotlib.pyplot as plt
+
+    from mpdms import plotting as P
+    monkeypatch.setenv("MPDMS_SQUARE", "1")
+    fig, (a, b) = plt.subplots(1, 2)
+    P.no_square(b)
+    c = fig.add_axes([0.1, 0.01, 0.8, 0.05])
+    c.axis("off")
+    P.save(fig, tmp_path, "mixed")
+    assert a.get_box_aspect() == 1          # an ordinary panel is squared
+    assert b.get_box_aspect() is None       # the exempt track is not
+    assert c.get_box_aspect() is None       # nor is a text panel with its frame off

@@ -46,6 +46,33 @@ MIN_VARIANTS = 5
 FUNC_COLOR = "#D62728"
 
 
+HIGHLIGHT_COLOR = "#111111"
+
+
+def highlight_positions(cfg) -> list[int]:
+    """Residues to call out by name on every A15 panel.
+
+    These are the positions someone already cares about - a mutant they have made, a
+    site from the literature - and the point of marking them is to see where they fall
+    among the sites the analysis picked out on its own, including when the analysis did
+    not pick them. They are drawn in black so they read as an annotation rather than as
+    a result: red is reserved for what the statistics called functional.
+
+    From `plotting.highlight_positions` in the config, or MPDMS_HIGHLIGHT=335,336,370
+    to override for one run.
+    """
+    raw = os.environ.get("MPDMS_HIGHLIGHT")
+    vals = raw.split(",") if raw is not None else (
+        cfg.get_path("plotting.highlight_positions", []) or [])
+    out = []
+    for v in vals:
+        try:
+            out.append(int(str(v).strip()))
+        except ValueError:
+            print(f"  note: highlight position {v!r} is not a number; ignored")
+    return sorted(set(out))
+
+
 def read_esm(path) -> pd.DataFrame | None:
     """Per-variant ESM-1v scores, from this project's own csv or an ensemble table.
 
@@ -240,6 +267,19 @@ def ranking_figure(cfg, sites: pd.DataFrame, func: pd.DataFrame, figdir):
     ax.set_yticks(y)
     ax.set_yticklabels([f"{i:>3}. {w}{int(p_)}" for i, w, p_ in zip(r["rank"], r.wt, r.pos)],
                        fontsize=6, family="monospace")
+    # a highlighted residue that the statistics also called functional is worth finding
+    # in the ranking at a glance; one that was not called never appears here at all,
+    # which the terminal says rather than the figure implying it does not exist
+    hl = set(highlight_positions(cfg))
+    if hl:
+        for tick, p_ in zip(ax.get_yticklabels(), r.pos):
+            if int(p_) in hl:
+                tick.set_fontweight("bold")
+                tick.set_color(HIGHLIGHT_COLOR)
+        for yy, p_, z in zip(y, r.pos, r.median_z):
+            if int(p_) in hl:
+                ax.barh([yy], [z], height=0.68, color="none",
+                        edgecolor=HIGHLIGHT_COLOR, lw=1.1, zorder=4)
     ax.set_xlabel(f"Site median z (ESM-1v − expected);  dashed = {Z_SITE} threshold")
     ax.set_title(f"(a) {len(r)} functional sites, most constrained first", loc="left",
                  fontsize=9)
@@ -326,6 +366,16 @@ def run(df, cfg, outdir):
         boots.append(loess_fit(dx[pick], dy[pick])(grid))
     boots = np.array(boots)
 
+    hl = highlight_positions(cfg)
+    sites["highlighted"] = sites.pos.isin(hl)
+    hls = sites[sites.highlighted]
+    if hl:
+        missing = [p for p in hl if p not in set(sites.pos)]
+        print(f"    highlighting {len(hls)} of {len(hl)} requested positions"
+              + (f"; no site-level estimate for {missing} "
+                 f"(fewer than {MIN_VARIANTS} scored variants)" if missing else ""),
+              flush=True)
+
     lines = functional_list(func)
     list_h = 0.085 + 0.034 * len(lines)         # fraction of the base figure height for the list
     fig = plt.figure(figsize=(10.5, 7.2 + list_h * 7.2))
@@ -339,6 +389,10 @@ def run(df, cfg, outdir):
                     color=P.FIT_RED, alpha=0.18, lw=0, zorder=2)
     ax.scatter(fv.score_z, fv.esm1v, s=5, color=FUNC_COLOR, lw=0, alpha=0.8, zorder=4,
                label=f"functional sites (n = {len(fv):,})")
+    if hl:
+        hv = d[d.pos.isin(hl)]
+        ax.scatter(hv.score_z, hv.esm1v, s=22, facecolor="none", edgecolor=HIGHLIGHT_COLOR,
+                   lw=0.8, zorder=6, label=f"highlighted ({len(hv):,} variants)")
     ax.set_xlabel("Abundance (DMS normalised fitness)")
     ax.set_ylabel("ESM-1v score (masked marginal)")
     ax.legend(loc="lower right", fontsize=6.5)
@@ -352,6 +406,13 @@ def run(df, cfg, outdir):
     for r in fs.nsmallest(12, "q").itertuples():
         ax.annotate(f"{r.wt}{r.pos}", (r.median_abundance, r.median_esm1v), fontsize=6, xytext=(3, 2),
                     textcoords="offset points", color=FUNC_COLOR)
+    if len(hls):
+        ax.scatter(hls.median_abundance, hls.median_esm1v, s=90, facecolor="none",
+                   edgecolor=HIGHLIGHT_COLOR, lw=1.5, zorder=6,
+                   label=f"highlighted (n={len(hls)})")
+        P.label_points(ax, hls.median_abundance.to_numpy(), hls.median_esm1v.to_numpy(),
+                       [f"{r.wt}{r.pos}" for r in hls.itertuples()],
+                       fontsize=7, colors=[HIGHLIGHT_COLOR] * len(hls))
     ax.axvline(TOLERANT, color=P.MUTED, lw=0.5, ls=(0, (2, 2)))
     ax.set_xlabel("Site median abundance")
     ax.set_ylabel("Site median ESM-1v")
@@ -368,12 +429,21 @@ def run(df, cfg, outdir):
                 color=FUNC_COLOR)
     lo = min(sites.median_z.min(), Z_SITE) if len(sites) else Z_SITE
     ax.set_ylim(lo - 1.2, max(1.0, sites.median_z.max() + 0.2) if len(sites) else 1.0)
+    # after set_ylim, so the markers sit at the top of the panel as drawn
+    for r in hls.itertuples():
+        ax.axvline(r.pos, color=HIGHLIGHT_COLOR, lw=0.7, alpha=0.55, zorder=1)
+        ax.annotate(f"{r.wt}{r.pos}", (r.pos, 1.0), xycoords=("data", "axes fraction"),
+                    xytext=(0, 2), textcoords="offset points", rotation=90,
+                    ha="center", va="bottom", fontsize=6, fontweight="bold",
+                    color=HIGHLIGHT_COLOR, annotation_clip=False)
+    P.no_square(ax)                 # a 600-residue track does not belong in a square
     ax.set_xlabel("Position")
     ax.set_ylabel("Site median z")
     ax.set_title(f"(c) Residual along the sequence: red = functional (q < {Q_SITE}, median z ≤ {Z_SITE}); grey = TM",
                  loc="left")
     axl = fig.add_subplot(gs[2, :])
     axl.axis("off")
+    P.no_square(axl)
     n_tol = int(func.abundance_tolerant.sum()) if len(func) else 0
     axl.text(0, 1.0, f"(d) All {len(func)} functional residues (q < {Q_SITE}, median z ≤ {Z_SITE}), "
                      f"in sequence order; * = abundance-tolerant (median ≥ {TOLERANT}), n = {n_tol}",
@@ -386,6 +456,12 @@ def run(df, cfg, outdir):
     P.title(fig, cfg, "A15 abundance vs ESM-1v: functional sites")
     figs = P.save(fig, figdir, "a15_esm_functional", cfg, "A15")
 
+    if hl:
+        called = sorted(set(func.pos) & set(hl)) if len(func) else []
+        print(f"    of the highlighted positions, {len(called)} were called functional"
+              + (f": {called}" if called else
+                 " - they appear on the A15 panels but not in the A15b ranking, which "
+                 "only ranks sites the statistics called"), flush=True)
     figs = figs + ranking_figure(cfg, sites, func, figdir)
 
     t1, t2 = tabdir / "a15_variants.csv", tabdir / "a15_sites.csv"

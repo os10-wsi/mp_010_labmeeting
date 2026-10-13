@@ -282,7 +282,10 @@ def _frame(fig) -> None:
 
     Square is skipped for an axes that already has a fixed data aspect - a heatmap of
     20 x 12 cells, a structure projection in angstroms - because forcing those to a
-    square box would stretch the data rather than the panel.
+    square box would stretch the data rather than the panel. It is also skipped for an
+    axes with its frame switched off (a text panel) and for one marked by `no_square`,
+    which is how a figure declares a full-width track along a sequence: squaring that
+    would leave a protein's 600 residues in a box as tall as it is wide.
     """
     box, square = os.environ.get("MPDMS_BOX"), os.environ.get("MPDMS_SQUARE")
     if not (box or square):
@@ -301,8 +304,17 @@ def _frame(fig) -> None:
                 fixed = ax.get_aspect() != "auto"
             except Exception:
                 fixed = True
-            if not fixed and ax.name == "rectilinear":
+            if (not fixed and ax.name == "rectilinear" and ax.axison
+                    and not getattr(ax, "_mpdms_no_square", False)):
                 ax.set_box_aspect(1)
+
+
+def no_square(*axes) -> None:
+    """Exempt these axes from MPDMS_SQUARE. For a track that is wide because the data
+    is wide - a residue index, a genome coordinate - where a square box is a worse
+    picture rather than a tidier one."""
+    for ax in axes:
+        ax._mpdms_no_square = True
 
 
 def save(fig, outdir: Path, name: str, cfg=None, analysis: str = "") -> list[Path]:

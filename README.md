@@ -374,6 +374,25 @@ every pathogenic*. The gap between the two reference ranges gets its own answer 
 than being rounded toward pathogenic. These are hypotheses about positions, not calls on
 variants, and the terminal says so.
 
+### Calling out particular residues on A15
+
+```bash
+MPDMS_HIGHLIGHT=335,336,370,473 MPDMS_BOX=1 MPDMS_SQUARE=1 \
+  python -m mpdms run configs/HXT1.yaml --only a15 --style paper
+```
+
+or, to keep it with the protein, `plotting.highlight_positions: [335, 336, 370, 473]`
+in the config; the environment variable overrides it for one run.
+
+Highlighted residues are ringed and named in black on all three A15 panels — the
+variants in (a), the site in (b), a line and a label along the sequence in (c) — and
+bold in the A15b ranking where the statistics also called them functional. Black,
+because red is reserved for what the analysis found on its own: the point of marking a
+residue you already care about is to see where it falls among those, **including when
+it is not one of them**. The terminal says how many of the highlighted positions were
+called functional, and names any that have no site-level estimate at all because they
+carry too few scored variants.
+
 ### Boxed, square figures for slides
 
 ```bash
@@ -381,7 +400,10 @@ MPDMS_BOX=1 MPDMS_SQUARE=1 python -m mpdms clinvar ...
 ```
 
 `MPDMS_BOX=1` closes the frame — all four spines, drawn heavier (`MPDMS_BOX_WIDTH`
-changes the weight, default 1.4). `MPDMS_SQUARE=1` makes each panel square. Both are
+changes the weight, default 1.4). `MPDMS_SQUARE=1` makes each panel square, skipping panels with a fixed data aspect, a
+frame switched off, or an explicit exemption — a full-width track along a sequence is
+exempt, since squaring 600 residues into a box as tall as it is wide is a worse picture
+rather than a tidier one. Both are
 presentation choices rather than analysis ones, so they are applied at save time, at the
 one place every figure passes through: any command picks them up on a rerun and no
 analysis module knows about them. Square is skipped for a panel with a fixed data aspect
