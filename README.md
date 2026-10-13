@@ -800,6 +800,8 @@ possible, and H06 is the analysis that needs both.
 | H08 | does identity predict agreement? | ρ refitted inside identical / similar / dissimilar columns |
 | H09 | substitution profiles | the 19-vector correlated at each column, against a mismatched-position null |
 | H10 | transfer | RMSE and AUROC for the worst tenth, both directions |
+| H11 | the two proteins as pretend replicates | the same substitution to the same conserved residue, in both, against the attenuation ceiling |
+| H12 | what the context actually is | the disagreement at those columns regressed on how different the surroundings are |
 
 **Everything is quoted against a split-half ceiling.** Two position means measured with
 noise cannot correlate at 1 even if the biology is identical, so each protein's
@@ -836,6 +838,31 @@ helix centroids are projected into the plane across it. Each disc is filled by i
 helix's mean effect and outlined by which bundle it belongs to; the line joining a pair
 is as wide as the pair agrees. PyMOL and ChimeraX scripts go to
 `structures/<protein>/h05_bundles.*`.
+
+**H11 treats the two proteins as replicates of one experiment, and measures where
+that breaks.** At an alignment column where both carry the *same* wild-type residue,
+HXT1 L→A and HXT3 L→A are the same chemical change to the same residue; a replicate
+would reproduce it. What they do not share is everything around the residue, so the gap
+between how well a protein agrees with *itself* and how well it agrees with its
+homologue at these columns is a measurement of context with the chemistry held fixed
+rather than merely controlled for. Four bars, left to right: the attenuation ceiling
+(one minus the mean squared standard error over the observed variance — the variant-level
+counterpart of H01's split-half), the identical-wild-type columns, the
+different-wild-type columns, and a null that keeps the mutant residue but pairs it with
+the wrong column. A third panel breaks the agreement down **by wild-type residue**:
+which residues carry their behaviour with them wherever they sit, and which do not.
+
+The assay's own wild type has to match the alignment's at every matched row, or the
+numbering is off by something and every "identical" column is quietly a different
+residue. Rows that disagree are dropped and counted, and the count is printed.
+
+**H12 asks what the context is.** With the chemistry held fixed, the remaining
+disagreement is regressed on how different the two positions' surroundings are — |Δ RSA|,
+|Δ depth|, |Δ contacts| — and on how much of the immediate neighbourhood is itself
+conserved (the fraction of residues within 8 Å whose own alignment column is identical).
+A flat result says the disagreement is noise; a slope says the context is doing
+something specific, and the third panel puts the worst-disagreeing columns in the
+membrane frame so you can see where.
 
 **H06 is the one worth the trouble.** Every position has up to three partners — its
 symmetry mate in the same protein, its orthologue in the other, and that orthologue's

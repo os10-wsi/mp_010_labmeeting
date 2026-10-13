@@ -402,3 +402,183 @@ def test_h10_transfer_beats_predicting_the_mean(tmp_path):
     assert len(both) == 2                      # both directions are reported
     assert (both.rmse < both.sd_of_target).all()
     assert (both.auroc_worst_tenth > 0.7).all()
+
+
+# ------------------------------- identical residues treated as pretend replicates
+def test_attenuation_reliability_recovers_a_planted_signal_to_noise():
+    rng = np.random.default_rng(31)
+    true = rng.normal(0, 1.0, 4000)
+    sd = 0.5
+    obs = true + rng.normal(0, sd, 4000)
+    got = H.attenuation_reliability(obs, np.full(4000, sd))
+    assert got == pytest.approx(1.0 / (1.0 + sd ** 2), abs=0.03)
+    # a measurement with no error is perfectly reliable, and the result is bounded
+    assert H.attenuation_reliability(obs, np.zeros(4000)) == pytest.approx(1.0)
+    assert 0.0 <= H.attenuation_reliability(obs, np.full(4000, 10.0)) <= 1.0
+    assert np.isnan(H.attenuation_reliability([1.0, 2.0], [0.1, 0.1]))
+
+
+def _replicate_pair(n_col=40, n_mut=12, context=0.0, identical_frac=0.5, seed=33):
+    """Two proteins measuring the same substitutions, with a controllable context term.
+
+    `context` is the standard deviation of a per-(column, mutant) offset applied to the
+    second protein only: at zero the two are replicates, and as it grows they diverge
+    for reasons that have nothing to do with the chemistry of the substitution.
+    """
+    rng = np.random.default_rng(seed)
+    aas = list("AILVFSTNQDEKRGPWYHMC")
+    cols, va, vb = [], [], []
+    for c in range(n_col):
+        wt_a = aas[rng.integers(0, 20)]
+        same = rng.random() < identical_frac
+        wt_b = wt_a if same else aas[rng.integers(0, 20)]
+        pa, pb = c + 1, c + 101
+        cols.append({"A_pos": pa, "B_pos": pb, "A_aa": wt_a, "B_aa": wt_b,
+                     "identical": wt_a == wt_b, "both_residues": True,
+                     "both_tm": True, "both_loop": False,
+                     "A_helix": "TM1", "B_helix": "TM1"})
+        base_pos = rng.normal(-0.4, 0.35)
+        for mut in rng.choice([x for x in aas if x != wt_a], n_mut, replace=False):
+            shared = base_pos + rng.normal(0, 0.4)
+            va.append({"pos": pa, "wt": wt_a, "mut": mut,
+                       "score_z": shared + rng.normal(0, 0.06), "se": 0.06})
+            vb.append({"pos": pb, "wt": wt_b, "mut": mut,
+                       "score_z": shared + rng.normal(0, 0.06)
+                                  + rng.normal(0, context), "se": 0.06})
+    t = pd.DataFrame(cols)
+    bits = {"A": {"variants": pd.DataFrame(va)}, "B": {"variants": pd.DataFrame(vb)}}
+    return t, bits
+
+
+def test_matched_substitutions_pairs_the_same_change_in_both_proteins():
+    t, bits = _replicate_pair()
+    m = H.matched_substitutions(t, "A", "B", bits)
+    assert len(m) > 200
+    # every row is the same mutant residue in both, and never a mutation to the wild type
+    assert (m.mut != m.wt_a).all()
+    assert m.identical.any() and (~m.identical).any()
+    # at an identical column the two wild types agree, which is the whole premise
+    assert (m.loc[m.identical, "wt_a"] == m.loc[m.identical, "wt_b"]).all()
+    assert (m.loc[~m.identical, "wt_a"] != m.loc[~m.identical, "wt_b"]).all()
+
+
+def test_a_numbering_slip_is_caught_rather_than_silently_compared():
+    """If the assay's wild type disagrees with the alignment's, the column is not a
+    comparison of anything and must be dropped, not quietly used."""
+    t, bits = _replicate_pair()
+    bad = bits["A"]["variants"].copy()
+    bad.loc[bad.pos == 1, "wt"] = "W" if bad.loc[bad.pos == 1, "wt"].iloc[0] != "W" \
+        else "Y"
+    m = H.matched_substitutions(t, "A", "B", {"A": {"variants": bad},
+                                              "B": bits["B"]})
+    assert 1 not in set(m.A_pos)
+    assert m.attrs["n_wt_mismatch"] > 0
+
+
+def test_h11_reaches_the_ceiling_when_there_is_no_context_to_find(tmp_path):
+    t, bits = _replicate_pair(context=0.0)
+    out = H.h11_pretend_replicates(t, "A", "B", bits, tmp_path)
+    assert out["status"] == "ok"
+    d = pd.DataFrame(out["subsets"]).set_index("subset")
+    r = d.loc["identical wild type"]
+    # the two really are replicates here, so the agreement should sit near the ceiling
+    assert r.fraction_of_ceiling > 0.85
+    assert r.spearman > 0.9
+    assert (tmp_path / "h11_matched_substitutions.csv").exists()
+
+
+def test_h11_falls_short_of_the_ceiling_when_context_is_added(tmp_path):
+    """The gap between a protein with itself and a protein with its homologue is the
+    measurement the figure exists to make."""
+    t0, b0 = _replicate_pair(context=0.0, seed=34)
+    t1, b1 = _replicate_pair(context=0.8, seed=34)
+    a0 = pd.DataFrame(H.h11_pretend_replicates(t0, "A", "B", b0, tmp_path)["subsets"])
+    a1 = pd.DataFrame(H.h11_pretend_replicates(t1, "A", "B", b1, tmp_path)["subsets"])
+    g0 = a0.set_index("subset").loc["identical wild type"]
+    g1 = a1.set_index("subset").loc["identical wild type"]
+    assert g1.spearman < g0.spearman - 0.2
+    # the ceiling is a property of the measurement error, so it barely moves
+    assert abs(g1.ceiling - g0.ceiling) < 0.25
+    assert g1.fraction_of_ceiling < 0.8
+
+
+def test_the_null_destroys_the_column_but_keeps_the_chemistry(tmp_path):
+    t, bits = _replicate_pair(context=0.0)
+    out = H.h11_pretend_replicates(t, "A", "B", bits, tmp_path)
+    d = pd.DataFrame(out["subsets"])
+    assert abs(d.null_median.iloc[0]) < 0.25      # nothing left once the column is gone
+    assert d.p_vs_null.iloc[0] < 0.01
+
+
+def test_neighbour_conservation_counts_only_the_conserved_neighbours():
+    rt = pd.DataFrame([{"pos": p, "x": float(p), "y": 0.0, "z": 0.0}
+                       for p in range(1, 13)])
+    t = pd.DataFrame([{"A_pos": p, "both_residues": True,
+                       # positions 1-6 conserved, 7-12 not
+                       "identical": p <= 6} for p in range(1, 13)])
+    got = H.neighbour_conservation({"A": {"rt": rt}}, t, "A", "B", cutoff=8.0)
+    # position 1's neighbours within 8 A and more than 2 apart in sequence are
+    # 4,5,6,7,8,9 - three of the six are conserved
+    assert got.loc[1] == pytest.approx(0.5)
+    # position 12's are 4..9 as well, by symmetry
+    assert got.loc[12] == pytest.approx(0.5)
+    # position 6 reaches every other residue, and 4,5,6,7,8 are excluded as
+    # sequence-local, leaving 1,2,3,9,10,11,12 - so three conserved out of SEVEN
+    assert got.loc[6] == pytest.approx(3 / 7)
+    # and the gradient runs the right way: the conserved end scores lowest, because a
+    # residue in the conserved block has the unconserved block as its far neighbours
+    assert got.loc[9] > got.loc[4]
+
+
+def _context_pair(n_col=60, n_mut=14, beta=0.0, seed=37):
+    """Two proteins whose disagreement is planted as a function of how differently
+    buried the position is in each."""
+    rng = np.random.default_rng(seed)
+    aas = list("AILVFSTNQDEKRGPWYHMC")
+    cols, va, vb, pa_rows, pb_rows, rt_rows = [], [], [], [], [], []
+    for c in range(n_col):
+        wt = aas[rng.integers(0, 20)]
+        pa, pb = c + 1, c + 101
+        rsa_a, rsa_b = rng.random() * 0.6, rng.random() * 0.6
+        drsa = abs(rsa_a - rsa_b)
+        cols.append({"A_pos": pa, "B_pos": pb, "A_aa": wt, "B_aa": wt,
+                     "identical": True, "both_residues": True, "both_tm": True,
+                     "both_loop": False, "A_helix": "TM1", "B_helix": "TM1"})
+        pa_rows.append({"pos": pa, "rsa": rsa_a, "abs_z": rng.random() * 18,
+                        "contacts": rng.integers(2, 24), "radial": rng.random() * 14})
+        pb_rows.append({"pos": pb, "rsa": rsa_b, "abs_z": rng.random() * 18,
+                        "contacts": rng.integers(2, 24), "radial": rng.random() * 14})
+        rt_rows.append({"pos": pa, "x": float(c) * 4, "y": 0.0, "z": 0.0})
+        base = rng.normal(-0.4, 0.35)
+        for mut in rng.choice([x for x in aas if x != wt], n_mut, replace=False):
+            shared = base + rng.normal(0, 0.4)
+            va.append({"pos": pa, "wt": wt, "mut": mut,
+                       "score_z": shared + rng.normal(0, 0.05), "se": 0.05})
+            vb.append({"pos": pb, "wt": wt, "mut": mut,
+                       "score_z": shared + rng.normal(0, 0.05)
+                                  + rng.normal(0, 0.03 + beta * drsa), "se": 0.05})
+    bits = {"A": {"variants": pd.DataFrame(va), "pos": pd.DataFrame(pa_rows),
+                  "rt": pd.DataFrame(rt_rows)},
+            "B": {"variants": pd.DataFrame(vb), "pos": pd.DataFrame(pb_rows),
+                  "rt": pd.DataFrame(rt_rows)}}
+    return pd.DataFrame(cols), bits
+
+
+def test_h12_finds_a_planted_context_effect(tmp_path):
+    """Disagreement made to depend on how differently buried the position is."""
+    t, bits = _context_pair(beta=2.0)
+    out = H.h12_context(t, "A", "B", bits, tmp_path)
+    assert out["status"] == "ok"
+    d = pd.DataFrame(out["model"]).set_index("feature")
+    assert d.loc["|Δ RSA|", "coef"] > 0
+    assert d.loc["|Δ RSA|", "p"] < 0.05
+    assert (tmp_path / "h12_disagreeing_columns.csv").exists()
+
+
+def test_h12_finds_nothing_when_the_context_does_not_matter(tmp_path):
+    t, bits = _context_pair(beta=0.0)
+    out = H.h12_context(t, "A", "B", bits, tmp_path)
+    d = pd.DataFrame(out["model"]).set_index("feature")
+    assert d.loc["|Δ RSA|", "p"] > 0.05
+    # the other covariates were never in the generating process either
+    assert (d.p > 0.05).all()

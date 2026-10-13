@@ -43,7 +43,7 @@ from . import plotting as P
 from .analyses.base import missense
 from .annot import AA20
 from .architecture import kabsch, protein_bits
-from .burial import empty_panel, short_name
+from .burial import binned, cluster_ols, empty_panel, short_name, zscore
 from .config import REPO_ROOT, load_config, protein_sequence
 from .environs import effect_color, grid, panel
 from .family import (align_sequences, aligned_table, protein_table,
@@ -180,7 +180,8 @@ def bits_for(cfg) -> dict:
         return {}
     df = load_dataset(cfg)
     b["ptable"] = protein_table(df, cfg)
-    v = missense(df).dropna(subset=["score_z"])[["pos", "wt", "mut", "score_z"]]
+    keep = ["pos", "wt", "mut", "score_z"] + (["se"] if "se" in df.columns else [])
+    v = missense(df).dropna(subset=["score_z"])[keep]
     b["variants"] = v
     b["reliability"] = split_half_reliability(v)
     b["mate"] = {}
@@ -1065,6 +1066,345 @@ def h10_transfer(t: pd.DataFrame, a: str, b: str, bits: dict, outdir: Path) -> d
     return {"status": "ok", "headline": head, "rows": per.to_dict("records")}
 
 
+# ------------------------------------ h11 identical residues as pretend replicates
+def attenuation_reliability(score, se) -> float:
+    """What fraction of the spread in a set of measurements is real.
+
+    With a standard error attached to every variant the reliability needs no splitting:
+    the observed variance is the true variance plus the measurement variance, so the
+    reliability is one minus the mean squared error over the observed variance. This is
+    the variant-level counterpart of the split-half ceiling h01 uses on position means.
+    """
+    y = np.asarray(score, float)
+    e = np.asarray(se, float)
+    ok = np.isfinite(y) & np.isfinite(e)
+    if ok.sum() < 20:
+        return np.nan
+    v = float(np.var(y[ok]))
+    if v <= 0:
+        return np.nan
+    return float(np.clip(1.0 - np.mean(e[ok] ** 2) / v, 0.0, 1.0))
+
+
+def matched_substitutions(t: pd.DataFrame, a: str, b: str, bits: dict) -> pd.DataFrame:
+    """The same substitution, at the same aligned column, in both proteins.
+
+    One row per (column, mutant residue) where both proteins measured that exact change.
+    At a column where the wild-type residue is identical this is as close to a replicate
+    as two proteins can get: the same residue becoming the same other residue, differing
+    only in which protein it sits in. Anything the two disagree about there is context,
+    because nothing else is left to vary.
+    """
+    cols = t[t.both_residues].dropna(subset=[f"{a}_pos", f"{b}_pos"]).copy()
+    cols["column"] = cols.index
+    key = cols[["column", f"{a}_pos", f"{b}_pos", f"{a}_aa", f"{b}_aa", "identical",
+                "both_tm"]].copy()
+    key[f"{a}_pos"] = key[f"{a}_pos"].astype(int)
+    key[f"{b}_pos"] = key[f"{b}_pos"].astype(int)
+    va = bits[a]["variants"].rename(columns={"pos": f"{a}_pos", "score_z": "score_a",
+                                             "se": "se_a", "wt": "wt_a"})
+    vb = bits[b]["variants"].rename(columns={"pos": f"{b}_pos", "score_z": "score_b",
+                                             "se": "se_b", "wt": "wt_b"})
+    m = key.merge(va, on=f"{a}_pos", how="inner").merge(vb, on=[f"{b}_pos", "mut"],
+                                                        how="inner")
+    # the assay's own wild type has to agree with the one the alignment used, or the
+    # numbering is off by something and every "identical" column is a different residue
+    bad = int((m.wt_a != m[f"{a}_aa"]).sum() + (m.wt_b != m[f"{b}_aa"]).sum())
+    m = m[(m.wt_a == m[f"{a}_aa"]) & (m.wt_b == m[f"{b}_aa"])]
+    m = m[m.mut != m.wt_a]
+    m.attrs["n_wt_mismatch"] = bad
+    return m
+
+
+def h11_pretend_replicates(t: pd.DataFrame, a: str, b: str, bits: dict,
+                           outdir: Path) -> dict:
+    """Treat the two proteins as replicates of one experiment, and see where it breaks.
+
+    At a column where both carry the same wild-type residue, HXT1 L→A and HXT3 L→A are
+    the same chemical change to the same residue; a replicate would reproduce it. What
+    they do not share is everything around the residue. So the gap between how well a
+    protein agrees with itself and how well it agrees with its homologue at these
+    columns is a measurement of context, with the chemistry held fixed rather than
+    controlled for.
+    """
+    m = matched_substitutions(t, a, b, bits)
+    if len(m) < 40:
+        return {"status": "skipped",
+                "reason": f"only {len(m)} substitutions matched in both proteins"}
+    same = m[m.identical]
+    diff = m[~m.identical]
+    if len(same) < 25:
+        return {"status": "skipped",
+                "reason": f"only {len(same)} matched substitutions at identical columns"}
+    rel_a = attenuation_reliability(m.score_a, m.get("se_a"))
+    rel_b = attenuation_reliability(m.score_b, m.get("se_b"))
+    cap = ceiling(rel_a, rel_b)
+    rng = np.random.default_rng(41)
+
+    rows = []
+    for lab, d in (("identical wild type", same), ("different wild type", diff)):
+        if len(d) < 25:
+            continue
+        rho, lo, hi = bootstrap_rho(d.score_a, d.score_b)
+        rows.append({"subset": lab, "n": int(len(d)),
+                     "n_columns": int(d.column.nunique()), "spearman": rho,
+                     "lo": lo, "hi": hi, "pearson": float(ss.pearsonr(d.score_a,
+                                                                      d.score_b)[0]),
+                     "rmse": float(np.sqrt(np.mean((d.score_a - d.score_b) ** 2))),
+                     "ceiling": cap,
+                     "fraction_of_ceiling": rho / cap if cap else np.nan})
+    # a null that keeps the chemistry and destroys the position: the same mutant
+    # residue, but paired with a different column
+    nulls = []
+    for _ in range(200):
+        sh = same.copy()
+        sh["score_b"] = sh.groupby("mut").score_b.transform(
+            lambda x: rng.permutation(x.to_numpy()))
+        r = ss.spearmanr(sh.score_a, sh.score_b)[0]
+        if np.isfinite(r):
+            nulls.append(r)
+    null_med = float(np.median(nulls)) if nulls else np.nan
+    p_null = ((np.sum(np.array(nulls) >= rows[0]["spearman"]) + 1) / (len(nulls) + 1)
+              if nulls else np.nan)
+
+    fig, axes = plt.subplots(1, 3, figsize=(10.4, 3.3), layout="constrained",
+                             width_ratios=[1.1, 1, 1.2])
+    ax = axes[0]
+    lim = [min(m.score_a.min(), m.score_b.min()) - 0.05,
+           max(m.score_a.max(), m.score_b.max()) + 0.05]
+    ax.plot(lim, lim, ls=(0, (5, 4)), color=P.INK, lw=0.9, zorder=1)
+    ax.scatter(diff.score_a, diff.score_b, s=7, color="#D9D9D9", lw=0, zorder=2,
+               label=f"different wild type (n = {len(diff)})")
+    ax.scatter(same.score_a, same.score_b, s=13,
+               c=[effect_color((x + y) / 2) for x, y in zip(same.score_a, same.score_b)],
+               edgecolor=P.INK, linewidth=0.25, zorder=3,
+               label=f"identical wild type (n = {len(same)})")
+    ax.set_xlim(lim); ax.set_ylim(lim); ax.set_aspect("equal")
+    ax.set_xlabel(f"{short_name(a)}: effect of that substitution", fontsize=7.5)
+    ax.set_ylabel(f"{short_name(b)}: the same substitution", fontsize=7.5)
+    ax.legend(frameon=False, fontsize=5.5, loc="upper left")
+    panel(ax, 0, "the same change in both proteins",
+          f"ρ = {rows[0]['spearman']:+.2f}", size=8)
+
+    ax = axes[1]
+    bars = [("a protein with itself\n(attenuation ceiling)", cap, P.INK)]
+    for r in rows:
+        bars.append((r["subset"].replace(" wild", "\nwild"), r["spearman"],
+                     P.DARK_RED if r["subset"].startswith("identical") else "#2166AC"))
+    bars.append(("same mutant,\nwrong column", null_med, P.MUTED))
+    x = np.arange(len(bars))
+    ax.bar(x, [v for _, v, _ in bars], color=[c for _, _, c in bars], edgecolor=P.INK,
+           linewidth=0.6)
+    for k, (_, v, _) in enumerate(bars):
+        if np.isfinite(v):
+            ax.text(k, v + 0.015, f"{v:.2f}", ha="center", fontsize=7)
+    ax.set_xticks(x); ax.set_xticklabels([lab for lab, _, _ in bars], fontsize=5.8)
+    ax.axhline(0, color=P.MUTED, lw=0.7)
+    ax.set_ylabel("ρ between the two measurements", fontsize=7.5)
+    gap = cap - rows[0]["spearman"] if np.isfinite(cap) else np.nan
+    panel(ax, 1, "how far short of a replicate",
+          f"gap = {gap:.2f}" if np.isfinite(gap) else "", size=8)
+
+    ax = axes[2]
+    per_aa = []
+    for aa, d in same.groupby("wt_a"):
+        if len(d) < 20 or d.column.nunique() < 3:
+            continue
+        rho, lo, hi = bootstrap_rho(d.score_a, d.score_b, n=400)
+        per_aa.append({"wt": aa, "n": int(len(d)),
+                       "n_columns": int(d.column.nunique()), "spearman": rho,
+                       "lo": lo, "hi": hi,
+                       "mean_effect": float(np.mean(np.r_[d.score_a, d.score_b]))})
+    if per_aa:
+        pa = pd.DataFrame(per_aa).sort_values("spearman")
+        y = np.arange(len(pa))
+        ax.barh(y, pa.spearman,
+                xerr=[pa.spearman - pa.lo.fillna(pa.spearman),
+                      pa.hi.fillna(pa.spearman) - pa.spearman],
+                color=[effect_color(v) for v in pa.mean_effect], edgecolor=P.INK,
+                linewidth=0.5, error_kw=dict(lw=0.6, capsize=1.6))
+        ax.set_yticks(y)
+        ax.set_yticklabels([f"{r.wt} ({r.n_columns})" for r in pa.itertuples()],
+                           fontsize=6)
+        if np.isfinite(cap):
+            ax.axvline(cap, color=P.INK, lw=1.1, ls=(0, (3, 2)))
+        ax.axvline(0, color=P.MUTED, lw=0.7)
+        ax.set_xlabel("ρ at columns where this residue is conserved", fontsize=7.5)
+        panel(ax, 2, "by wild-type residue", "(columns in brackets)", size=8)
+    else:
+        empty_panel(ax, 2, "by wild-type residue", "no residue is conserved at enough "
+                                                   "columns")
+    fig.suptitle("At an identical column the two proteins make the same chemical change "
+                 "to the same residue, so the only thing left to differ is what "
+                 "surrounds it.", fontsize=7, x=0.01, ha="left")
+    P.save(fig, outdir, "h11_pretend_replicates", None, "H11")
+    plt.close(fig)
+    out = pd.DataFrame(rows)
+    out["null_median"] = null_med
+    out["p_vs_null"] = p_null
+    out["reliability_a"], out["reliability_b"] = rel_a, rel_b
+    out.to_csv(outdir / "h11_pretend_replicates.csv", index=False)
+    m.to_csv(outdir / "h11_matched_substitutions.csv", index=False)
+    if per_aa:
+        pd.DataFrame(per_aa).to_csv(outdir / "h11_by_wild_type.csv", index=False)
+    if m.attrs.get("n_wt_mismatch"):
+        print(f"      note: {m.attrs['n_wt_mismatch']} rows dropped where the assay's "
+              "wild type disagreed with the alignment's", flush=True)
+    return {"status": "ok",
+            "headline": "; ".join(f"{r.subset} ρ {r.spearman:+.2f} (n = {r.n}, "
+                                  f"{100 * r.fraction_of_ceiling:.0f}% of ceiling "
+                                  f"{r.ceiling:.2f})" for r in out.itertuples())
+                        + f"; same-mutant-wrong-column null {null_med:+.2f}",
+            "subsets": out.to_dict("records"), "by_wild_type": per_aa}
+
+
+# ------------------------------------------- h12 what the context actually is
+def neighbour_conservation(bits: dict, t: pd.DataFrame, g: str, other: str,
+                           cutoff: float = 8.0) -> pd.Series:
+    """Fraction of a residue's spatial neighbours that are themselves conserved.
+
+    If "context" means the residues packed around a position, then a position whose
+    surroundings are also identical between the two proteins is in the same context in
+    both, and one whose surroundings have drifted is not. That is the prediction this
+    makes testable.
+    """
+    from scipy.spatial import cKDTree
+    rt = bits[g]["rt"]
+    ident = {}
+    for r in t[t.both_residues].itertuples():
+        p = getattr(r, f"{g}_pos")
+        if np.isfinite(p):
+            ident[int(p)] = bool(r.identical)
+    xyz = rt[["x", "y", "z"]].to_numpy(float)
+    pos = rt.pos.to_numpy(int)
+    out = np.full(len(rt), np.nan)
+    for i, nb in enumerate(cKDTree(xyz).query_ball_point(xyz, cutoff)):
+        vals = [ident[pos[j]] for j in nb
+                if j != i and abs(pos[j] - pos[i]) > 2 and pos[j] in ident]
+        if len(vals) >= 3:
+            out[i] = float(np.mean(vals))
+    return pd.Series(out, index=rt.pos.to_numpy())
+
+
+def h12_context(t: pd.DataFrame, a: str, b: str, bits: dict, outdir: Path) -> dict:
+    """What the two proteins disagree about when the chemistry is held fixed.
+
+    Given the same residue becoming the same other residue, the disagreement between
+    the two proteins is attributable to the position's surroundings and nothing else.
+    This regresses that disagreement on how different the surroundings are - in burial,
+    in depth, in packing - and on how much of the immediate neighbourhood is itself
+    conserved. A flat result would say the disagreement is noise; a slope says the
+    context is doing something specific.
+    """
+    m = matched_substitutions(t, a, b, bits)
+    same = m[m.identical]
+    if len(same) < 40:
+        return {"status": "skipped",
+                "reason": f"only {len(same)} matched substitutions at identical columns"}
+    d = same.copy()
+    d["disagreement"] = (d.score_a - d.score_b).abs()
+    for g in (a, b):
+        cols = [c for c in ("pos", "rsa", "abs_z", "contacts", "radial")
+                if c in bits[g]["pos"].columns]
+        d = d.merge(bits[g]["pos"][cols].add_prefix(f"{g}_"),
+                    left_on=f"{g}_pos", right_on=f"{g}_pos", how="left")
+    nc = neighbour_conservation(bits, t, a, b)
+    d["neighbour_conserved"] = d[f"{a}_pos"].map(nc)
+    feats = {}
+    for name, col in (("|Δ RSA|", "rsa"), ("|Δ depth|", "abs_z"),
+                      ("|Δ contacts|", "contacts")):
+        ca, cb = f"{a}_{col}", f"{b}_{col}"
+        if ca in d and cb in d:
+            d[f"d_{col}"] = (d[ca] - d[cb]).abs()
+            feats[name] = f"d_{col}"
+    feats["neighbourhood\nconserved"] = "neighbour_conserved"
+    use = [c for c in feats.values() if c in d and d[c].notna().sum() > 30]
+    if not use:
+        return {"status": "skipped", "reason": "no structural covariate is available"}
+    fit = d.dropna(subset=["disagreement"] + use).copy()
+    for c in use:
+        fit[c + "_z"] = zscore(fit[c])
+    rows = []
+    mod = None
+    if len(fit) >= 40 and fit[f"{a}_pos"].nunique() >= 6:
+        mod = cluster_ols("disagreement ~ " + " + ".join(c + "_z" for c in use),
+                          fit[["disagreement"] + [c + "_z" for c in use]],
+                          fit[f"{a}_pos"])
+    if mod is not None:
+        for name, col in feats.items():
+            if col not in use:
+                continue
+            k = col + "_z"
+            rows.append({"feature": name.replace("\n", " "),
+                         "coef": float(mod.params[k]),
+                         "se": float(mod.bse[k]), "p": float(mod.pvalues[k])})
+
+    fig, axes = plt.subplots(1, 3, figsize=(10.2, 3.2), layout="constrained")
+    ax = axes[0]
+    if rows:
+        y = np.arange(len(rows))[::-1]
+        for k, r in enumerate(rows):
+            ax.errorbar(r["coef"], y[k], xerr=1.96 * r["se"], fmt="o", ms=6, lw=0,
+                        elinewidth=1.0, capsize=3, color=P.DARK_RED, mec=P.INK, mew=0.5)
+        ax.axvline(0, color=P.MUTED, lw=0.7, ls=(0, (3, 3)))
+        ax.set_yticks(y); ax.set_yticklabels([r["feature"] for r in rows], fontsize=6.5)
+        ax.set_xlabel("effect on |disagreement| (per SD)", fontsize=7.5)
+        panel(ax, 0, "what predicts disagreement",
+              f"R² = {mod.rsquared:.3f}, n = {int(mod.nobs)}", size=8)
+    else:
+        empty_panel(ax, 0, "what predicts disagreement", "too few matched substitutions")
+
+    ax = axes[1]
+    nn = d.dropna(subset=["neighbour_conserved", "disagreement"])
+    if len(nn) > 40:
+        bins = np.array([0.0, 0.2, 0.35, 0.5, 0.7, 1.01])
+        binned(ax, nn.neighbour_conserved, nn.disagreement, bins, P.DARK_RED, "")
+        rho, pv = ss.spearmanr(nn.neighbour_conserved, nn.disagreement)
+        panel(ax, 1, "a conserved neighbourhood", f"ρ = {rho:+.2f} (p = {pv:.2g})",
+              size=8)
+        ax.set_xlabel("fraction of neighbours within 8 Å that are also conserved",
+                      fontsize=7)
+        ax.set_ylabel("|disagreement| between the proteins", fontsize=7.5)
+    else:
+        empty_panel(ax, 1, "a conserved neighbourhood", "too few positions")
+
+    ax = axes[2]
+    # built from the columns that exist rather than with a fallback: a fallback that
+    # quietly substitutes a count for a coordinate draws a map of nothing
+    agg = {"disagreement": ("disagreement", "mean"), "n": ("mut", "size")}
+    have_frame = f"{a}_radial" in d and f"{a}_abs_z" in d
+    if have_frame:
+        agg["radial"] = (f"{a}_radial", "first")
+        agg["zdepth"] = (f"{a}_abs_z", "first")
+    worst = (d.groupby(["column", f"{a}_pos", f"{b}_pos", "wt_a"])
+             .agg(**agg).reset_index().sort_values("disagreement", ascending=False))
+    worst = worst[worst.n >= 4]
+    if len(worst) > 5 and have_frame:
+        ax.scatter(worst.radial, worst.zdepth, s=20,
+                   c=worst.disagreement, cmap=P.sequential_cmap(), edgecolor=P.INK,
+                   linewidth=0.3)
+        top = worst.head(6)       # six labels is what the panel can hold legibly
+        P.label_points(ax, top.radial.to_numpy(), top.zdepth.to_numpy(),
+                       [f"{r.wt_a}{int(getattr(r, f'{a}_pos'))}"
+                        for r in top.itertuples()], fontsize=6)
+        ax.set_xlabel(f"{short_name(a)}: distance from the bundle axis (Å)", fontsize=7)
+        ax.set_ylabel("depth |z| (Å)", fontsize=7.5)
+        panel(ax, 2, "where the disagreement is", size=8)
+    else:
+        empty_panel(ax, 2, "where the disagreement is", "no membrane frame")
+    fig.suptitle("Only columns where both proteins carry the same wild-type residue, so "
+                 "the chemistry of the substitution is identical and the surroundings "
+                 "are the only thing left.", fontsize=7, x=0.01, ha="left")
+    P.save(fig, outdir, "h12_context", None, "H12")
+    plt.close(fig)
+    per = pd.DataFrame(rows)
+    per.to_csv(outdir / "h12_context_model.csv", index=False)
+    worst.to_csv(outdir / "h12_disagreeing_columns.csv", index=False)
+    head = "; ".join(f"{r.feature} {r.coef:+.3f} (p {r.p:.2g})"
+                     for r in per.itertuples()) if len(per) else "no model could be fitted"
+    return {"status": "ok", "headline": head, "model": per.to_dict("records")}
+
+
 ANALYSES = {"h01": "the whole protein, with a null and a ceiling",
             "h02": "per helix: the pattern along the helix",
             "h03": "per helix: the helix means",
@@ -1074,7 +1414,9 @@ ANALYSES = {"h01": "the whole protein, with a null and a ceiling",
             "h07": "where they disagree, and whether in patches",
             "h08": "does residue identity predict agreement?",
             "h09": "substitution profiles, not just means",
-            "h10": "transfer as a prediction task"}
+            "h10": "transfer as a prediction task",
+            "h11": "identical residues as pretend replicates",
+            "h12": "what the context actually is"}
 
 
 def main(argv=None):
@@ -1167,7 +1509,11 @@ def main(argv=None):
             return h08_identity(t, a, b, bits, outdir)
         if k == "h09":
             return h09_profiles(t, a, b, outdir)
-        return h10_transfer(t, a, b, bits, outdir)
+        if k == "h10":
+            return h10_transfer(t, a, b, bits, outdir)
+        if k == "h11":
+            return h11_pretend_replicates(t, a, b, bits, outdir)
+        return h12_context(t, a, b, bits, outdir)
 
     out = {}
     print()
