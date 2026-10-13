@@ -735,66 +735,16 @@ def calibrated_rmse(x, y) -> float:
     return float(np.sqrt(np.mean((y[ok] - pred) ** 2)))
 
 
-def draw_quartet(ax, a: str, b: str, pair: tuple[str, str], colors: dict) -> None:
-    """What a symmetry pair is, and what the three comparisons are, in one picture.
-
-    Four boxes: a position, the structurally equivalent position in the other bundle of
-    the same protein, the aligned position in the other protein, and that one's mate.
-    Going down is the fold's own twofold; going across is the alignment. The three
-    arrows out of the top-left box are the three bars in the last panel, in the same
-    colours, so the diagram and the statistics are the same object twice.
-    """
-    from matplotlib.patches import FancyArrowPatch, FancyBboxPatch
-    ax.set_xlim(0, 10); ax.set_ylim(0, 10); ax.axis("off")
-    ha, hb = pair
-    boxes = {
-        "self": (1.6, 7.0, f"position i\nin {ha}", P.INK),
-        "mate": (1.6, 2.6, f"its mate\nin {hb}", colors["mate"]),
-        "ortholog": (6.6, 7.0, f"aligned position\nin {ha}", colors["ortholog"]),
-        "mate_of_ortholog": (6.6, 2.6, f"its mate\nin {hb}", colors["mate_of_ortholog"]),
-    }
-    w, h = 3.0, 1.5
-    for key, (x, y, label, col) in boxes.items():
-        ax.add_patch(FancyBboxPatch((x - w / 2, y - h / 2), w, h,
-                                    boxstyle="round,pad=0.08,rounding_size=0.18",
-                                    linewidth=1.6 if key == "self" else 1.2,
-                                    edgecolor=col, facecolor="none", zorder=3))
-        ax.text(x, y, label, ha="center", va="center", fontsize=7, zorder=4)
-    ax.text(1.6, 9.3, short_name(a), ha="center", fontsize=8.5, fontweight="bold")
-    ax.text(6.6, 9.3, short_name(b), ha="center", fontsize=8.5, fontweight="bold")
-
-    def arrow(p0, p1, col, rad=0.0):
-        ax.add_patch(FancyArrowPatch(p0, p1, arrowstyle="-|>", mutation_scale=11,
-                                     color=col, lw=1.6, zorder=2,
-                                     connectionstyle=f"arc3,rad={rad}",
-                                     shrinkA=3, shrinkB=3))
-
-    arrow((1.6, 7.0 - h / 2), (1.6, 2.6 + h / 2), colors["mate"])
-    arrow((1.6 + w / 2, 7.0), (6.6 - w / 2, 7.0), colors["ortholog"])
-    arrow((1.6 + w / 2, 7.0 - h / 2), (6.6 - w / 2, 2.6 + h / 2),
-          colors["mate_of_ortholog"], rad=-0.18)
-    ax.text(1.25, 4.8, "pseudo-twofold\n(the fold)", ha="right", va="center",
-            fontsize=6.5, color=colors["mate"], rotation=90, linespacing=1.4)
-    ax.text(4.1, 8.15, "alignment (the lineage)", ha="center", va="bottom",
-            fontsize=6.5, color=colors["ortholog"])
-    ax.text(5.0, 0.95,
-            f"{ha} and {hb} are the same helix built twice. A position is matched to "
-            f"its mate by\nrank along the helix, after superposing the two on each "
-            f"other.", ha="center", va="center", fontsize=6.3, color=P.MUTED,
-            linespacing=1.5)
-
-
 def h06_fold_or_lineage(t: pd.DataFrame, a: str, b: str, bits: dict,
                         outdir: Path) -> dict:
-    """Is a position more like its own symmetry mate, or more like its orthologue?
+    """Two correlations, on the same positions: the symmetry mate, and the paralogue.
 
-    Every measured position has up to three partners: the structurally equivalent
-    position in the other half of the same protein, the aligned position in the other
-    protein, and that position's own mate. All three are scored on exactly the same
-    positions, so the comparison is about what each partner is and not about which set
-    was easier to measure. Two statistics, because they answer different questions: the
-    correlation says whether the partner ranks positions the same way, and the
-    calibrated error says how wrong you would be using it as a prediction.
+    A position in one bundle has a structurally equivalent position in the other, and
+    the same position has an aligned counterpart in the other protein. Correlating the
+    mean effect against each of the two asks whether constraint follows the
+    architecture or the sequence lineage. Both are computed on exactly the same set of
+    positions, so the difference between the panels is what the partner is and not
+    which set was easier to measure.
     """
     orth = {}
     for r in t[t.both_residues].itertuples():
@@ -804,109 +754,73 @@ def h06_fold_or_lineage(t: pd.DataFrame, a: str, b: str, bits: dict,
     ea, eb = bits[a]["effect"], bits[b]["effect"]
     ma, mb = bits[a].get("mate", {}), bits[b].get("mate", {})
     rows = []
-    for p in sorted(ea):
-        q = orth.get(p)
-        m = ma.get(p)
-        mo = mb.get(q) if q is not None else None
-        rows.append({"pos_a": p, "mate_pos": m, "ortholog_pos": q,
-                     "self": ea.get(p), "mate": ea.get(m),
-                     "ortholog": eb.get(q), "mate_of_ortholog": eb.get(mo)})
-    d = pd.DataFrame(rows).dropna(subset=["self", "mate", "ortholog",
-                                          "mate_of_ortholog"])
+    for p_ in sorted(ea):
+        q = orth.get(p_)
+        m = ma.get(p_)
+        rows.append({"pos_a": p_, "mate_pos": m, "ortholog_pos": q,
+                     "self": ea.get(p_), "mate": ea.get(m), "ortholog": eb.get(q),
+                     "mate_of_ortholog": eb.get(mb.get(q)) if q is not None else None})
+    d = pd.DataFrame(rows).dropna(subset=["self", "mate", "ortholog"])
     if len(d) < 20:
         return {"status": "skipped",
-                "reason": "fewer than twenty positions have all three partners"}
+                "reason": "fewer than twenty positions have both a mate and an "
+                          "orthologue"}
     cap_same = ceiling(bits[a]["reliability"], bits[a]["reliability"])
     cap_cross = ceiling(bits[a]["reliability"], bits[b]["reliability"])
-    colors = {"mate": P.DARK_RED, "ortholog": "#2166AC", "mate_of_ortholog": "#6B6B6B"}
-    comps = [("its symmetry mate\nsame protein, other bundle", "mate", cap_same),
-             ("its orthologue\nother protein, same bundle", "ortholog", cap_cross),
-             ("the orthologue's mate\nother protein, other bundle",
-              "mate_of_ortholog", cap_cross)]
+    colors = {"mate": P.DARK_RED, "ortholog": "#2166AC"}
+    comps = [("mate", f"its symmetry mate in {short_name(a)}", cap_same,
+              "the other bundle of the same protein"),
+             ("ortholog", f"the aligned position in {short_name(b)}", cap_cross,
+              "the same position in the paralogue")]
     out = []
-    for lab, col, cap in comps:
+    for col, lab, cap, sub in comps:
         rho, lo, hi = bootstrap_rho(d["self"], d[col])
-        out.append({"comparison": lab.replace("\n", ", "), "column": col,
-                    "n": int(len(d)), "spearman": rho, "lo": lo, "hi": hi,
+        out.append({"column": col, "comparison": lab, "n": int(len(d)),
+                    "spearman": rho, "lo": lo, "hi": hi,
                     "rmse_calibrated": calibrated_rmse(d["self"], d[col]),
                     "ceiling": cap,
                     "fraction_of_ceiling": rho / cap if cap else np.nan})
     per = pd.DataFrame(out).set_index("column")
 
-    # which helix pair to name in the diagram: the one carrying the most positions here
-    sym = bits[a].get("symmetry") or {}
-    pair = ("TM k", "TM k+6")
-    if sym.get("pairs"):
-        hits = []
-        for pr in sym["pairs"]:
-            inside = set(pr["pos_a"]) | set(pr["pos_b"])
-            hits.append((len(set(d.pos_a) & inside), pr["helix_a"], pr["helix_b"]))
-        best = max(hits)
-        if best[0] > 0:
-            pair = (best[1], best[2])
-
-    fig, axes = plt.subplots(2, 2, figsize=(8.2, 7.0), layout="constrained")
-    draw_quartet(axes[0][0], a, b, pair, colors)
-    panel(axes[0][0], 0, "what a symmetry pair is", size=8.5)
-
     lim = [float(min(d["self"].min(), d.mate.min(), d.ortholog.min())) - 0.05,
            float(max(d["self"].max(), d.mate.max(), d.ortholog.max())) + 0.05]
-    for ax, col, title in ((axes[0][1], "mate", "predict from the symmetry mate"),
-                           (axes[1][0], "ortholog", "predict from the orthologue")):
+    fig, axes = plt.subplots(1, 2, figsize=(7.4, 3.9), layout="constrained")
+    for i, (col, lab, cap, sub) in enumerate(comps):
+        ax = axes[i]
         ax.plot(lim, lim, ls=(0, (5, 4)), color=P.INK, lw=0.9, zorder=1)
-        ax.scatter(d["self"], d[col], s=15, color=colors[col], alpha=0.75,
+        ax.scatter(d["self"], d[col], s=17, color=colors[col], alpha=0.8,
                    edgecolor=P.INK, linewidth=0.3, zorder=3)
-        r = per.loc[col]
         xs = np.linspace(lim[0], lim[1], 20)
         ax.plot(xs, np.polyval(np.polyfit(d["self"], d[col], 1), xs),
-                color=colors[col], lw=1.4, zorder=2)
+                color=colors[col], lw=1.5, zorder=4)
+        r = per.loc[col]
+        # the statistic goes inside the axes: the paper style moves panel titles into
+        # the caption file, so a number put there is invisible on the figure itself
+        ax.text(0.04, 0.96,
+                f"$\\rho$ = {r.spearman:+.2f} [{r.lo:+.2f}, {r.hi:+.2f}]\n"
+                f"n = {int(r.n)} positions",
+                transform=ax.transAxes, va="top", ha="left", fontsize=8,
+                linespacing=1.5,
+                bbox=dict(fc="white", ec="none", alpha=0.82, pad=2.5))
         ax.set_xlim(lim); ax.set_ylim(lim); ax.set_aspect("equal")
-        ax.set_xlabel(f"{short_name(a)}: effect at the position", fontsize=7.5)
-        ax.set_ylabel("effect at the partner", fontsize=7.5)
-        panel(ax, 1 if col == "mate" else 2, title,
-              f"rho = {r.spearman:+.2f}, RMSE = {r.rmse_calibrated:.3f}", size=8)
-
-    ax = axes[1][1]
-    x = np.arange(len(out))
-    ax.bar(x, [r["spearman"] for r in out],
-           yerr=[[r["spearman"] - (r["lo"] if np.isfinite(r["lo"]) else r["spearman"])
-                  for r in out],
-                 [(r["hi"] if np.isfinite(r["hi"]) else r["spearman"]) - r["spearman"]
-                  for r in out]],
-           color=[colors[r["column"]] for r in out], edgecolor=P.INK, linewidth=0.6,
-           error_kw=dict(lw=0.9, capsize=3), width=0.62)
-    for k, r in enumerate(out):
-        ax.plot([k - 0.33, k + 0.33], [r["ceiling"]] * 2, color=P.INK, lw=1.3,
-                ls=(0, (3, 2)))
-        # above the error bar, not above the bar: the cap is the taller of the two
-        top = r["hi"] if np.isfinite(r["hi"]) else r["spearman"]
-        ax.text(k, top + 0.03, f"{r['spearman']:+.2f}", ha="center",
-                fontsize=7.5, fontweight="bold")
-        ax.text(k, -0.055, f"RMSE {r['rmse_calibrated']:.3f}", ha="center", fontsize=6.3,
-                color=P.MUTED)
-    ax.set_xticks(x)
-    ax.set_xticklabels([lab for lab, _, _ in comps], fontsize=6.5)
-    ax.axhline(0, color=P.MUTED, lw=0.7)
-    tops = [r["hi"] if np.isfinite(r["hi"]) else r["spearman"] for r in out]
-    tops += [r["ceiling"] for r in out]
-    ax.set_ylim(-0.1, max(0.4, float(np.nanmax(tops)) * 1.16))
-    ax.set_ylabel("rho with the position's own effect", fontsize=7.5)
-    panel(ax, 3, "fold or lineage", f"{len(d)} positions, all three partners", size=8)
-
-    fig.suptitle("Dashed = the ceiling for that comparison. RMSE is after fitting a "
-                 "slope, so it is scatter rather than a difference in assay scale.",
-                 fontsize=7, x=0.01, ha="left")
-    P.save(fig, outdir, "h06_fold_or_lineage", None, "H06")
+        ax.set_xlabel(f"{short_name(a)}: mean effect at the position", fontsize=8)
+        ax.set_ylabel(f"mean effect at {lab.split(' in ')[0]}"
+                      if i == 0 else f"mean effect in {short_name(b)}", fontsize=8)
+        panel(ax, i, lab, sub, size=8)
+    fig.suptitle("The same positions in both panels, so the only difference is which "
+                 "partner the effect is compared with: the fold's own copy on the left, "
+                 "the paralogue on the right.", fontsize=7, x=0.01, ha="left")
+    P.save(fig, outdir, "h06_mate_vs_paralog", None, "H06")
     plt.close(fig)
-    per.reset_index().to_csv(outdir / "h06_fold_or_lineage.csv", index=False)
+    per.reset_index().to_csv(outdir / "h06_mate_vs_paralog.csv", index=False)
     d.to_csv(outdir / "h06_quartets.csv", index=False)
-    win = per.fraction_of_ceiling.idxmax()
+    win = per.spearman.idxmax()
     return {"status": "ok",
             "headline": "; ".join(f"{c} rho {r.spearman:+.2f} "
-                                  f"({100 * r.fraction_of_ceiling:.0f}% of ceiling, "
-                                  f"RMSE {r.rmse_calibrated:.3f})"
+                                  f"[{r.lo:+.2f}, {r.hi:+.2f}] "
+                                  f"({100 * r.fraction_of_ceiling:.0f}% of ceiling)"
                                   for c, r in per.iterrows())
-                        + f" - closest partner: {win}",
+                        + f" - closer partner: {win}",
             "comparisons": per.reset_index().to_dict("records")}
 
 
@@ -1579,7 +1493,7 @@ ANALYSES = {"h01": "the whole protein, with a null and a ceiling",
             "h03": "per helix: the helix means",
             "h04": "the symmetry mates, pair by pair",
             "h05": "the bundle seen down the membrane normal",
-            "h06": "fold or lineage: the mate, or the orthologue?",
+            "h06": "correlation with the symmetry mate, and with the paralogue",
             "h07": "where they disagree, and whether in patches",
             "h08": "does residue identity predict agreement?",
             "h09": "substitution profiles, not just means",

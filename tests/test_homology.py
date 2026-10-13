@@ -262,8 +262,8 @@ def test_h05_draws_the_bundle_and_writes_the_structure_scripts(tmp_path):
     assert (tmp_path / "structures" / "FAKE" / "h05_bundles.cxc").exists()
 
 
-def test_h06_puts_the_mate_and_the_orthologue_on_one_axis(tmp_path):
-    """The quartet: self, symmetry mate, orthologue, and the orthologue's mate."""
+def test_h06_puts_the_mate_and_the_orthologue_side_by_side(tmp_path):
+    """Two correlations on the same positions: the symmetry mate and the paralogue."""
     a_bits = _fake_bits(tmp_path, seed=7)
     b_bits = _fake_bits(tmp_path, seed=8)
     # make protein B's effects a noisy copy of A's at the same positions, so the
@@ -275,11 +275,13 @@ def test_h06_puts_the_mate_and_the_orthologue_on_one_axis(tmp_path):
     out = H.h06_fold_or_lineage(t, "A", "B", {"A": a_bits, "B": b_bits}, tmp_path)
     assert out["status"] == "ok"
     d = pd.DataFrame(out["comparisons"]).set_index("column")
-    assert set(d.index) == {"mate", "ortholog", "mate_of_ortholog"}
+    assert set(d.index) == {"mate", "ortholog"}
     assert d.loc["ortholog", "spearman"] > d.loc["mate", "spearman"]
     assert d.loc["ortholog", "spearman"] > 0.9
-    # and all three are measured on exactly the same positions
+    # both are measured on exactly the same positions, which is what makes the two
+    # panels comparable at all
     assert d.n.nunique() == 1
+    assert (tmp_path / "h06_mate_vs_paralog.csv").exists()
 
 
 # ----------------------------------------- the alignment-based analyses end to end

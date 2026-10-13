@@ -795,7 +795,7 @@ possible, and H06 is the analysis that needs both.
 | H03 | per helix: the *level* | twelve points, helix mean against helix mean, coloured by bundle |
 | H04 | the symmetry mates | per-pair ρ against per-pair Cα RMSD, six pairs per protein |
 | H05 | the bundle, seen | twelve discs where the helices really are, mates joined, width = agreement |
-| H06 | fold or lineage? | a diagram of the quartet, then ρ and prediction error for the mate against the orthologue |
+| H06 | the mate, and the paralogue | two scatters on the same positions: mean effect against its symmetry mate, and against the paralogue |
 | H07 | where they disagree | the residual mapped into both structures, with S08's correlogram |
 | H08 | does identity predict agreement? | ρ refitted inside identical / similar / dissimilar columns |
 | H09 | substitution profiles | the 19-vector correlated at each column, against a mismatched-position null |
@@ -864,21 +864,17 @@ A flat result says the disagreement is noise; a slope says the context is doing
 something specific, and the third panel puts the worst-disagreeing columns in the
 membrane frame so you can see where.
 
-**H06 is the one worth the trouble**, and it opens with a diagram rather than a
-number. Panel (a) draws the quartet: a position, the structurally equivalent position in
-the other bundle of the same protein, the aligned position in the other protein, and
-that one's mate — with the arrows out of the first box in the same three colours as the
-bars in panel (d), so the picture and the statistics are the same object twice. Going
-down is the fold's own twofold, going across is the alignment. Panels (b) and (c) are
-the two predictions side by side, mate and orthologue, on a shared scale.
-
-Two statistics, because they answer different questions. The correlation says whether a
-partner ranks positions the same way; the **calibrated RMSE** says how wrong you would
-be using it as a prediction, after fitting a slope so that a difference in assay scale
-is not counted as disagreement. All three partners are scored on *exactly the same
-positions*, so the comparison is about what each partner is and not about which set was
-easier to measure. If the mate wins, constraint is set by the architecture; if the
-orthologue wins, by the lineage.
+**H06 is two scatters and nothing else.** The left panel correlates each position's
+mean effect with the effect at its structurally equivalent position in the other bundle
+of the same protein; the right panel correlates the same positions with their aligned
+counterpart in the paralogue. Both are computed on exactly the same set of positions,
+so the only difference between the panels is which partner the effect is compared with
+— the fold's own copy, or the other lineage. If the mate wins, constraint follows the
+architecture; if the paralogue wins, it follows the sequence. ρ with its bootstrap
+interval is printed inside each panel rather than in the title, because the paper style
+moves panel titles into the caption file and a number put there never appears on the
+figure. `h06_mate_vs_paralog.csv` also carries the calibrated RMSE and each
+comparison's own ceiling.
 
 **H01 splits the scatter by topology.** Both proteins have sensitive TM cores and
 tolerant loops, so a correlation over all aligned positions is partly guaranteed before
