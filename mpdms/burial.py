@@ -262,6 +262,10 @@ def forest(ax, rows, label_key, value_key, se_key, colors=None, xlabel=""):
 
 # --------------------------------------- b01 hydrophobicity tolerance, three ways
 KD_BINS = np.linspace(-9, 9, 10)
+# b01a draws only the two classes the contrast is between. Every class is still fitted,
+# and b01b and the CSV carry all four: leaving them out of the panel is a decision about
+# what the figure says, not about what was measured.
+B01A_CLASSES = ["lipid", "aqueous"]
 
 
 def b01_three_way(bits: dict, names: list[str], outdir: Path) -> dict:
@@ -281,24 +285,27 @@ def b01_three_way(bits: dict, names: list[str], outdir: Path) -> dict:
             sub = v[(v.bclass == c)].dropna(subset=["score_z", "delta_kd"])
             if len(sub) < MIN_GROUP * 3:
                 continue
-            binned(ax, sub.delta_kd, sub.score_z, KD_BINS, BCOLORS[c], BLABEL[c],
-                   ms=3.2 if c == "cavity" else 3.8)
+            if c in B01A_CLASSES:
+                binned(ax, sub.delta_kd, sub.score_z, KD_BINS, BCOLORS[c], BLABEL[c],
+                       ms=4.2)
             h = hinge_slopes(sub.delta_kd, sub.score_z, sub.pos)
             if h:
                 rows.append({"protein": g, "bclass": c, **h})
         ax.axhline(0, color=P.MUTED, lw=0.6)
         ax.axvline(0, color=P.INK, lw=0.6, ls=(0, (1, 2)))
-        d = [r for r in rows if r["protein"] == g and r["bclass"] == "lipid"]
-        panel(ax, i, g, (f"lipid asymmetry {d[0]['asymmetry']:+.3f}" if d else ""), size=8)
+        d = {r["bclass"]: r for r in rows if r["protein"] == g}
+        panel(ax, i, g, "  ".join(f"{c} asymmetry {d[c]['asymmetry']:+.3f}"
+                                  for c in B01A_CLASSES if c in d), size=8)
         if i // 2 == (len(names) - 1) // 2:
             ax.set_xlabel("Δ hydrophobicity (Kyte-Doolittle, mutant − WT)", fontsize=7.5)
         if i % 2 == 0:
             ax.set_ylabel("Mean effect of the substitution", fontsize=7.5)
         if i == 0:
             ax.legend(frameon=False, fontsize=6, loc="lower right")
-    fig.suptitle("Left of zero = the substitution is more polar than the wild type. A "
-                 "one-sided V means only one direction is punished; a symmetric tent "
-                 "means both are.", fontsize=7, x=0.01, ha="left")
+    fig.suptitle("Left of zero = the substitution is more polar than the wild type. "
+                 "Lipid-facing should fall away to the left and be flat to the right; "
+                 "aqueous positions are in water and should barely care either way.",
+                 fontsize=7, x=0.01, ha="left")
     P.save(fig, outdir, "b01a_hydrophobicity_three_way", None, "B01")
     plt.close(fig)
 
