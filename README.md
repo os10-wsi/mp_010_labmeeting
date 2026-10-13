@@ -683,7 +683,10 @@ analysis exists to test. Both arms are reported as d(effect)/d(ΔKD) on their ow
 zero, so a symmetric tent — bad in either direction — has one positive and one negative
 arm that cancel, and their **sum is the asymmetry**. A straight line through a tent
 reads as zero slope and would have missed it entirely; `tests/test_burial.py` plants one
-and checks that it does.
+and checks that it does. The asymmetry is a linear contrast of two correlated
+estimates, so its interval comes from a `t_test` on `neg + pos_` rather than from adding
+the two arms' standard errors — `asymmetry_se`, `asymmetry_p` and the interval are in
+`b01_three_way_slopes.csv`, and the panel prints the estimate ± its error.
 
 **Standard errors are clustered by position throughout.** Variants at one position all
 inherit whatever that position is, so an ordinary variant-level error would treat a

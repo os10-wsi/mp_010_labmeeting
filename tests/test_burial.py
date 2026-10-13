@@ -86,6 +86,26 @@ def test_a_symmetric_tent_has_no_asymmetry():
     assert h["slope_polar_arm"] > 0.08 and h["slope_hydrophobic_arm"] < -0.08
 
 
+def test_the_asymmetry_carries_an_interval_that_knows_the_arms_are_correlated():
+    """A contrast of two estimates needs their covariance, not their errors added."""
+    one_sided = B.hinge_slopes(*[_planted(polar_slope=0.12, hydro_slope=0.0)[c]
+                                 for c in ("delta_kd", "score_z", "pos")])
+    tent = B.hinge_slopes(*[_planted(polar_slope=0.12, hydro_slope=-0.12)[c]
+                            for c in ("delta_kd", "score_z", "pos")])
+    # a genuinely one-sided response: the interval is clear of zero, and wide of it
+    assert one_sided["asymmetry_lo"] > 0 and one_sided["asymmetry_p"] < 1e-6
+    assert one_sided["asymmetry"] / one_sided["asymmetry_se"] > 10
+    # a symmetric tent: both arms are large and the asymmetry is two orders smaller.
+    # Its interval can still exclude zero - with 480 variants the estimate is precise
+    # enough for a sampling wobble to be "significant" - so the test is on the size of
+    # the asymmetry against the size of the arms, which is what the figure claims.
+    assert abs(tent["asymmetry"]) < 0.02
+    assert min(abs(tent["slope_polar_arm"]), abs(tent["slope_hydrophobic_arm"])) > 0.08
+    # and the contrast's error is not the naive sum of the two arms' errors
+    naive = tent["se_polar_arm"] + tent["se_hydrophobic_arm"]
+    assert tent["asymmetry_se"] < naive
+
+
 def test_a_straight_line_would_have_missed_the_tent():
     """The reason the hinge exists: one slope through a tent is about zero."""
     d = _planted(polar_slope=0.12, hydro_slope=-0.12)

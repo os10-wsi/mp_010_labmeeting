@@ -193,6 +193,8 @@ def hinge_slopes(dkd, y, groups) -> dict:
     m = cluster_ols("y ~ neg + pos_", d[["y", "neg", "pos_"]], d.g)
     if m is None:
         return {}
+    t = m.t_test("neg + pos_ = 0")
+    ci = np.atleast_2d(t.conf_int())
     return {"n": int(len(d)), "n_positions": int(d.g.nunique()),
             "slope_polar_arm": float(m.params["neg"]),
             "se_polar_arm": float(m.bse["neg"]),
@@ -200,7 +202,13 @@ def hinge_slopes(dkd, y, groups) -> dict:
             "slope_hydrophobic_arm": float(m.params["pos_"]),
             "se_hydrophobic_arm": float(m.bse["pos_"]),
             "p_hydrophobic_arm": float(m.pvalues["pos_"]),
+            # the asymmetry is a linear contrast of the two arms, so its error needs
+            # their covariance - the two standard errors cannot simply be added, and a
+            # reported number without an interval invites reading noise as a result
             "asymmetry": float(m.params["neg"] + m.params["pos_"]),
+            "asymmetry_se": float(np.sqrt(t.sd.ravel()[0] ** 2)),
+            "asymmetry_p": float(np.ravel(t.pvalue)[0]),
+            "asymmetry_lo": float(ci[0, 0]), "asymmetry_hi": float(ci[0, 1]),
             "r2": float(m.rsquared)}
 
 
@@ -294,8 +302,9 @@ def b01_three_way(bits: dict, names: list[str], outdir: Path) -> dict:
         ax.axhline(0, color=P.MUTED, lw=0.6)
         ax.axvline(0, color=P.INK, lw=0.6, ls=(0, (1, 2)))
         d = {r["bclass"]: r for r in rows if r["protein"] == g}
-        panel(ax, i, g, "  ".join(f"{c} asymmetry {d[c]['asymmetry']:+.3f}"
-                                  for c in B01A_CLASSES if c in d), size=8)
+        panel(ax, i, g, "  ".join(
+            f"{c} asymmetry {d[c]['asymmetry']:+.3f} ± {d[c]['asymmetry_se']:.3f}"
+            for c in B01A_CLASSES if c in d), size=7.5)
         if i // 2 == (len(names) - 1) // 2:
             ax.set_xlabel("Δ hydrophobicity (Kyte-Doolittle, mutant − WT)", fontsize=7.5)
         if i % 2 == 0:
