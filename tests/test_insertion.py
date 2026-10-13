@@ -271,3 +271,35 @@ def test_the_ranking_is_within_protein_and_orders_by_insertion_energy(tmp_path):
     assert t.dg.is_monotonic_increasing                 # rank 1 inserts most readily
     assert t.would_not_insert_alone.tolist() == (t.dg >= 0).tolist()
     assert "easiest" in r["headline"] and "hardest" in r["headline"]
+
+
+def test_every_panel_names_its_own_two_helices(tmp_path, monkeypatch):
+    """The legend is per protein, because each panel's two helices are different ones.
+
+    A shared legend on panel 1 would be labelling lines in panels 2 and 3 that are not
+    the helices it names.
+    """
+    import matplotlib.pyplot as plt
+    seen = []
+    real = plt.Figure.savefig
+
+    def capture(self, *a, **k):
+        seen.append([[t.get_text() for t in ax.get_legend().get_texts()]
+                     if ax.get_legend() else [] for ax in self.axes])
+        return real(self, *a, **k)
+
+    monkeypatch.setattr(plt.Figure, "savefig", capture)
+    hs, vs = {}, {}
+    for k, name in enumerate(["P1", "P2", "P3"]):
+        h, v = _toy(n_helices=12, effect="interaction", seed=30 + k, per_helix=120)
+        hs[name], vs[name] = h, v
+    I.i03_helix_curves(vs, hs, ["P1", "P2", "P3"], tmp_path)
+    legends = [lg for lg in seen[0] if lg]
+    assert len(legends) == 3                       # one per protein, not one in total
+    for lg in legends:
+        named = [t for t in lg if "to insert" in t]
+        assert len(named) == 2                     # the hardest and the easiest
+        assert any("hardest" in t for t in named)
+        assert any("easiest" in t for t in named)
+    # only the first panel repeats the mean and median, which are the same everywhere
+    assert sum("mean of helices" in t for lg in legends for t in lg) == 1

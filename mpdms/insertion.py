@@ -430,8 +430,19 @@ def i03_helix_curves(variants: dict, helices: dict, names: list[str], outdir: Pa
             ax.set_xlabel("ΔΔG of the substitution at that depth (kcal/mol)", fontsize=7.5)
         if i % 2 == 0:
             ax.set_ylabel("mean effect", fontsize=7.5)
-        if i == 0:
-            ax.legend(frameon=False, fontsize=6, loc="lower left")
+        # Every panel names a DIFFERENT helix with a different dG, so the legend cannot
+        # be shared: on the panels after the first it would be labelling lines that are
+        # not the ones it names. The black mean and median are the same everywhere, so
+        # they are spelled out once on the first panel and in the figure's own note.
+        hl, ll = ax.get_legend_handles_labels()
+        if all_helices:
+            if i == 0 and hl:
+                ax.legend(hl, ll, frameon=False, fontsize=6, loc="lower left")
+        else:
+            keep = [(a, b) for a, b in zip(hl, ll)
+                    if i == 0 or "to insert" in b]
+            if keep:
+                ax.legend(*zip(*keep), frameon=False, fontsize=6, loc="lower left")
     if hi > lo and all_helices:
         import matplotlib as mpl
         sm = mpl.cm.ScalarMappable(cmap=cmap, norm=mpl.colors.Normalize(lo, hi))
