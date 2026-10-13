@@ -584,3 +584,23 @@ def test_h12_finds_nothing_when_the_context_does_not_matter(tmp_path):
     assert d.loc["|Δ RSA|", "p"] > 0.05
     # the other covariates were never in the generating process either
     assert (d.p > 0.05).all()
+
+
+def test_h05_also_writes_a_plain_diagram_with_nothing_in_colour(tmp_path):
+    """The uncoloured version is a diagram of the fold, so it must not need the data."""
+    bits = {"FAKE": _fake_bits(tmp_path)}
+    out = H.h05_bundle_map(bits, ["FAKE"], tmp_path)      # no pair correlations at all
+    assert out["status"] == "ok"
+    assert (tmp_path / "h05_bundle_map.pdf").exists()
+    assert (tmp_path / "h05b_bundle_map_plain.pdf").exists()
+    # the geometry is shared, so the plain figure is the same bundle, not a redrawing
+    geo = H.bundle_geometry(bits["FAKE"])
+    assert set(geo["xy"]) == {f"TM{k}" for k in range(1, 13)}
+    assert len(geo["sym"]["pairs"]) == 6
+
+
+def test_bundle_geometry_declines_without_a_membrane_frame(tmp_path):
+    b = _fake_bits(tmp_path)
+    b["rt"] = b["rt"].assign(zdepth=np.nan)
+    assert H.bundle_geometry(b) is None
+    assert H.bundle_geometry({"rt": b["rt"], "symmetry": {}}) is None

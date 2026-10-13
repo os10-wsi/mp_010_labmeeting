@@ -582,101 +582,156 @@ def h04_symmetry_pairs(bits: dict, names: list[str], outdir: Path) -> dict:
 
 
 # ----------------------------------------- h05 the bundle seen down the membrane normal
+def bundle_geometry(b: dict) -> dict | None:
+    """Where each TM helix sits in the plane of the membrane, and which pairs are mates.
+
+    The membrane normal is recovered from the frame's own depths, the helix centroids
+    are projected onto the two axes across it, and the whole thing is centred. This is
+    the geometry both bundle figures draw; neither of them computes it.
+    """
+    sym = b.get("symmetry") or {}
+    rt = b.get("rt")
+    if not sym.get("pairs") or rt is None or "zdepth" not in rt \
+            or rt.zdepth.isna().all():
+        return None
+    _, u, v = normal_basis(rt)
+    mid = np.mean([sym["centroids"][h] for h in sym["order"]], axis=0)
+    xy = {}
+    for h in sym["order"]:
+        c = sym["centroids"][h] - mid
+        xy[h] = (float(c @ u), float(c @ v))
+    eff = b.get("effect", {})
+    mean_eff = {}
+    for h in sym["order"]:
+        vals = [eff[q] for q in sym["members"][h] if q in eff]
+        mean_eff[h] = float(np.mean(vals)) if vals else np.nan
+    return {"xy": xy, "mean_effect": mean_eff, "sym": sym}
+
+
+def draw_bundle(ax, geo: dict, rho_by_pair: dict | None = None,
+                plain: bool = False) -> list:
+    """One bundle seen down the membrane normal.
+
+    `plain` draws the same geometry with nothing encoded in colour: the two bundles are
+    told apart by a solid against a dashed outline, which survives greyscale printing
+    and a projector, and there is no fill and no correlation on the links. That version
+    is a diagram of the fold; the coloured one is a figure about the data.
+    """
+    sym, xy, mean_eff = geo["sym"], geo["xy"], geo["mean_effect"]
+    rho_by_pair = rho_by_pair or {}
+    rows = []
+    for pr in sym["pairs"]:
+        ha, hb = pr["helix_a"], pr["helix_b"]
+        r = rho_by_pair.get(f"{ha}-{hb}", rho_by_pair.get(f"{ha}–{hb}", np.nan))
+        if plain:
+            lw, col = 1.1, P.MUTED
+        else:
+            lw = 0.6 + 3.4 * max(r, 0.0) if np.isfinite(r) else 0.6
+            col = P.MUTED
+        ax.plot([xy[ha][0], xy[hb][0]], [xy[ha][1], xy[hb][1]], color=col, lw=lw,
+                alpha=0.8, zorder=1, solid_capstyle="round")
+        rows.append({"pair": f"{ha}\u2013{hb}", "rmsd": pr["rmsd"], "spearman": r,
+                     "x_a": xy[ha][0], "y_a": xy[ha][1],
+                     "x_b": xy[hb][0], "y_b": xy[hb][1]})
+        if plain or not np.isfinite(r):
+            continue
+        dx, dy = xy[hb][0] - xy[ha][0], xy[hb][1] - xy[ha][1]
+        L = float(np.hypot(dx, dy))
+        if L < 4.0:
+            continue
+        # a quarter along and pushed to one side: the midpoint is where the rest of the
+        # bundle sits, and a label there disappears behind a disc
+        t_, off = 0.26, 0.11 * L
+        ax.text(xy[ha][0] + dx * t_ - dy / L * off,
+                xy[ha][1] + dy * t_ + dx / L * off, f"{r:+.2f}", fontsize=5.5,
+                ha="center", va="center", color=P.INK,
+                bbox=dict(fc="white", ec="none", pad=0.6, alpha=0.9), zorder=6)
+    for h in sym["order"]:
+        first = h in sym["first"]
+        if plain:
+            ax.scatter(*xy[h], s=430, facecolor="white", edgecolor=P.INK, linewidth=1.6,
+                       linestyle="solid" if first else (0, (2.5, 1.6)), zorder=3)
+            txt = P.INK
+        else:
+            ax.scatter(*xy[h], s=430, c=[effect_color(mean_eff[h])],
+                       edgecolor=BUNDLE_COLORS["N" if first else "C"], linewidth=2.0,
+                       zorder=3)
+            txt = ("white" if (np.isfinite(mean_eff[h]) and mean_eff[h] < -0.55)
+                   else P.INK)
+        ax.text(*xy[h], h.replace("TM", ""), fontsize=6.5, ha="center", va="center",
+                zorder=4, color=txt)
+    ax.set_aspect("equal")
+    ax.set_xticks([]); ax.set_yticks([])
+    for sp in ax.spines.values():            # a map, not a plot: no axes to read
+        sp.set_visible(False)
+    ax.margins(0.14)
+    P.no_square(ax)
+    return rows
+
+
 def h05_bundle_map(bits: dict, names: list[str], outdir: Path,
                    pair_rho: pd.DataFrame | None = None) -> dict:
     """The twelve helices where they actually are, looked at from outside the cell.
 
     Everything else in this module asserts that TM1 and TM7 are the same helix twice.
     This is the panel that shows it: each helix is a disc at its real position in the
-    plane of the membrane, filled by its mean effect, outlined by which bundle it
-    belongs to, and joined to its symmetry mate by a line whose width is how well the
-    two agree. The twofold is visible rather than claimed.
+    plane of the membrane and is joined to its symmetry mate by a line. Two versions
+    are written - one with the disc filled by the helix's mean effect and the link
+    width set by how well the pair agrees, and a plain one with nothing in colour, for
+    use as a diagram of the fold rather than a figure about the data.
     """
-    rows = []
-    fig, pairs_ax, _ = grid(names, w=3.3, h=3.2, extra=0.3)
-    for i, (g, ax) in enumerate(pairs_ax):
-        b = bits[g]
-        sym = b.get("symmetry") or {}
-        if not sym.get("pairs"):
-            empty_panel(ax, i, g, "fewer than twelve annotated TM helices")
-            continue
-        rt = b["rt"]
-        if "zdepth" not in rt or rt.zdepth.isna().all():
-            empty_panel(ax, i, g, "no membrane frame")
-            continue
-        n, u, v = normal_basis(rt)
-        eff = b["effect"]
-        mid = np.mean([sym["centroids"][h] for h in sym["order"]], axis=0)
-        xy, mean_eff = {}, {}
-        for h in sym["order"]:
-            c = sym["centroids"][h] - mid
-            xy[h] = (float(c @ u), float(c @ v))
-            vals = [eff[p] for p in sym["members"][h] if p in eff]
-            mean_eff[h] = float(np.mean(vals)) if vals else np.nan
-        rho_by_pair = {}
-        if pair_rho is not None and len(pair_rho):
-            d = pair_rho[pair_rho.protein == g]
-            rho_by_pair = dict(zip(d.pair, d.spearman))
-        for pr in sym["pairs"]:
-            ha, hb = pr["helix_a"], pr["helix_b"]
-            r = rho_by_pair.get(f"{ha}–{hb}", np.nan)
-            w = 0.6 + 3.4 * max(r, 0.0) if np.isfinite(r) else 0.6
-            ax.plot([xy[ha][0], xy[hb][0]], [xy[ha][1], xy[hb][1]], color=P.MUTED,
-                    lw=w, alpha=0.75, zorder=1, solid_capstyle="round")
-            dx = xy[hb][0] - xy[ha][0]
-            dy = xy[hb][1] - xy[ha][1]
-            L = float(np.hypot(dx, dy))
-            if not np.isfinite(r):
+    rows, drawn = [], []
+    for plain in (False, True):
+        fig, pairs_ax, _ = grid(names, w=3.3, h=3.2, extra=0.3)
+        any_drawn = False
+        for i, (g, ax) in enumerate(pairs_ax):
+            geo = bundle_geometry(bits[g])
+            if geo is None:
+                empty_panel(ax, i, g, "needs twelve annotated TM helices and a "
+                                      "membrane frame")
                 continue
-            # a pair whose two helices project onto nearly the same point gets no
-            # label: the number would land under a disc and be unreadable
-            if L < 4.0:
-                continue
-            # a quarter of the way along and pushed off to one side, above everything.
-            # The midpoint is where the other helices of the bundle sit, so a label
-            # placed there disappears behind a disc - which is what happened first.
-            t_, off = 0.26, 0.11 * L
-            ax.text(xy[ha][0] + dx * t_ - dy / L * off,
-                    xy[ha][1] + dy * t_ + dx / L * off,
-                    f"{r:+.2f}", fontsize=5.5, ha="center", va="center", color=P.INK,
-                    bbox=dict(fc="white", ec="none", pad=0.6, alpha=0.9), zorder=6)
-            rows.append({"protein": g, "pair": f"{ha}–{hb}", "rmsd": pr["rmsd"],
-                         "spearman": r,
-                         "x_a": xy[ha][0], "y_a": xy[ha][1],
-                         "x_b": xy[hb][0], "y_b": xy[hb][1]})
-        for h in sym["order"]:
-            side = "N" if h in sym["first"] else "C"
-            ax.scatter(*xy[h], s=430, c=[effect_color(mean_eff[h])],
-                       edgecolor=BUNDLE_COLORS[side], linewidth=2.0, zorder=3)
-            ax.text(*xy[h], h.replace("TM", ""), fontsize=6.5, ha="center", va="center",
-                    zorder=4,
-                    color="white" if (np.isfinite(mean_eff[h]) and mean_eff[h] < -0.55)
-                    else P.INK)
-        ax.set_aspect("equal")
-        ax.set_xticks([]); ax.set_yticks([])
-        for sp in ax.spines.values():        # a map, not a plot: no axes to read
-            sp.set_visible(False)
-        ax.margins(0.14)
-        P.no_square(ax)
-        panel(ax, i, g, "viewed down the membrane normal", size=8)
-        write_bundle_scripts(b, sym, outdir)
-    h = [plt.Line2D([], [], marker="o", ls="", mfc="white", mec=BUNDLE_COLORS[s],
-                    mew=2.0, ms=9, label=f"{s}-bundle")
-         for s in ("N", "C")]
-    fig.legend(handles=h, frameon=False, fontsize=6.5, loc="lower left",
-               ncol=2, bbox_to_anchor=(0.01, 0.0))
-    fig.suptitle("Disc = one TM helix at its real position in the plane of the membrane, "
-                 "filled by its mean effect. Lines join symmetry mates; the width and "
-                 "the number are how well the pair agrees.", fontsize=7, x=0.01,
-                 ha="left")
-    P.save(fig, outdir, "h05_bundle_map", None, "H05")
-    plt.close(fig)
-    if not rows:
-        return {"status": "skipped", "reason": "no protein could be drawn"}
+            rho_by_pair = {}
+            if pair_rho is not None and len(pair_rho):
+                d = pair_rho[pair_rho.protein == g]
+                rho_by_pair = dict(zip(d.pair, d.spearman))
+            got = draw_bundle(ax, geo, rho_by_pair, plain=plain)
+            panel(ax, i, g, "viewed down the membrane normal", size=8)
+            any_drawn = True
+            if not plain:
+                rows += [dict(r, protein=g) for r in got]
+                drawn.append(g)
+                write_bundle_scripts(bits[g], geo["sym"], outdir)
+        if plain:
+            # a Line2D marker cannot carry a dashed edge - its linestyle belongs to the
+            # connecting line - so the key uses patches, which can
+            from matplotlib.patches import Patch
+            h = [Patch(facecolor="white", edgecolor=P.INK, linewidth=1.6,
+                       label="N-bundle (TM1-6)"),
+                 Patch(facecolor="white", edgecolor=P.INK, linewidth=1.6,
+                       linestyle=(0, (2.5, 1.6)), label="C-bundle (TM7-12)")]
+            note = ("Each disc is one TM helix at its real position in the plane of the "
+                    "membrane. Lines join the pairs related by the pseudo-twofold.")
+            name = "h05b_bundle_map_plain"
+        else:
+            h = [plt.Line2D([], [], marker="o", ls="", mfc="white",
+                            mec=BUNDLE_COLORS[s], mew=2.0, ms=9, label=f"{s}-bundle")
+                 for s in ("N", "C")]
+            note = ("Disc = one TM helix at its real position in the plane of the "
+                    "membrane, filled by its mean effect. Lines join symmetry mates; "
+                    "the width and the number are how well the pair agrees.")
+            name = "h05_bundle_map"
+        fig.legend(handles=h, frameon=False, fontsize=6.5, loc="lower left", ncol=2,
+                   bbox_to_anchor=(0.01, 0.0))
+        fig.suptitle(note, fontsize=7, x=0.01, ha="left")
+        P.save(fig, outdir, name, None, "H05")
+        plt.close(fig)
+        if not any_drawn:
+            return {"status": "skipped", "reason": "no protein could be drawn"}
     pd.DataFrame(rows).to_csv(outdir / "h05_bundle_map.csv", index=False)
     return {"status": "ok",
-            "headline": "the twelve helices placed in the membrane plane with their "
-                        "symmetry mates joined; PyMOL and ChimeraX scripts written"}
+            "headline": f"{len(drawn)} bundle(s) placed in the membrane plane with "
+                        "their symmetry mates joined; a plain version written as "
+                        "h05b_bundle_map_plain, plus PyMOL and ChimeraX scripts"}
 
 
 def write_bundle_scripts(b: dict, sym: dict, outdir: Path) -> list[Path]:

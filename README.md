@@ -794,7 +794,7 @@ possible, and H06 is the analysis that needs both.
 | H02 | per helix: the *pattern* | one ρ per TM helix over the aligned positions inside it, each with its own ceiling |
 | H03 | per helix: the *level* | twelve points, helix mean against helix mean, coloured by bundle |
 | H04 | the symmetry mates | per-pair ρ against per-pair Cα RMSD, six pairs per protein |
-| H05 | the bundle, seen | twelve discs where the helices really are, mates joined, width = agreement |
+| H05 | the bundle, seen | twelve discs where the helices really are, mates joined; written twice, once filled by effect and once as a plain black-and-white diagram |
 | H06 | the mate, and the paralogue | two scatters on the same positions: mean effect against its symmetry mate, and against the paralogue |
 | H07 | where they disagree | the residual mapped into both structures, with S08's correlogram |
 | H08 | does identity predict agreement? | ρ refitted inside identical / similar / dissimilar columns |
@@ -836,8 +836,15 @@ interval and a single striking pair is not a finding.
 is recovered by regressing each residue's depth on its coordinates, and the twelve
 helix centroids are projected into the plane across it. Each disc is filled by its
 helix's mean effect and outlined by which bundle it belongs to; the line joining a pair
-is as wide as the pair agrees. PyMOL and ChimeraX scripts go to
-`structures/<protein>/h05_bundles.*`.
+is as wide as the pair agrees.
+
+It writes **two versions**. `h05_bundle_map` is the figure about the data. `h05b_bundle_map_plain`
+is the same geometry with nothing encoded in colour — no fill, no correlations on the
+links, the two bundles told apart by a solid against a dashed outline, which survives
+greyscale printing and a projector. That one is a diagram of the fold, for a slide that
+explains the architecture before any result is shown. Both are drawn from one
+`bundle_geometry` call, so the plain version cannot drift from the real one. PyMOL and
+ChimeraX scripts go to `structures/<protein>/h05_bundles.*`.
 
 **H11 treats the two proteins as replicates of one experiment, and measures where
 that breaks.** At an alignment column where both carry the *same* wild-type residue,
