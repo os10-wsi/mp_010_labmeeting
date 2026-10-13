@@ -75,7 +75,8 @@ def _toy(n_helices=8, effect="null", seed=0, per_helix=60):
                       else rng.choice(list("ASTGN"), 1)[0] for _ in range(21))
         dg = I.segment_dg(seq)
         hrows.append({"helix": f"TM{h+1}", "start": 1 + 30 * h, "end": 21 + 30 * h,
-                      "length": 21, "dg": dg, "dg_per_residue": dg / 21,
+                      "length": 21, "orientation": "in_out" if h % 2 == 0 else "out_in",
+                      "dg": dg, "dg_per_residue": dg / 21,
                       "mean_effect": 0.0, "median_effect": 0.0, "se_effect": 0.05,
                       "n_positions": 21, "mean_rsa": 0.2})
         z = I.segment_depths(21)
@@ -245,3 +246,28 @@ def test_the_pooled_slope_error_is_clustered_by_helix(tmp_path):
     assert r["se_clustered"] == pytest.approx(f.bse["ddg"], rel=1e-6)
     assert r["slope"] < 0 and r["n_helices"] == 12
     assert r["n_variants"] == len(v)
+
+
+def test_only_the_two_extreme_helices_are_drawn_by_default(tmp_path):
+    """The default is the hardest and the easiest; --all-helices puts the rest back."""
+    import matplotlib.pyplot as plt
+    h, v = _toy(n_helices=12, effect="interaction", seed=21, per_helix=120)
+    before = plt.get_fignums()
+    I.i03_helix_curves({"P": v}, {"P": h}, ["P"], tmp_path)
+    # every helix still gets a slope in the table, drawn or not
+    per = pd.read_csv(tmp_path / "i03_helix_slopes.csv")
+    assert len(per) == 12
+    # and the two named in the legend are the real extremes of dG
+    assert per.loc[per.dg.idxmax(), "helix"] != per.loc[per.dg.idxmin(), "helix"]
+    assert plt.get_fignums() == before          # figures are closed, not leaked
+
+
+def test_the_ranking_is_within_protein_and_orders_by_insertion_energy(tmp_path):
+    h, _ = _toy(n_helices=12, seed=22)
+    r = I.i05_ranking({"P": h}, ["P"], tmp_path)
+    t = pd.read_csv(tmp_path / "i05_helix_ranking.csv")
+    assert len(t) == 12
+    assert list(t["rank"]) == list(range(1, 13))
+    assert t.dg.is_monotonic_increasing                 # rank 1 inserts most readily
+    assert t.would_not_insert_alone.tolist() == (t.dg >= 0).tolist()
+    assert "easiest" in r["headline"] and "hardest" in r["headline"]

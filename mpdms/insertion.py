@@ -48,7 +48,7 @@ from scipy import stats as ss
 from . import plotting as P
 from .analyses.base import missense
 from .config import REPO_ROOT, load_config, protein_sequence
-from .environs import grid, panel
+from .environs import effect_color, grid, panel
 from .features import position_table
 from .io import load_dataset
 
@@ -331,8 +331,8 @@ N_BINS = 6
 MIN_PER_BIN = 5
 
 
-def i03_helix_curves(variants: dict, helices: dict, names: list[str],
-                     outdir: Path) -> dict:
+def i03_helix_curves(variants: dict, helices: dict, names: list[str], outdir: Path,
+                     all_helices: bool = False) -> dict:
     """Effect against ddG, one line per TM helix, coloured by that helix's own dG.
 
     This replaces a median split into "marginal" and "comfortable" halves. The split
@@ -362,7 +362,7 @@ def i03_helix_curves(variants: dict, helices: dict, names: list[str],
         if len(edges) < 3:
             continue
         v = v.assign(bin=pd.cut(v.ddg, edges, include_lowest=True))
-        curves = {}
+        curves, dgs = {}, {}
         for hx, sub in v.groupby("helix"):
             m = sub.groupby("bin", observed=True).agg(
                 x=("ddg", "mean"), y=("score_z", "mean"), n=("score_z", "size"))
@@ -370,12 +370,26 @@ def i03_helix_curves(variants: dict, helices: dict, names: list[str],
             if len(m) < 3:
                 continue
             dg = float(h.loc[hx, "dg"])
-            curves[hx] = m
-            ax.plot(m.x, m.y, "-", lw=1.0, alpha=0.85,
-                    color=cmap((dg - lo) / (hi - lo) if hi > lo else 0.5))
+            curves[hx], dgs[hx] = m, dg
             r = ss.linregress(sub.ddg, sub.score_z)
             rows.append({"protein": g, "helix": hx, "dg": dg, "slope": float(r.slope),
                          "se": float(r.stderr), "p": float(r.pvalue), "n": int(len(sub))})
+        # Only the two extremes by default. Twelve lines show that the helices differ;
+        # the hardest and the easiest to insert show BY HOW MUCH, which is the claim,
+        # and the mean and median behind them say whether the two are outliers or ends
+        # of a spread. --all-helices puts the other ten back.
+        if all_helices:
+            for hx, m in curves.items():
+                ax.plot(m.x, m.y, "-", lw=1.0, alpha=0.8,
+                        color=cmap((dgs[hx] - lo) / (hi - lo) if hi > lo else 0.5))
+        elif len(curves) >= 2:
+            hardest = max(dgs, key=dgs.get)
+            easiest = min(dgs, key=dgs.get)
+            for hx, col, lab in ((hardest, P.DARK_RED, "hardest to insert"),
+                                 (easiest, "#2166AC", "easiest to insert")):
+                m = curves[hx]
+                ax.plot(m.x, m.y, "-o", ms=4, lw=2.0, color=col, mec=P.INK, mew=0.4,
+                        zorder=7, label=f"{hx}, {lab} (ΔG {dgs[hx]:+.1f})")
         if curves:
             # Both summaries, because they answer different questions. Each helix
             # contributes one number per bin either way, so neither is dominated by a
@@ -418,15 +432,18 @@ def i03_helix_curves(variants: dict, helices: dict, names: list[str],
             ax.set_ylabel("mean effect", fontsize=7.5)
         if i == 0:
             ax.legend(frameon=False, fontsize=6, loc="lower left")
-    if hi > lo:
+    if hi > lo and all_helices:
         import matplotlib as mpl
         sm = mpl.cm.ScalarMappable(cmap=cmap, norm=mpl.colors.Normalize(lo, hi))
         fig.colorbar(sm, ax=axes, fraction=0.022, pad=0.01).set_label(
             "ΔG of inserting the helix (kcal/mol)", fontsize=8, fontweight="bold")
-    fig.suptitle("One line per TM helix, coloured by how readily it inserts: dark = "
-                 "inserts easily, light = marginal (ΔG above zero would not insert on its "
-                 "own). The claim predicts the lighter lines fall away faster to the "
-                 "right. Solid black = mean over helices, dashed = median.",
+    fig.suptitle(("One line per TM helix, coloured by how readily it inserts: dark = "
+                  "inserts easily, light = marginal (ΔG above zero would not insert on "
+                  "its own)." if all_helices else
+                  "Red = the helix of this protein that is hardest to insert, blue = the "
+                  "easiest. If insertion energetics set a floor, the red line should fall "
+                  "away faster to the right.")
+                 + " Solid black = mean over all helices, dashed = median.",
                  fontsize=7, x=0.01, ha="left")
     P.save(fig, outdir, "i03_helix_curves", None, "I03")
     plt.close(fig)
@@ -500,10 +517,70 @@ def i04_pooled(variants: dict, names: list[str], outdir: Path,
     return {"status": "ok", "headline": head, "by_protein": ft.to_dict("records")}
 
 
+# -------------------------------------- i05 the helices ranked by how readily they insert
+def i05_ranking(helices: dict, names: list[str], outdir: Path) -> dict:
+    """Each protein's TM helices ordered by the insertion energy of its wild-type sequence.
+
+    The spread is the premise of every other panel here. If a protein's twelve helices
+    all sit within a kcal/mol of one another there is no contrast to test, and if one of
+    them is above zero it would not insert on its own at all - which is worth seeing as
+    a number before it is used as a colour.
+    """
+    rows = []
+    fig, pairs, _ = grid(names, w=3.2, h=3.1, extra=0.3)
+    for i, (g, ax) in enumerate(pairs):
+        h = helices[g].sort_values("dg").reset_index(drop=True)
+        if not len(h):
+            continue
+        y = np.arange(len(h))
+        ax.barh(y, h.dg, color=[effect_color(v) for v in h.mean_effect],
+                edgecolor=P.INK, linewidth=0.5, height=0.72)
+        ax.axvline(0, color=P.INK, lw=1.0)
+        for k, r in h.iterrows():
+            # inside the bar, at its far end: outside the longest bar the label lands on
+            # the tick label for that helix and the two overprint
+            inside = r.dg + (-0.35 if r.dg >= 0 else 0.35)
+            ax.text(inside, k, f"{r.dg:+.1f}", va="center", fontsize=6.5,
+                    ha="right" if r.dg >= 0 else "left",
+                    color="white" if r.mean_effect < -0.55 else P.INK)
+        ax.set_yticks(y); ax.set_yticklabels(h.helix, fontsize=6.5)
+        ax.invert_yaxis()                      # easiest to insert at the top
+        pad = 0.18 * (h.dg.max() - h.dg.min() + 1)
+        ax.set_xlim(min(h.dg.min() - pad, -pad), max(h.dg.max() + pad, pad))
+        n_marg = int((h.dg >= 0).sum())
+        panel(ax, i, g, f"{h.dg.min():+.1f} to {h.dg.max():+.1f} kcal/mol"
+                        + (f", {n_marg} above zero" if n_marg else ""), size=7.5)
+        if i // 2 == (len(names) - 1) // 2:
+            ax.set_xlabel("ΔG of inserting the wild-type helix (kcal/mol)", fontsize=7.5)
+        rows += [{"protein": g, "rank": k + 1, "helix": r.helix, "dg": r.dg,
+                  "dg_per_residue": r.dg_per_residue, "length": r.length,
+                  "orientation": getattr(r, "orientation", None),
+                  "mean_effect": r.mean_effect,
+                  "n_positions": r.n_positions, "mean_rsa": r.mean_rsa,
+                  "would_not_insert_alone": bool(r.dg >= 0)}
+                 for k, r in h.iterrows()]
+    fig.suptitle("Ranked within each protein, easiest to insert at the top. Bars are "
+                 "coloured by the helix's mean mutational effect, so colour and length "
+                 "are independent readings. A bar past zero marks a helix that would not "
+                 "insert on its own.", fontsize=7, x=0.01, ha="left")
+    P.save(fig, outdir, "i05_helix_ranking", None, "I05")
+    plt.close(fig)
+    t = pd.DataFrame(rows)
+    t.to_csv(outdir / "i05_helix_ranking.csv", index=False)
+    head = "; ".join(
+        f"{g.replace('_fitness','')} easiest {d.iloc[0].helix} {d.iloc[0].dg:+.1f}, "
+        f"hardest {d.iloc[-1].helix} {d.iloc[-1].dg:+.1f}"
+        + (f" ({int(d.would_not_insert_alone.sum())} above zero)"
+           if d.would_not_insert_alone.any() else "")
+        for g, d in t.groupby("protein"))
+    return {"status": "ok", "headline": head, "ranking": t.to_dict("records")}
+
+
 ANALYSES = {"i01": "helix ΔG against its tolerance",
             "i02": "the interaction: is ΔΔG worse in a marginal helix?",
             "i03": "every helix separately, with the mean and median of them",
-            "i04": "the pooled curve over all helices, averaged over variants"}
+            "i04": "the pooled curve over all helices, averaged over variants",
+            "i05": "the helices ranked by wild-type insertion energy"}
 
 
 def main(argv=None):
@@ -521,6 +598,9 @@ def main(argv=None):
                     help="where a residue sits in the membrane when its ΔΔG is evaluated: "
                          "'ideal' lays the helix across the bilayer the way the scale was "
                          "built, 'structure' uses the AlphaFold membrane frame")
+    ap.add_argument("--all-helices", action="store_true",
+                    help="i03 draws every helix rather than only the hardest and the "
+                         "easiest of each protein to insert")
     ap.add_argument("--cols", type=int, default=2)
     ap.add_argument("--style", default="paper", choices=["default", "paper"])
     ap.add_argument("--outdir", default=str(OUT))
@@ -569,9 +649,11 @@ def main(argv=None):
             elif k == "i02":
                 r = i02_interaction(variants, helices, names, outdir)
             elif k == "i03":
-                r = i03_helix_curves(variants, helices, names, outdir)
-            else:
+                r = i03_helix_curves(variants, helices, names, outdir, a.all_helices)
+            elif k == "i04":
                 r = i04_pooled(variants, names, outdir)
+            else:
+                r = i05_ranking(helices, names, outdir)
         except Exception as e:
             r = {"status": "error", "reason": f"{type(e).__name__}: {e}"}
         out[k] = r

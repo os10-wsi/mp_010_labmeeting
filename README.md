@@ -584,8 +584,17 @@ Two details that matter and are easy to get wrong:
 | --- | --- |
 | I01 | does a helix's ΔG predict its mean tolerance? (the weak version) |
 | I02 | the interaction, two ways: slope-of-effect-on-ΔΔG per helix against that helix's ΔG, and a per-protein model with the interaction term |
-| I03 | effect against ΔΔG, **one line per helix** coloured by that helix's ΔG, with the mean (± SEM) and median across helices in bold |
+| I03 | effect against ΔΔG for the **hardest and easiest helix to insert**, with the mean (± SEM) and median across all helices in bold (`--all-helices` draws all twelve, coloured by ΔG) |
 | I04 | the same thing pooled: every variant in any TM helix, binned by ΔΔG and averaged — one curve per protein, no grouping |
+| I05 | the TM helices **ranked** by the insertion energy of their wild-type sequence, within each protein |
+
+I05 is the premise of all the others and worth reading first: if a protein's helices
+all sit within a kcal/mol of each other there is no contrast to test, and a bar past
+zero marks a helix that would not insert on its own. Bars are ranked within the protein
+and coloured by the helix's mean mutational effect, so length and colour are independent
+readings. I03 then shows only the two ends of that ranking by default — the hardest and
+the easiest helix to insert — because twelve lines show that helices differ while two
+show by how much.
 
 I04 is the plain version and the one to put on a slide: every missense variant that
 sits in a TM helix, binned by ΔΔG and averaged, one curve per protein. Because it
