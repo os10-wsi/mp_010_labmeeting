@@ -897,6 +897,47 @@ a blue ramp and the C-bundle through a red one, circles against squares, with th
 outside the axes — so the colour carries which half of the fold a helix is in and where
 in that half, and it matches the bundle colours H05 uses.
 
+### Is the cavity lining more constrained than the rest of the protein?
+
+```bash
+python -m mpdms cavity configs/AQR1_fitness.yaml configs/HXT1.yaml
+```
+
+The quantity is the **site median ESM-1v residual z**, defined exactly as A15 defines
+it: how much more constrained a position looks to a language model than its measured
+abundance explains. Strongly negative is this project's signature for functional —
+conserved for a reason the abundance assay cannot see. The question is whether the
+residues lining the central pathway carry more of it than the rest of the protein.
+
+Three things would manufacture that answer, and each is handled rather than hoped away:
+
+| confound | what is done |
+| --- | --- |
+| **topology** | cavity residues are transmembrane and TM is more constrained than loops anyway, so the test is also run with loops excluded — cavity against the rest of the *membrane domain* |
+| **spatial autocorrelation** | S08 measured constraint travelling ~20 Å, so neighbours are not independent. Standard errors are clustered on k-means spatial blocks of about that size, and the naive interval is drawn behind the corrected one so the gap is visible |
+| **the threshold** | "cavity-lining" is a median split on distance from the bundle axis, so the claim could be an artefact of where the line fell. The radial coordinate is therefore also used continuously, with no threshold at all |
+
+**The spatial correction is the part that matters, and it is load-bearing.**
+`tests/test_cavity.py` plants a nuisance shared within each 20 Å patch and *no* cavity
+effect: the naive test calls the difference real at p < 0.05, while the block-clustered
+error comes out more than twice as wide and the test correctly finds nothing. Without
+it a figure like this reports a patch of the fold as a discovery.
+
+Effect size is **Cliff's delta** — how often a cavity residue outranks a non-cavity one
+— with a confidence interval from a bootstrap that resamples *blocks*, not residues.
+Resampling residues would treat one patch as many independent draws and return an
+interval far too narrow.
+
+| figure | what it shows |
+| --- | --- |
+| V01 | the residual by residue environment, cavity first, with A15's functional threshold drawn |
+| V02 | cavity − rest per protein and per comparison; thin bar = block-clustered interval, thick grey = naive |
+| V03 | residual against distance from the bundle axis, TM sites only — the same claim with no threshold in it |
+
+"Consistently" is the word in the question, so the run ends by saying whether the
+proteins actually agree: same direction and significant in both, same direction only,
+or contradicting each other.
+
 ### Can the structure make the family model better - and does it beat ESM-1v?
 
 ```bash
