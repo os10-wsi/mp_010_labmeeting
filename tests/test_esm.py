@@ -2,6 +2,7 @@
 import pytest
 import numpy as np
 
+from mpdms.config import REPO_ROOT
 from mpdms.esm_score import AA20, masked_marginals, to_long, windows
 
 
@@ -367,3 +368,20 @@ def test_the_ssdraw_residual_figure_is_written(tmp_path):
     assert out and (tmp_path / "a15_ssdraw_residual.pdf").exists()
     # with no structure the track still draws, as flat bars
     assert A15.ssdraw_residual_figure(Cfg(), sites.iloc[:0], tmp_path) == []
+
+
+def test_the_threshold_that_made_a_run_is_recorded_in_its_metrics():
+    """Two runs at two thresholds overwrite each other's figures; stats.json must say
+    which threshold produced the numbers, or a slide cannot be traced back to a run."""
+    import json
+    from mpdms.analyses.a15_esm_functional import Q_SITE, Z_SITE
+    p = REPO_ROOT / "outputs" / "SYN1" / "stats.json"
+    if not p.exists():
+        pytest.skip("no SYN1 run in this checkout")
+    r = [x for x in json.loads(p.read_text()) if x["analysis"] == "a15"]
+    if not r or r[0].get("status") != "ok":
+        pytest.skip("a15 has not run for SYN1")
+    assert "z_site" in r[0]["metrics"] and "q_site" in r[0]["metrics"]
+    assert r[0]["metrics"]["z_site"] < 0            # stored with its sign resolved
+    assert r[0]["metrics"]["q_site"] == pytest.approx(Q_SITE)
+    assert Z_SITE < 0

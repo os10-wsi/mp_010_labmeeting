@@ -606,7 +606,8 @@ def run(df, cfg, outdir):
                + ", ".join(f"{r.wt}{int(r.pos)} (z {r.median_z:+.1f})"
                            for r in func.nsmallest(5, "median_z").itertuples())
                if len(func) else ""))
-    return result("a15", cfg, head, {"spearman": rho, "n_variants": len(d), "n_sites_tested": len(sites),
+    return result("a15", cfg, head, {"z_site": Z_SITE, "q_site": Q_SITE,
+                                     "spearman": rho, "n_variants": len(d), "n_sites_tested": len(sites),
                                      "n_functional": int(len(func)), "residual_scale": scale,
                                      "n_functional_tolerant": int(sites.functional_and_tolerant.sum()),
                                      "functional_sites": [f"{r.wt}{r.pos}" for r in func.itertuples()],
