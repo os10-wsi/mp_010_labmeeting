@@ -462,3 +462,19 @@ def test_i06_does_not_depend_on_which_scale_is_active():
         I.SCALE = old
     assert got[0]["pearson_ddg"] == pytest.approx(got[1]["pearson_ddg"])
     assert got[0]["spearman_helix_dg"] == pytest.approx(got[1]["spearman_helix_dg"])
+
+
+def test_the_ddg_axis_says_which_depth_and_which_scale():
+    """"at that depth" pointed at nothing on the figure; the label now names both."""
+    old = (I.SCALE, I.DEPTH)
+    try:
+        I.SCALE, I.DEPTH = "dstbl", "ideal"
+        a = I.ddg_axis_label()
+        I.SCALE, I.DEPTH = "hessa", "structure"
+        b = I.ddg_axis_label()
+    finally:
+        I.SCALE, I.DEPTH = old
+    assert "its own depth" in a and "that depth" not in a
+    assert "dstbl" in a and "bilayer" in a
+    assert "hessa" in b and "structure" in b
+    assert a != b

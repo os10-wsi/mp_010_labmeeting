@@ -177,6 +177,21 @@ SCALES = ("dstbl", "hessa")
 SCALE_LABEL = {"dstbl": "dsT\u03b2L (Elazar 2016), kcal/mol relative to alanine",
                "hessa": "Hessa 2007 table S2 position term, kcal/mol"}
 SCALE = "dstbl"          # set once by main(); every analysis reads it through residue_dg
+DEPTH = "ideal"          # likewise: where in the membrane a residue is taken to sit
+DEPTH_LABEL = {"ideal": "laid across the bilayer",
+               "structure": "from the structure"}
+
+
+def ddg_axis_label() -> str:
+    """What the x axis of i03 and i04 actually holds.
+
+    ddG is evaluated at each residue's own depth, so a point is the cost of that
+    substitution where that residue sits, not a number the substitution carries
+    everywhere - and which depth that is depends on --depth, so the axis says so
+    rather than leaving "that depth" pointing at nothing on the figure.
+    """
+    return ("\u0394\u0394G of the substitution at its own depth "
+            f"(kcal/mol, {SCALE}, {DEPTH_LABEL.get(DEPTH, DEPTH)})")
 
 
 def hessa_dg(aa: str, z: float = 0.0) -> float:
@@ -548,7 +563,7 @@ def i03_helix_curves(variants: dict, helices: dict, names: list[str], outdir: Pa
             extra = f"{len(s)} helices, slope vs ΔG ρ = {rho:+.2f} (p = {pv:.2g})"
         panel(ax, i, g, extra, size=7.5)
         if i // 2 == (len(names) - 1) // 2:
-            ax.set_xlabel("ΔΔG of the substitution at that depth (kcal/mol)", fontsize=7.5)
+            ax.set_xlabel(ddg_axis_label(), fontsize=7.5)
         if i % 2 == 0:
             ax.set_ylabel("mean effect", fontsize=7.5)
         # Every panel names a DIFFERENT helix with a different dG, so the legend cannot
@@ -633,7 +648,7 @@ def i04_pooled(variants: dict, names: list[str], outdir: Path,
         panel(ax, i, g, f"slope {fits[-1]['slope']:+.3f} ± {fits[-1]['se_clustered']:.3f} "
                         f"kcal⁻¹, {len(v):,} variants", size=7.5)
         if i // 2 == (len(names) - 1) // 2:
-            ax.set_xlabel("ΔΔG of the substitution at that depth (kcal/mol)", fontsize=7.5)
+            ax.set_xlabel(ddg_axis_label(), fontsize=7.5)
         if i % 2 == 0:
             ax.set_ylabel("mean effect", fontsize=7.5)
     fig.suptitle("Every missense variant in a TM helix, binned by ΔΔG and averaged. "
@@ -877,8 +892,8 @@ def main(argv=None):
         raise SystemExit("--scale hessa is indexed by position in a 19-residue segment, "
                          "not by angstroms, so a measured depth is an extrapolation the "
                          "table was never fitted for; use --depth ideal")
-    global SCALE
-    SCALE = a.scale
+    global SCALE, DEPTH
+    SCALE, DEPTH = a.scale, a.depth
     P.use_style(a.style)
     keys = [k.strip() for k in (a.only.split(",") if a.only else ANALYSES)]
     bad = [k for k in keys if k not in ANALYSES]
