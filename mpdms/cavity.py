@@ -450,17 +450,17 @@ def figure_classes(bits: dict, names: list[str], pw: pd.DataFrame,
         q = pw[pw.protein == g]
         # a single dead position can be several times more negative than anything else,
         # and letting it set the axis flattens the three distributions into lines. The
-        # view is cut to the central 98% and the residues left outside are counted in
-        # words, never dropped from any test
+        # view is cut to the central 98%; nothing is dropped from any test, and the run
+        # prints how many residues fall outside the drawn range
         allv = np.concatenate([np.asarray(v, float) for v in groups.values()])
         lo, hi = (float(x) for x in np.percentile(allv, [1, 99]))
         lo, hi = min(lo, 0.0), max(hi, 0.0)
         span = (hi - lo) or 1.0
         n_out = int((allv < lo).sum() + (allv > hi).sum())
         if n_out:
-            axv.text(0.012, 0.012, f"{n_out} site{'s' if n_out > 1 else ''} outside "
-                     "the axis, kept in every test", transform=axv.transAxes,
-                     fontsize=6, ha="left", va="bottom", color=P.MUTED)
+            print(f"  {short_name(g):<10} v01 draws the central 98%: {n_out} site"
+                  f"{'s' if n_out > 1 else ''} fall outside the range shown and are "
+                  "still in every test", flush=True)
         level = 0
         for r in q.itertuples():
             if r.a not in keys or r.b not in keys:
