@@ -276,3 +276,28 @@ def test_a_wide_sequence_track_is_exempt_from_squaring(tmp_path, monkeypatch):
     assert a.get_box_aspect() == 1          # an ordinary panel is squared
     assert b.get_box_aspect() is None       # the exempt track is not
     assert c.get_box_aspect() is None       # nor is a text panel with its frame off
+
+
+def test_the_structure_colour_range_is_anchored_to_the_calling_threshold(monkeypatch):
+    """A percentile rule would be set by the constrained tail it is meant to show."""
+    import importlib
+    from mpdms.analyses import a15_esm_functional as A15
+    assert A15.colour_range() == pytest.approx(3 * abs(A15.Z_SITE))
+    # it is symmetric by construction, so white lands exactly on a residual of zero
+    assert A15.colour_range() > 0
+    monkeypatch.setenv("MPDMS_Z_COLOR_RANGE", "5.5")
+    assert A15.colour_range() == pytest.approx(5.5)
+    monkeypatch.setenv("MPDMS_Z_COLOR_RANGE", "-5.5")       # sign is taken care of
+    assert A15.colour_range() == pytest.approx(5.5)
+    monkeypatch.setenv("MPDMS_Z_COLOR_RANGE", "not-a-number")
+    assert A15.colour_range() == pytest.approx(3 * abs(A15.Z_SITE))
+    monkeypatch.delenv("MPDMS_Z_COLOR_RANGE")
+    # and it follows the threshold, so the colours cannot contradict the calls
+    monkeypatch.setenv("MPDMS_Z_SITE", "2.0")
+    reloaded = importlib.reload(A15)
+    try:
+        assert reloaded.Z_SITE == pytest.approx(-2.0)
+        assert reloaded.colour_range() == pytest.approx(6.0)
+    finally:
+        monkeypatch.delenv("MPDMS_Z_SITE")
+        importlib.reload(A15)

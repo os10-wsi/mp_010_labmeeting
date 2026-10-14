@@ -150,7 +150,36 @@ def _ranges(nums, sep="+"):
     return sep.join(out)
 
 
-Z_COLOR_RANGE = 4.0  # structure colouring: -4 red ... 0 white ... +4 blue
+Z_COLOR_RANGE = 4.0  # fallback only; colour_range() picks a range from the data
+
+
+def colour_range(z=None, default: float = Z_COLOR_RANGE) -> float:
+    """The symmetric limit for colouring the structure by site residual z.
+
+    Symmetric, because white has to sit exactly at zero: an asymmetric scale puts the
+    neutral colour somewhere that is not "no residual", which is the one thing this
+    picture must not get wrong.
+
+    Anchored to Z_SITE rather than to the spread of the data. A percentile rule looks
+    robust and is not: residual z is strongly one-sided, so the low percentile is set
+    by the constrained tail itself and the scale stretches to hide the very sites it
+    should be showing. Three times the threshold means a site at the threshold reads
+    as clearly tinted and one at three times it is fully saturated, and the scale
+    follows MPDMS_Z_SITE automatically so the colours and the calls cannot disagree.
+
+    A protein whose sites are nearly all near zero will therefore look nearly all
+    white, with a few red ones. That is the correct picture, not a failure of contrast.
+    MPDMS_Z_COLOR_RANGE overrides the whole thing.
+    """
+    env = os.environ.get("MPDMS_Z_COLOR_RANGE", "").strip()
+    if env:
+        try:
+            return abs(float(env))
+        except ValueError:
+            print(f"  note: MPDMS_Z_COLOR_RANGE={env!r} is not a number; ignoring")
+    return float(abs(Z_SITE) * 3) if Z_SITE else default
+
+
 # Ray-tracing two 2400x1800 images is minutes of silent waiting and is almost never
 # what you want mid-pipeline, so it is opt-in: `MPDMS_RENDER=1 python -m mpdms run ...`.
 # The .pdb/.pml/.cxc are always written, so the figures can be made later on a desktop.
@@ -176,6 +205,7 @@ def write_structures(cfg, sites: pd.DataFrame, outdir) -> list:
     sdir.mkdir(parents=True, exist_ok=True)
     off = int(cfg.get_path("structure.numbering_offset", 0) or 0)
     z = dict(zip(sites.pos, sites.median_z))
+    zrange = colour_range(sites.median_z)
     func = set(sites.loc[sites.functional, "pos"])
     tested = {p_ - off for p_ in z}
     funcres = sorted(p_ - off for p_ in func)
@@ -198,12 +228,15 @@ def write_structures(cfg, sites: pd.DataFrame, outdir) -> list:
         sel_t = _ranges(tested) or "none"
         sel_f = _ranges(funcres)
         if name == "a15_zscore":
-            pml_col = [f"color grey70, {obj}",
+            pml_col = [f"# red = residual {-zrange:+.1f} or below (ESM expects more "
+                       "constraint than abundance shows); white = 0; blue = "
+                       f"{zrange:+.1f} or above; grey = not scored",
+                       f"color grey70, {obj}",
                        f"spectrum b, red_white_blue, {obj} and resi {sel_t}, "
-                       f"minimum=-{Z_COLOR_RANGE}, maximum={Z_COLOR_RANGE}"]
+                       f"minimum=-{zrange}, maximum={zrange}"]
             cxc_col = ["color #1 #b3b3b3",
                        f"color byattribute bfactor #1:{_ranges(tested, ',') or '0'} "
-                       f"palette -{Z_COLOR_RANGE},red:0,white:{Z_COLOR_RANGE},blue"]
+                       f"palette -{zrange},red:0,white:{zrange},blue"]
         else:
             pml_col = [f"color white, {obj}"] + ([f"color red, {obj} and resi {sel_f}"] if sel_f else [])
             cxc_col = ["color #1 white"] + ([f"color #1:{_ranges(funcres, ',')} red"] if funcres else [])
