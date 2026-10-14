@@ -220,17 +220,119 @@ def read_alphamissense(path: Path, uniprots: set[str]) -> pd.DataFrame:
 # how each predictor points. `sign` multiplies the raw value so that, after it, HIGHER
 # always means "more likely pathogenic" - which is what the AUROC needs and the one
 # thing that is silently catastrophic to get wrong.
+def read_mochi(path: Path, min_folds: int = 8) -> pd.DataFrame:
+    """A MoCHI weights table: one energy per (alignment column, mutant residue).
+
+    The model is fitted on a masked alignment of the yeast members, so a row is not a
+    substitution of a named wild-type residue but "this residue at this column", and
+    the id carries no wild-type letter - it reads like `-3A`, a gap where the wild type
+    would be. That is why the merge below is on (column, mutant) and never checks a
+    wild-type identity: there is none to check, and a wt column invented here would be
+    a false reassurance.
+
+    Energies are taken in kcal/mol. Each row is the mean over the folds that converged,
+    and the ones that converged in only a few are kept out: with ten folds a row at n=8
+    can carry a 95% interval several kcal/mol wide, which is not a measurement of
+    anything. The count dropped is reported rather than absorbed.
+    """
+    w = pd.read_csv(path, sep="\t")
+    need = {"id", "Pos", "mean_kcal/mol"}
+    missing = need - set(w.columns)
+    if missing:
+        raise SystemExit(f"{path}: MoCHI weights lack {sorted(missing)}")
+    w = w[w.id.astype(str).str.upper() != "WT"].copy()
+    w["Pos"] = pd.to_numeric(w.Pos, errors="coerce")
+    w = w.dropna(subset=["Pos", "mean_kcal/mol"])
+    w["col"] = w.Pos.astype(int)
+    # the mutant residue is the last character of the id; anything else is not a
+    # single-residue weight and has no place in a per-variant predictor
+    w["mut"] = w.id.astype(str).str.strip().str[-1].str.upper()
+    w = w[w.mut.isin(list("ACDEFGHIKLMNPQRSTVWY"))]
+    n_all = len(w)
+    if "n" in w:
+        w = w[pd.to_numeric(w.n, errors="coerce").fillna(0) >= min_folds]
+    out = w.rename(columns={"mean_kcal/mol": "mochi_ddg"})[["col", "mut", "mochi_ddg"]]
+    out = out.groupby(["col", "mut"], as_index=False).mochi_ddg.mean()
+    out.attrs["n_dropped_low_folds"] = int(n_all - len(w))
+    out.attrs["n_weights"] = int(len(out))
+    out.attrs["max_col"] = int(out.col.max()) if len(out) else 0
+    return out
+
+
+def read_alignment(path: Path) -> dict[str, str]:
+    """A FASTA alignment as {header: aligned sequence}, every sequence the same length."""
+    seqs, name = {}, None
+    for line in Path(path).read_text().splitlines():
+        line = line.strip()
+        if line.startswith(">"):
+            name = line[1:]
+            seqs[name] = []
+        elif name and line:
+            seqs[name].append(line)
+    out = {k: "".join(v) for k, v in seqs.items()}
+    lens = {len(v) for v in out.values()}
+    if len(lens) > 1:
+        raise SystemExit(f"{path}: not an alignment - sequence lengths {sorted(lens)}")
+    return out
+
+
+def residue_to_column(aligned: str) -> dict[int, int]:
+    """Residue number (1-based, ungapped) -> column number (1-based) in the alignment."""
+    out, k = {}, 0
+    for i, c in enumerate(aligned, start=1):
+        if c != "-":
+            k += 1
+            out[k] = i
+    return out
+
+
+def mochi_variant_scores(weights: pd.DataFrame, aln: dict[str, str],
+                         acc: dict[str, str]) -> pd.DataFrame:
+    """The energy of each human variant, by the column its residue aligns to.
+
+    The human protein is matched to its sequence in the alignment by UniProt accession,
+    which the `--human GENE=ACCESSION` argument already supplies, rather than by a
+    header substring that could match two entries.
+    """
+    width = len(next(iter(aln.values()))) if aln else 0
+    if weights.attrs.get("max_col", 0) > width:
+        raise SystemExit(
+            f"the MoCHI weights run to column {weights.attrs['max_col']} but the "
+            f"alignment is {width} columns wide: these are different column frames, "
+            "so the mapping would be silently wrong. Supply the alignment the model "
+            "was fitted on.")
+    rows = []
+    for gene, a in acc.items():
+        hit = [v for k, v in aln.items() if a.upper() in k.upper()]
+        if len(hit) != 1:
+            continue
+        r2c = residue_to_column(hit[0])
+        m = pd.DataFrame({"pos": list(r2c), "col": [r2c[p] for p in r2c]})
+        m["gene"] = gene
+        rows.append(m)
+    if not rows:
+        return pd.DataFrame(columns=["gene", "pos", "mut", "mochi_ddg"])
+    pos_map = pd.concat(rows, ignore_index=True)
+    out = pos_map.merge(weights, on="col", how="inner")
+    return out[["gene", "pos", "mut", "col", "mochi_ddg"]]
+
+
 PREDICTORS = [("am_pathogenicity", "AlphaMissense", +1, "higher = pathogenic"),
+              ("mochi_ddg", "MoCHI mask ΔΔG", +1, "higher = destabilising"),
               ("esm1v", "ESM-1v", -1, "lower = deleterious"),
               ("mu", "Family model μ", -1, "lower = constrained"),
               ("conservation", "Column conservation", +1, "higher = conserved")]
-VIOLIN_ORDER = ["am_pathogenicity", "esm1v", "mu"]
+VIOLIN_ORDER = ["am_pathogenicity", "esm1v", "mochi_ddg", "mu"]
 
 
 def predictor_table(scored: pd.DataFrame, am: pd.DataFrame | None,
-                    esm: dict[str, pd.DataFrame], acc: dict[str, str]) -> pd.DataFrame:
+                    esm: dict[str, pd.DataFrame], acc: dict[str, str],
+                    mochi: pd.DataFrame | None = None) -> pd.DataFrame:
     """The known variants with every available predictor attached, one column each."""
     d = scored[scored.label.isin(["benign", "pathogenic"])].copy()
+    if mochi is not None and len(mochi):
+        d = d.merge(mochi.drop(columns=[c for c in ("col",) if c in mochi]),
+                    on=["gene", "pos", "mut"], how="left")
     if am is not None and len(am):
         d["uniprot"] = d.gene.map({g: a.upper() for g, a in acc.items()})
         d = d.merge(am, on=["uniprot", "pos", "wt", "mut"], how="left")
@@ -707,6 +809,17 @@ def main(argv=None):
     ap.add_argument("--esm", action="append", default=[], metavar="GENE=FILE",
                     help="per-variant ESM-1v scores for a query protein, as a csv with "
                          "pos, mut and esm1v/llr/score (repeatable)")
+    ap.add_argument("--mochi", metavar="FILE",
+                    help="a MoCHI weights table from a masked-alignment energy model: "
+                         "id, Pos, mean_kcal/mol, one row per (alignment column, "
+                         "mutant residue). Scored per variant, unlike the family model")
+    ap.add_argument("--mochi-aln", metavar="FILE",
+                    help="the alignment the MoCHI model was fitted on, as FASTA, "
+                         "including the human query sequence. Pos in the weights is a "
+                         "column of THIS alignment, not of the family alignment this "
+                         "command builds")
+    ap.add_argument("--mochi-min-folds", type=int, default=8,
+                    help="drop weights fitted in fewer than this many folds (default 8)")
     ap.add_argument("--include-vus", action="store_true",
                     help="also score the variants ClinVar calls uncertain, and add a panel "
                          "showing where they fall. They never enter the AUROC, the "
@@ -796,12 +909,35 @@ def main(argv=None):
                   "against the sequence)", flush=True)
         esm[gene] = e
 
+    mochi_scores = None
+    if a.mochi:
+        if not a.mochi_aln:
+            raise SystemExit("--mochi needs --mochi-aln: Pos in the weights is a column "
+                             "of the alignment the model was fitted on, and without it "
+                             "there is nothing to map a human residue through")
+        w = read_mochi(Path(a.mochi), a.mochi_min_folds)
+        aln = read_alignment(Path(a.mochi_aln))
+        width = len(next(iter(aln.values()))) if aln else 0
+        print(f"\n  MoCHI: {w.attrs['n_weights']:,} weights over "
+              f"{w.col.nunique()} columns (max {w.attrs['max_col']}); alignment is "
+              f"{width} columns over {len(aln)} sequences; dropped "
+              f"{w.attrs['n_dropped_low_folds']} weights fitted in fewer than "
+              f"{a.mochi_min_folds} folds", flush=True)
+        mochi_scores = mochi_variant_scores(w, aln, queries)
+        if not len(mochi_scores):
+            print("    none of the query accessions appear in the alignment headers - "
+                  "no MoCHI score will be attached", flush=True)
+        else:
+            for gene, d in mochi_scores.groupby("gene"):
+                print(f"    {gene}: {len(d):,} scored substitutions over "
+                      f"{d.pos.nunique()} residues", flush=True)
+
     outdir = Path(a.outdir)
     outdir.mkdir(parents=True, exist_ok=True)
     summary = {}
     for name, members in fams.items():
         summary[name] = run_one(name, members, seqs, cv, a.min_proteins, outdir,
-                                am=am, esm=esm, acc=queries)
+                                am=am, esm=esm, acc=queries, mochi=mochi_scores)
     if len(summary) > 1:
         print("\n  == families side by side")
         for n, r in summary.items():
@@ -823,7 +959,7 @@ def main(argv=None):
 
 
 def run_one(name, members, seqs, cv, min_proteins, outdir, am=None, esm=None,
-            acc=None):
+            acc=None, mochi=None):
     import json
     print(f"\n  == {name}: aligning and pooling {len(members)} measured proteins",
           flush=True)
@@ -959,7 +1095,7 @@ def run_one(name, members, seqs, cv, min_proteins, outdir, am=None, esm=None,
                           + (f"  [{r.seg_type}]" if isinstance(getattr(r, "seg_type", None), str)
                              else ""))
             print(f"    full table: {name}_variant_ranking.csv")
-        pred = predictor_table(known, am, esm or {}, acc or {})
+        pred = predictor_table(known, am, esm or {}, acc or {}, mochi)
         keys = [k for k, *_ in PREDICTORS if k in pred and pred[k].notna().any()]
         if len(keys) > 1:
             pr = score_predictors(pred, keys)

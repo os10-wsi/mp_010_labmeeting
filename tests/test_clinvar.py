@@ -1,5 +1,6 @@
 """ClinVar parsing and the pathogenic-vs-benign test. The filtering decides the result."""
 import gzip
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -399,6 +400,7 @@ def test_the_figure_gains_a_panel_only_when_there_are_vus(tmp_path):
 
 
 def _four_predictors(n=80, seed=0):
+    """Every predictor in PREDICTORS, each planted pointing its own way round."""
     rng = np.random.default_rng(seed)
     half = n // 2
     return pd.DataFrame({
@@ -410,7 +412,9 @@ def _four_predictors(n=80, seed=0):
         "esm1v": np.r_[rng.normal(-8.0, 1.0, half), rng.normal(-4.0, 1.0, half)],
         "am_pathogenicity": np.r_[rng.normal(0.80, 0.12, half),
                                   rng.normal(0.20, 0.12, half)].clip(0, 1),
-        "conservation": np.r_[rng.normal(0.85, 0.12, half), rng.normal(0.55, 0.12, half)]})
+        "conservation": np.r_[rng.normal(0.85, 0.12, half), rng.normal(0.55, 0.12, half)],
+        # MoCHI is a destabilisation energy: higher = worse, like AlphaMissense
+        "mochi_ddg": np.r_[rng.normal(2.0, 0.5, half), rng.normal(0.1, 0.5, half)]})
 
 
 def test_every_predictor_is_turned_the_right_way_round():
@@ -492,3 +496,101 @@ def test_the_predictor_figure_draws_a_violin_per_predictor_plus_one_roc(tmp_path
     cap = (tmp_path / "c03_hexose_predictors_caption.txt")
     if cap.exists():                       # paper style writes panel text to a caption
         assert "AlphaMissense" in cap.read_text()
+
+
+# ------------------------------- the MoCHI masked-alignment energy model as a predictor
+ALN = Path(__file__).parent / "data" / "hxt1_hxt3_slc2a10.aln.fasta"
+
+
+def _weights(tmp_path, cols=(1, 2, 3, 400), folds=10):
+    """A MoCHI weights file in the shape the real one has, including its WT row."""
+    rows = ["\t".join(["id", "id_ref", "Pos", "Pos_ref", "n", "mean", "std",
+                       "trait_name", "mean_kcal/mol", "std_kcal/mol"]),
+            "\t".join(["WT", "WT", "", "", "10", "-2.03", "0.03", "Folding",
+                       "-1.22", "0.02"])]
+    for c in cols:
+        for mut, e in (("A", 0.5), ("K", 2.5), ("L", -0.3)):
+            rows.append("\t".join([f"-{c}{mut}", f"-{c}{mut}", str(c), str(c),
+                                   str(folds), str(e * 1.66), "0.4", "Folding",
+                                   str(e), "0.2"]))
+    p = tmp_path / "weights.txt"
+    p.write_text("\n".join(rows) + "\n")
+    return p
+
+
+def test_the_mochi_weights_are_read_as_column_and_mutant(tmp_path):
+    from mpdms.clinvar import read_mochi
+    w = read_mochi(_weights(tmp_path))
+    assert set(w.columns) == {"col", "mut", "mochi_ddg"}
+    assert "WT" not in set(w.mut)                       # the wild-type row is not a weight
+    assert sorted(w.col.unique()) == [1, 2, 3, 400]
+    assert set(w.mut) == {"A", "K", "L"}
+    assert float(w[(w.col == 2) & (w.mut == "K")].mochi_ddg.iloc[0]) == pytest.approx(2.5)
+    assert w.attrs["max_col"] == 400
+
+
+def test_weights_from_too_few_folds_are_dropped_and_counted(tmp_path):
+    from mpdms.clinvar import read_mochi
+    w = read_mochi(_weights(tmp_path, folds=5), min_folds=8)
+    assert len(w) == 0 and w.attrs["n_dropped_low_folds"] == 12
+    assert len(read_mochi(_weights(tmp_path, folds=5), min_folds=4)) == 12
+
+
+def test_a_human_residue_is_scored_through_the_column_it_aligns_to(tmp_path):
+    from mpdms.clinvar import (mochi_variant_scores, read_alignment,
+                               read_mochi, residue_to_column)
+    aln = read_alignment(ALN)
+    assert len({len(v) for v in aln.values()}) == 1
+    human = [v for k, v in aln.items() if "O95528" in k][0]
+    r2c = residue_to_column(human)
+    # SLC2A10 starts at column 1 and is shorter than the alignment, so its residues
+    # must map to strictly increasing columns, the last beyond its own length
+    assert r2c[1] == 1 and len(r2c) == len(human.replace("-", ""))
+    assert r2c[len(r2c)] <= len(human)
+    assert all(r2c[k] < r2c[k + 1] for k in list(r2c)[:-1])
+
+    w = read_mochi(_weights(tmp_path, cols=(1, 2, 3, r2c[200])))
+    got = mochi_variant_scores(w, aln, {"SLC2A10": "O95528"})
+    assert set(got.gene) == {"SLC2A10"}
+    # residue 200 of the human protein picked up the weights at its own column
+    at200 = got[got.pos == 200]
+    assert set(at200.mut) == {"A", "K", "L"}
+    assert float(at200[at200.mut == "K"].mochi_ddg.iloc[0]) == pytest.approx(2.5)
+
+
+def test_a_mismatched_column_frame_is_refused_rather_than_mapped(tmp_path):
+    """The failure this guard exists for produces a plausible AUROC from nonsense."""
+    from mpdms.clinvar import mochi_variant_scores, read_alignment, read_mochi
+    aln = read_alignment(ALN)
+    w = read_mochi(_weights(tmp_path, cols=(1, 2, 99999)))
+    with pytest.raises(SystemExit, match="different column frames"):
+        mochi_variant_scores(w, aln, {"SLC2A10": "O95528"})
+
+
+def test_an_unknown_accession_scores_nothing_rather_than_guessing(tmp_path):
+    from mpdms.clinvar import mochi_variant_scores, read_alignment, read_mochi
+    aln = read_alignment(ALN)
+    w = read_mochi(_weights(tmp_path))
+    assert not len(mochi_variant_scores(w, aln, {"SLC2A1": "P11166"}))
+
+
+def test_mochi_joins_the_predictor_comparison_per_variant(tmp_path):
+    from mpdms.clinvar import PREDICTORS, predictor_table
+    keys = [k for k, *_ in PREDICTORS]
+    assert "mochi_ddg" in keys
+    sign = [s for k, _, s, _ in PREDICTORS if k == "mochi_ddg"][0]
+    assert sign == +1                       # destabilising = pathogenic
+    known = pd.DataFrame({"gene": ["SLC2A10"] * 4, "pos": [10, 10, 20, 30],
+                          "wt": list("ACDE"), "mut": list("AKLA"),
+                          "label": ["benign", "pathogenic", "benign", "pathogenic"]})
+    mochi = pd.DataFrame({"gene": ["SLC2A10"] * 3, "pos": [10, 10, 20],
+                          "mut": ["A", "K", "L"], "col": [11, 11, 22],
+                          "mochi_ddg": [0.1, 2.9, -0.2]})
+    out = predictor_table(known, None, {}, {"SLC2A10": "O95528"}, mochi)
+    assert len(out) == 4                    # no row is duplicated by the merge
+    assert out.mochi_ddg.notna().sum() == 3
+    assert float(out[(out.pos == 10) & (out.mut == "K")].mochi_ddg.iloc[0]) == 2.9
+    # two substitutions at one residue get DIFFERENT scores: the thing the family
+    # model cannot do, and the reason this predictor is worth adding
+    at10 = out[out.pos == 10].mochi_ddg.tolist()
+    assert at10[0] != at10[1]

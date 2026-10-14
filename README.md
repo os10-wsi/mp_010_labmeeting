@@ -325,8 +325,28 @@ python -m mpdms clinvar \
   --family hexose=configs/HXT1.yaml,configs/HXT2.yaml,configs/HXT3.yaml,configs/HXT7.yaml \
   --human SLC2A10=O95528 --table variant_summary.txt.gz \
   --alphamissense AlphaMissense_aa_substitutions.tsv.gz \
-  --esm SLC2A10=SLC2A10_esm1v.csv
+  --esm SLC2A10=SLC2A10_esm1v.csv \
+  --mochi mochi_project/task_1/weights/weights_Folding.txt \
+  --mochi-aln hxt1_hxt3_slc2a10.aln.fasta
 ```
+
+**A masked-alignment energy model** joins the comparison with `--mochi`. A MoCHI
+weights table holds one energy per (alignment column, mutant residue): the model is
+fitted on a masked alignment of the yeast members, so a row is not a substitution of a
+named wild type — the id reads `-3A`, a gap where the wild type would be — and the
+merge is on (column, mutant) with no wild-type identity to check. That makes it the
+only yeast-derived predictor here that is **per variant** rather than per position, so
+unlike the family model it can separate two substitutions at one residue, and it is not
+bounded by the position-score ceiling the rest of this section is subject to.
+
+`Pos` in the weights is a column of the alignment the model was fitted on, which is
+**not** the alignment this command builds — so `--mochi-aln` is required and must
+contain the human query. The guard that matters: if the weights run past the end of
+that alignment the run stops rather than mapping, because a scrambled column frame
+produces a plausible AUROC from nonsense. Weights fitted in fewer than
+`--mochi-min-folds` folds (default 8 of 10) are dropped and the count is printed; the
+real tables carry rows whose 95% interval is several kcal/mol wide. Direction is
+higher = destabilising = pathogenic, the same convention as AlphaMissense.
 
 C03 puts the family model beside the predictors it has to beat: one violin per
 predictor in its own units (benign grey, pathogenic blue), then one ROC with all of
