@@ -723,6 +723,109 @@ def i05_ranking(helices: dict, names: list[str], outdir: Path) -> dict:
     return {"status": "ok", "headline": head, "ranking": t.to_dict("records")}
 
 
+def i07_hydrophobicity_control(variants: dict, names: list[str], outdir: Path,
+                               n_bins: int = 10) -> dict:
+    """The control for i04: plain hydrophobicity change in place of ddG.
+
+    i04's x axis is an insertion energy - a published scale, evaluated at each residue's
+    own depth, with the sign and the asymmetry the measurement found. This replaces it
+    with the crudest possible substitute: the Kyte-Doolittle difference between the
+    mutant and the wild-type residue, one number per substitution, identical for every
+    residue in every helix at every depth. No scale, no depth, no orientation.
+
+    That is what makes it a control rather than another analysis. If the i04 curve is
+    reproduced here, then nothing in that figure needed an insertion scale and it could
+    have been drawn from a 1982 hydrophobicity table; whatever it shows is about
+    hydrophobicity in general and not about the translocon. If the ddG curve is
+    appreciably the stronger of the two, the depth dependence is doing work.
+
+    So the number to read is not this slope on its own but the comparison, which the
+    table carries: each predictor's slope alone, and then both in one model, where the
+    coefficient on ddG is what the insertion scale adds once plain hydrophobicity has
+    been allowed to explain whatever it can. Errors are clustered by helix throughout.
+    """
+    import statsmodels.formula.api as smf
+    from .annot import KYTE_DOOLITTLE as KD
+    rows, fits = [], []
+    fig, pairs, _ = grid(names, w=3.1, h=2.8, extra=0.3)
+    for i, (g, ax) in enumerate(pairs):
+        v = variants[g].copy()
+        v["delta_kd"] = [KD.get(m, np.nan) - KD.get(w, np.nan)
+                         for m, w in zip(v.mut, v.wt)]
+        v = v.dropna(subset=["score_z", "delta_kd"])
+        if len(v) < 100:
+            panel(ax, i, g, "too few variants in a TM helix", size=7.5)
+            continue
+        b = pd.qcut(v.delta_kd, n_bins, duplicates="drop")
+        m = v.groupby(b, observed=True).agg(x=("delta_kd", "mean"),
+                                            y=("score_z", "mean"),
+                                            e=("score_z", "sem"), n=("score_z", "size"))
+        m = m.dropna()
+        ax.fill_between(m.x, m.y - m.e, m.y + m.e, color="#2166AC", alpha=0.18, lw=0)
+        ax.plot(m.x, m.y, "-o", ms=4.5, lw=1.8, color="#2166AC", mec=P.INK, mew=0.4)
+        ax.axhline(0, color=P.MUTED, lw=0.6)
+        ax.axvline(0, color=P.MUTED, lw=0.6, ls=(0, (1, 2)))
+        rows += [{"protein": g, "delta_kd": float(r.x), "mean_effect": float(r.y),
+                  "sem": float(r.e), "n_variants": int(r.n)} for r in m.itertuples()]
+
+        def fit(formula, d):
+            return smf.ols(formula, data=d).fit(cov_type="cluster",
+                                                cov_kwds={"groups": d.helix})
+
+        d = v[["score_z", "delta_kd", "helix"]].dropna()
+        kd_only = fit("score_z ~ delta_kd", d)
+        row = {"protein": g, "n_variants": int(len(d)),
+               "n_helices": int(d.helix.nunique()),
+               "slope_kd": float(kd_only.params["delta_kd"]),
+               "se_kd": float(kd_only.bse["delta_kd"]),
+               "p_kd": float(kd_only.pvalues["delta_kd"]),
+               "r2_kd": float(kd_only.rsquared),
+               "spearman_kd": float(ss.spearmanr(d.delta_kd, d.score_z).statistic)}
+        # the comparison, where there is a ddG to compare against
+        if "ddg" in v and v.ddg.notna().any():
+            dd = v[["score_z", "delta_kd", "ddg", "helix"]].dropna()
+            if len(dd) > 100 and dd.helix.nunique() > 2:
+                ddg_only, both = fit("score_z ~ ddg", dd), fit("score_z ~ delta_kd + ddg", dd)
+                row.update(
+                    slope_ddg=float(ddg_only.params["ddg"]),
+                    r2_ddg=float(ddg_only.rsquared), r2_both=float(both.rsquared),
+                    r2_added_by_ddg=float(both.rsquared - kd_only.rsquared),
+                    slope_ddg_given_kd=float(both.params["ddg"]),
+                    se_ddg_given_kd=float(both.bse["ddg"]),
+                    p_ddg_given_kd=float(both.pvalues["ddg"]),
+                    corr_kd_ddg=float(ss.pearsonr(dd.delta_kd, dd.ddg).statistic))
+        fits.append(row)
+        extra = f"slope {row['slope_kd']:+.3f} per KD unit, {len(d):,} variants"
+        if "r2_added_by_ddg" in row:
+            extra += f"; ΔΔG adds R² {row['r2_added_by_ddg']:+.3f}"
+        panel(ax, i, g, extra, size=7.5)
+        if i // 2 == (len(names) - 1) // 2:
+            ax.set_xlabel("Δ hydrophobicity, Kyte–Doolittle (mutant − wild type)",
+                          fontsize=7.5)
+        if i % 2 == 0:
+            ax.set_ylabel("mean effect", fontsize=7.5)
+    fig.suptitle("The control for I04: every missense variant in any TM helix, binned "
+                 "by plain Kyte–Doolittle change instead of by ΔΔG. One number per "
+                 "substitution, the same for every residue at every depth. If this "
+                 "reproduces the I04 curve, that curve did not need an insertion "
+                 "scale. Band = SEM over variants; slopes are clustered by helix.",
+                 fontsize=7, x=0.01, ha="left")
+    P.save(fig, outdir, "i07_hydrophobicity_control", None, "I07")
+    plt.close(fig)
+    if not fits:
+        return {"status": "skipped", "reason": "no protein has enough TM variants"}
+    pd.DataFrame(rows).to_csv(outdir / "i07_hydrophobicity_curve.csv", index=False)
+    ft = pd.DataFrame(fits)
+    ft.to_csv(outdir / "i07_hydrophobicity_slopes.csv", index=False)
+    head = "; ".join(
+        f"{r.protein.replace('_fitness', '')} KD slope {r.slope_kd:+.3f}"
+        + (f", ΔΔG adds R² {r.r2_added_by_ddg:+.3f} (p {r.p_ddg_given_kd:.2g})"
+           if "r2_added_by_ddg" in ft and np.isfinite(getattr(r, "r2_added_by_ddg", np.nan))
+           else "")
+        for r in ft.itertuples())
+    return {"status": "ok", "headline": head, "by_protein": ft.to_dict("records")}
+
+
 def i06_scale_agreement(variants: dict, helices: dict, names: list[str],
                         outdir: Path) -> dict:
     """Do the two scales predict the same thing, and does either match the measurement?
@@ -858,7 +961,8 @@ ANALYSES = {"i01": "helix ΔG against its tolerance",
             "i03": "every helix separately, with the mean and median of them",
             "i04": "the pooled curve over all helices, averaged over variants",
             "i05": "the helices ranked by wild-type insertion energy",
-            "i06": "do the two scales agree, and does either match the measurement?"}
+            "i06": "do the two scales agree, and does either match the measurement?",
+            "i07": "the control: plain hydrophobicity change instead of ΔΔG"}
 
 
 def main(argv=None):
@@ -947,8 +1051,10 @@ def main(argv=None):
                 r = i04_pooled(variants, names, outdir)
             elif k == "i05":
                 r = i05_ranking(helices, names, outdir)
-            else:
+            elif k == "i06":
                 r = i06_scale_agreement(variants, helices, names, outdir)
+            else:
+                r = i07_hydrophobicity_control(variants, names, outdir)
         except Exception as e:
             r = {"status": "error", "reason": f"{type(e).__name__}: {e}"}
         out[k] = r

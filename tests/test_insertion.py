@@ -478,3 +478,62 @@ def test_the_ddg_axis_says_which_depth_and_which_scale():
     assert "dstbl" in a and "bilayer" in a
     assert "hessa" in b and "structure" in b
     assert a != b
+
+
+# ------------------------------------------- i07: the plain-hydrophobicity control
+def _tm_variants(n=900, kd_effect=-0.06, ddg_effect=0.0, seed=11):
+    """TM variants whose effect is driven by KD change, by ddG, or by both."""
+    from mpdms.annot import KYTE_DOOLITTLE as KD
+    rng = np.random.default_rng(seed)
+    aas = list("ACDEFGHIKLMNPQRSTVWY")
+    wt = rng.choice(aas, n)
+    mut = rng.choice(aas, n)
+    z = rng.uniform(-15, 15, n)
+    dkd = np.array([KD[m] - KD[w] for m, w in zip(mut, wt)])
+    ddg = np.array([I.residue_dg(m, zi, "dstbl") - I.residue_dg(w, zi, "dstbl")
+                    for m, w, zi in zip(mut, wt, z)])
+    return pd.DataFrame({
+        "wt": wt, "mut": mut, "z_ideal": z, "ddg": ddg,
+        "helix": rng.choice([f"TM{k}" for k in range(1, 9)], n),
+        "score_z": (-0.4 + kd_effect * dkd + ddg_effect * ddg + rng.normal(0, 0.15, n))})
+
+
+def test_i07_recovers_the_hydrophobicity_slope_and_writes_both_tables(tmp_path):
+    from mpdms.insertion import i07_hydrophobicity_control
+    r = i07_hydrophobicity_control({"T": _tm_variants(kd_effect=-0.06)}, ["T"], tmp_path)
+    assert r["status"] == "ok"
+    row = r["by_protein"][0]
+    assert row["slope_kd"] == pytest.approx(-0.06, abs=0.02)
+    assert row["spearman_kd"] < -0.5
+    assert (tmp_path / "i07_hydrophobicity_curve.csv").exists()
+    assert (tmp_path / "i07_hydrophobicity_slopes.csv").exists()
+    assert (tmp_path / "i07_hydrophobicity_control.png").exists()
+
+
+def test_i07_says_whether_ddg_adds_anything_over_plain_hydrophobicity():
+    """The point of the control: when the effect is pure KD, ddG must add ~nothing,
+    and when the effect really is depth-dependent, ddG must add something."""
+    from mpdms.insertion import i07_hydrophobicity_control
+    import tempfile
+    from pathlib import Path as _P
+    out = {}
+    for name, kw in (("kd_only", dict(kd_effect=-0.06, ddg_effect=0.0)),
+                     ("ddg_too", dict(kd_effect=-0.02, ddg_effect=-0.30))):
+        with tempfile.TemporaryDirectory() as d:
+            out[name] = i07_hydrophobicity_control(
+                {"T": _tm_variants(**kw)}, ["T"], _P(d))["by_protein"][0]
+    assert out["kd_only"]["r2_added_by_ddg"] < 0.02
+    assert out["ddg_too"]["r2_added_by_ddg"] > 0.05
+    assert out["ddg_too"]["p_ddg_given_kd"] < 0.01
+    # the two predictors are strongly correlated, which is why the control is needed
+    assert abs(out["kd_only"]["corr_kd_ddg"]) > 0.5
+
+
+def test_i07_treats_every_residue_the_same_way():
+    """No depth enters: the same substitution gets the same x wherever it sits."""
+    from mpdms.annot import KYTE_DOOLITTLE as KD
+    assert KD["K"] - KD["L"] == pytest.approx(-7.7)
+    # ddG for the same substitution does depend on depth; delta_kd cannot
+    deep = I.residue_dg("K", 0.0, "dstbl") - I.residue_dg("L", 0.0, "dstbl")
+    edge = I.residue_dg("K", -15.0, "dstbl") - I.residue_dg("L", -15.0, "dstbl")
+    assert abs(deep - edge) > 0.5

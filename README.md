@@ -613,6 +613,16 @@ in a 19-residue segment rather than by ångström, so `--depth structure` is ref
 instead of extrapolated, and the transcription is checked for symmetry at import because
 a mistyped row is the realistic failure mode.
 
+**Is the insertion scale earning its place?** I07 is the control: the same pooled
+curve as I04 with the Kyte–Doolittle difference between mutant and wild type on x
+instead of ΔΔG — one number per substitution, no scale, no depth, no orientation. If
+I07 reproduces I04, that figure did not need an insertion scale and is about
+hydrophobicity in general rather than about the translocon. `i07_hydrophobicity_slopes.csv`
+makes the comparison directly: each predictor's slope and R² alone, then both in one
+model, where `slope_ddg_given_kd` and `r2_added_by_ddg` are what the depth-dependent
+scale adds once plain hydrophobicity has explained whatever it can. The two predictors
+correlate around −0.75, so this is the only honest way to separate them.
+
 **Which membrane the scale came from.** dsTβL was measured in a bacterial
 inner-membrane reporter and Hessa on Sec61 in dog pancreas rough microsomes, an ER
 membrane; neither is a yeast plasma membrane. `--only i06` answers the question that
@@ -645,6 +655,7 @@ Two details that matter and are easy to get wrong:
 | I05 | the TM helices **ranked** by the insertion energy of their wild-type sequence, within each protein |
 | I06 | the two scales against each other: the same substitutions at the same depths, with the helix ordering and each scale's correlation with the measured effect in `i06_scale_agreement.csv` |
 | I06B | the twenty residues under both scales, at the bilayer centre and at the interface — where the two disagree, and which residues do it |
+| I07 | **the control for I04**: the same pooled curve with plain Kyte–Doolittle change on x instead of ΔΔG — one number per substitution, identical for every residue at every depth |
 
 I05 is the premise of all the others and worth reading first: if a protein's helices
 all sit within a kcal/mol of each other there is no contrast to test, and a bar past
