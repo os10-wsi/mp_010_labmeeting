@@ -799,7 +799,7 @@ def main(argv=None):
     ap = argparse.ArgumentParser(
         prog="python -m mpdms clinvar",
         description="Test the family's abundance signal against ClinVar classifications.")
-    ap.add_argument("--family", action="append", required=True, metavar="NAME=cfg1,cfg2,...",
+    ap.add_argument("--family", action="append", default=[], metavar="NAME=cfg1,cfg2,...",
                     help="the measured proteins to pool, as in `mpdms bayes`; repeatable, "
                          "so a narrow and a broad family can be compared on the same variants")
     ap.add_argument("--human", action="append", required=True, metavar="GENE=ACCESSION",
@@ -835,6 +835,24 @@ def main(argv=None):
     a = ap.parse_args(argv)
     P.use_style(a.style)
 
+    fams = {}
+    for spec in a.family:
+        name, _, members = spec.partition("=")
+        members = [m.strip() for m in members.split(",") if m.strip()]
+        if not name or not members:
+            raise SystemExit(f"--family {spec}: expected NAME=cfg1.yaml,cfg2.yaml,...")
+        bad = [m for m in members if not Path(m).is_file()]
+        if bad:
+            raise SystemExit(f"--family {name}: not a config file: {', '.join(bad)}")
+        if len(members) < a.min_proteins:
+            raise SystemExit(
+                f"--family {name} has {len(members)} proteins but --min-proteins is "
+                f"{a.min_proteins}, so no alignment column can ever reach the "
+                f"threshold and nothing would be pooled. Pass --min-proteins "
+                f"{len(members)} to use every column these proteins share, or add "
+                "more family members.")
+        fams[name] = members
+
     # Every input path is checked before any work starts. The expensive steps - fetching
     # the sequences, streaming ClinVar, streaming AlphaMissense - run in that order, so
     # a path typed wrong in the last argument used to surface as a traceback minutes in,
@@ -847,16 +865,6 @@ def main(argv=None):
         raise SystemExit("file not found:\n" + "\n".join(
             f"        {flag}  {v}" for flag, v in missing))
 
-    fams = {}
-    for spec in a.family:
-        name, _, members = spec.partition("=")
-        members = [m.strip() for m in members.split(",") if m.strip()]
-        if not name or not members:
-            raise SystemExit(f"--family {spec}: expected NAME=cfg1.yaml,cfg2.yaml,...")
-        bad = [m for m in members if not Path(m).is_file()]
-        if bad:
-            raise SystemExit(f"--family {name}: not a config file: {', '.join(bad)}")
-        fams[name] = members
     queries = {}
     for h in a.human:
         g, _, acc = h.partition("=")
@@ -953,6 +961,11 @@ def main(argv=None):
     outdir = Path(a.outdir)
     outdir.mkdir(parents=True, exist_ok=True)
     summary = {}
+    if not fams:
+        summary["predictors"] = run_predictors_only(
+            cv, outdir, am=am, esm=esm, acc=queries, mochi=mochi_scores)
+        print(f"\n  -> {outdir}/")
+        return 0
     for name, members in fams.items():
         summary[name] = run_one(name, members, seqs, cv, a.min_proteins, outdir,
                                 am=am, esm=esm, acc=queries, mochi=mochi_scores)
@@ -974,6 +987,55 @@ def main(argv=None):
         shown = outdir
     print(f"\n  -> {shown}/")
     return 0
+
+
+def run_predictors_only(cv, outdir, am=None, esm=None, acc=None, mochi=None):
+    """The predictor comparison without a family model.
+
+    With no `--family` there is no alignment, no pooling and no mu, so none of the
+    machinery that exists to turn yeast measurements into a per-column constraint runs.
+    What is left is the comparison between predictors that score a human variant
+    directly - AlphaMissense, ESM-1v, and a MoCHI energy model - on the ClinVar labels.
+
+    That also removes the position-score ceiling this module usually warns about: every
+    predictor here is per variant, so two substitutions at one residue can differ and
+    the comparison is not bounded by how often pathogenic and benign variants occupy
+    different positions.
+    """
+    import json
+    known = cv[cv.label.isin(["benign", "pathogenic"])].copy()
+    if not len(known):
+        raise SystemExit("no classified missense variants to score")
+    pred = predictor_table(known, am, esm or {}, acc or {}, mochi)
+    keys = [k for k, *_ in PREDICTORS if k in pred and pred[k].notna().any()]
+    if not keys:
+        raise SystemExit("no predictor scored any variant: pass at least one of "
+                         "--alphamissense, --esm or --mochi, or add --family")
+    pr = score_predictors(pred, keys)
+    pred.to_csv(outdir / "c03_predictors.csv", index=False)
+    pr.to_csv(outdir / "c03_predictor_auroc.csv", index=False)
+    gene = str(known.gene.iloc[0]) if known.gene.nunique() == 1 else ""
+    figure_predictors(pred, pr, outdir, "predictors", gene)
+    print(f"\n  {len(known):,} classified variants, no family model "
+          f"({int((known.label == 'pathogenic').sum())} pathogenic, "
+          f"{int((known.label == 'benign').sum())} benign)")
+    print("  predictors, each on its own variants and on the shared set:")
+    for k in keys:
+        rr = pr[pr.key == k].set_index("scope")
+        lab = next(l for kk, l, *_ in PREDICTORS if kk == k)
+        bits = []
+        for sc in ("own", "shared"):
+            if sc in rr.index and pd.notna(rr.loc[sc, "auroc"]):
+                bits.append(f"{sc} {rr.loc[sc, 'auroc']:.3f} "
+                            f"[{rr.loc[sc, 'auroc_lo']:.3f}, {rr.loc[sc, 'auroc_hi']:.3f}] "
+                            f"n={int(rr.loc[sc, 'n'])}")
+        print(f"    {lab:<22} " + "   ".join(bits))
+    print("    compare the shared column: the own column is a different set of "
+          "variants for each predictor")
+    res = {"mode": "predictors only", "n_known": int(len(known)),
+           "predictors": pr.to_dict("records")}
+    (outdir / "c03_predictors.json").write_text(json.dumps(res, indent=2, default=str))
+    return res
 
 
 def run_one(name, members, seqs, cv, min_proteins, outdir, am=None, esm=None,

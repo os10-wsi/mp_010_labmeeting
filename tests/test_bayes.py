@@ -305,3 +305,19 @@ def test_dropping_a_group_that_leaves_nothing_returns_empty_not_garbage():
     long = _long_seg(seed=13)
     groups = {p: "all" for p in ("P1", "P2", "P3", "P4")}
     assert len(predict_held_out(long, "P1", group_of=groups)) == 0
+
+
+def test_an_empty_pool_still_carries_its_columns():
+    """Every caller's first move is set_index("col"); an empty frame without it raises
+    a KeyError that says nothing about the real cause."""
+    from mpdms.bayes import pool_columns
+    long = pd.DataFrame({"col": [1, 1, 2], "protein": ["a", "b", "a"],
+                         "y": [0.1, 0.2, 0.3], "s": [0.1, 0.1, 0.1],
+                         "seg_type": ["TM", "TM", "TM"]})
+    empty = pool_columns(long, min_proteins=5)
+    assert len(empty) == 0
+    for c in ("col", "mu", "mu_sd", "pred_sd", "proteins"):
+        assert c in empty.columns
+    assert empty.set_index("col").shape[0] == 0
+    # and the real path is unchanged
+    assert len(pool_columns(long, min_proteins=2)) == 1

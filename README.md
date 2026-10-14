@@ -330,6 +330,22 @@ python -m mpdms clinvar \
   --mochi-aln hxt1_hxt3_slc2a10.aln.fasta
 ```
 
+**`--family` is optional.** With none, there is no alignment, no pooling and no μ:
+the run compares only the predictors that score a human variant directly, which is the
+right shape when the question is "how do ESM-1v, AlphaMissense and my energy model
+rank against each other" rather than "does yeast abundance predict pathogenicity".
+It also lifts the position-score ceiling this section otherwise warns about, because
+every predictor left is per variant. Output is `c03_predictors.csv`,
+`c03_predictor_auroc.csv` and the C03 figure.
+
+```bash
+python -m mpdms clinvar \
+  --human SLC2A10=O95528 --table variant_summary.txt.gz \
+  --alphamissense SLC2A10_alphamissense.tsv \
+  --esm SLC2A10=SLC2A10_esm1v.csv \
+  --mochi weights_Folding.txt --mochi-aln hxt1_hxt3_slc2a10.aln.fasta
+```
+
 **A masked-alignment energy model** joins the comparison with `--mochi`. A MoCHI
 weights table holds one energy per (alignment column, mutant residue): the model is
 fitted on a masked alignment of the yeast members, so a row is not a substitution of a

@@ -223,7 +223,12 @@ def pool_columns(long: pd.DataFrame, min_proteins: int = MIN_PROTEINS,
                      "tau_hi": r.get("tau_hi", np.nan), "pred_sd": r["pred_sd"],
                      "shrinkage": r.get("shrinkage", np.nan),
                      "proteins": ",".join(sorted(g.protein))})
-    t = pd.DataFrame(rows)
+    # an empty result still has to carry the columns, or every caller's first
+    # `set_index("col")` raises a KeyError that says nothing about the real cause -
+    # which is almost always min_proteins set above the number of proteins supplied
+    t = pd.DataFrame(rows, columns=[
+        "col", "seg_type", "topology_agreement", "J", "mu", "mu_sd", "mu_lo", "mu_hi",
+        "tau", "tau_hi", "pred_sd", "shrinkage", "proteins"] if not rows else None)
     dropped = 0
     if len(t) and min_topology_agreement > 0 and "topology_agreement" in t:
         keep = t.topology_agreement.isna() | (t.topology_agreement >= min_topology_agreement)

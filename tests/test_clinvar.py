@@ -601,7 +601,8 @@ def test_every_missing_input_is_named_before_any_work_starts(tmp_path, monkeypat
     from mpdms import clinvar as C
     called = []
     monkeypatch.setattr(C, "fetch_sequence", lambda a: called.append(a) or "MA")
-    argv = ["--family", "hexose=configs/SYN1.yaml", "--human", "SLC2A10=O95528",
+    argv = ["--family", "hexose=configs/SYN1.yaml", "--min-proteins", "1",
+            "--human", "SLC2A10=O95528",
             "--table", str(tmp_path / "absent.txt.gz"),
             "--alphamissense", str(tmp_path / "absent.tsv"),
             "--mochi", str(tmp_path / "absent_weights.txt")]
@@ -611,3 +612,47 @@ def test_every_missing_input_is_named_before_any_work_starts(tmp_path, monkeypat
     for flag in ("--table", "--alphamissense", "--mochi"):
         assert flag in msg
     assert not called          # nothing was fetched or read before the check
+
+
+def test_a_family_smaller_than_min_proteins_is_refused_with_the_remedy():
+    """Two proteins and --min-proteins 3 pools nothing, and used to die on a KeyError
+    about a missing 'col' column several minutes into the run."""
+    from mpdms import clinvar as C
+    with pytest.raises(SystemExit) as e:
+        C.main(["--family", "hexose=configs/SYN1.yaml,configs/SYN3.yaml",
+                "--human", "SLC2A10=O95528", "--table", "variant_summary.txt.gz",
+                "--min-proteins", "3"])
+    msg = str(e.value)
+    assert "2 proteins" in msg and "--min-proteins 2" in msg
+
+
+def test_without_a_family_the_predictors_are_compared_on_their_own(tmp_path):
+    """--family is optional: with none, there is no alignment, no pooling and no mu,
+    and every predictor left is per variant rather than per position."""
+    from mpdms import plotting as P
+    from mpdms.clinvar import run_predictors_only
+    P.use_style("default")
+    rng = np.random.default_rng(0)
+    n = 60
+    half = n // 2
+    cv = pd.DataFrame({
+        "gene": "SLC2A10", "pos": np.arange(1, n + 1), "wt": "A", "mut": "V",
+        "label": ["pathogenic"] * half + ["benign"] * half})
+    mochi = pd.DataFrame({"gene": "SLC2A10", "pos": np.arange(1, n + 1), "mut": "V",
+                          "mochi_ddg": np.r_[rng.normal(2.0, 0.5, half),
+                                             rng.normal(0.1, 0.5, half)]})
+    res = run_predictors_only(cv, tmp_path, acc={"SLC2A10": "O95528"}, mochi=mochi)
+    assert res["mode"] == "predictors only" and res["n_known"] == n
+    got = {r["key"]: r for r in res["predictors"] if r["scope"] == "own"}
+    assert set(got) == {"mochi_ddg"}            # the only predictor supplied
+    assert got["mochi_ddg"]["auroc"] > 0.9      # and turned the right way round
+    assert (tmp_path / "c03_predictors.csv").exists()
+    assert (tmp_path / "c03_predictor_auroc.csv").exists()
+
+
+def test_without_a_family_or_a_predictor_there_is_nothing_to_compare(tmp_path):
+    from mpdms.clinvar import run_predictors_only
+    cv = pd.DataFrame({"gene": ["SLC2A10"] * 2, "pos": [1, 2], "wt": ["A", "A"],
+                       "mut": ["V", "V"], "label": ["pathogenic", "benign"]})
+    with pytest.raises(SystemExit, match="no predictor scored any variant"):
+        run_predictors_only(cv, tmp_path, acc={"SLC2A10": "O95528"})
