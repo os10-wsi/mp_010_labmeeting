@@ -197,7 +197,9 @@ def write_structures(cfg, sites: pd.DataFrame, outdir) -> list:
     import subprocess
     from pathlib import Path
 
-    from Bio.PDB import PDBIO, PDBParser
+    from Bio.PDB import PDBIO
+
+    from ..structure import load_structure
     src = cfg.resolve(cfg.get_path("structure.path"))
     if src is None or not src.exists():
         return []
@@ -210,19 +212,35 @@ def write_structures(cfg, sites: pd.DataFrame, outdir) -> list:
     tested = {p_ - off for p_ in z}
     funcres = sorted(p_ - off for p_ in func)
     # frame the view on confidently predicted residues (AlphaFold pLDDT in the B-factor column)
-    conf = sorted({r.id[1] for r in PDBParser(QUIET=True).get_structure("s", str(src)).get_residues()
+    # load_structure, not a bare PDBParser: it dispatches on the suffix, and feeding a
+    # .cif to PDBParser returns an empty structure with no error, which PDBIO then
+    # writes out as a seven-byte file containing nothing but "END"
+    probe = load_structure(src, cfg.get_path("structure.chain", "A"))[0]
+    n_res = sum(1 for _ in probe.get_residues())
+    if not n_res:
+        print(f"    a15: {src.name} parsed to zero residues - coloured structures not "
+              "written", flush=True)
+        return []
+    conf = sorted({r.id[1] for r in probe.get_residues()
                    if "CA" in r and r["CA"].bfactor >= 70})
     orient_sel = f" and resi {_ranges(conf)}" if conf else ""
     out = []
     for name, value in (("a15_zscore", lambda p_: z.get(p_, np.nan)),
                         ("a15_functional", lambda p_: 1.0 if p_ in func else 0.0)):
-        st = PDBParser(QUIET=True).get_structure(cfg.id, str(src))
+        st = load_structure(src, cfg.get_path("structure.chain", "A"))[0]
         for res in st.get_residues():
             v = value(res.id[1] + off)
             for a in res:
                 a.bfactor = float(np.clip(v, -99, 99)) if np.isfinite(v) else 0.0
         pdb = sdir / f"{name}.pdb"
         io = PDBIO(); io.set_structure(st); io.save(str(pdb))
+        # an empty parse writes "END" and nothing else; catch it here rather than
+        # letting PyMOL open a blank object
+        if pdb.stat().st_size < 1000:
+            print(f"    a15: {pdb.name} came out empty ({pdb.stat().st_size} bytes) - "
+                  f"check structure.path in the config", flush=True)
+            pdb.unlink()
+            return out
         out.append(pdb)
         obj = name  # same name PyMOL gives the object when the PDB is opened via File > Open
         sel_t = _ranges(tested) or "none"

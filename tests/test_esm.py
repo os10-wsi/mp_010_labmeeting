@@ -301,3 +301,32 @@ def test_the_structure_colour_range_is_anchored_to_the_calling_threshold(monkeyp
     finally:
         monkeypatch.delenv("MPDMS_Z_SITE")
         importlib.reload(A15)
+
+
+def test_a_cif_structure_is_parsed_rather_than_silently_emptied(tmp_path):
+    """PDBParser on a .cif returns zero residues with no error, and PDBIO then writes a
+    seven-byte file containing only "END" - which is what reached the user."""
+    import warnings
+    from Bio.PDB import MMCIFIO, PDBIO, PDBParser
+    warnings.filterwarnings("ignore")
+    pdb = tmp_path / "m.pdb"
+    lines = []
+    for i in range(1, 31):
+        lines.append(f"ATOM  {i:>5}  CA  ALA A{i:>4}    "
+                     f"{i * 3.0:8.3f}{0.0:8.3f}{0.0:8.3f}  1.00 90.00           C\n")
+    pdb.write_text("".join(lines) + "END\n")
+    st = PDBParser(QUIET=True).get_structure("s", str(pdb))
+    cif = tmp_path / "m.cif"
+    w = MMCIFIO(); w.set_structure(st); w.save(str(cif))
+
+    # the failure mode, pinned so it cannot come back unnoticed
+    empty = PDBParser(QUIET=True).get_structure("x", str(cif))
+    assert sum(1 for _ in empty.get_residues()) == 0
+    out = tmp_path / "empty.pdb"
+    io = PDBIO(); io.set_structure(empty); io.save(str(out))
+    assert out.stat().st_size < 20
+
+    # what the project's own loader does with the same file
+    from mpdms.structure import load_structure
+    good = load_structure(cif, "A")[0]
+    assert sum(1 for _ in good.get_residues()) == 30
