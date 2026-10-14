@@ -49,11 +49,16 @@ OUT = REPO_ROOT / "outputs" / "_cavity"
 BLOCK_A = 20.0           # Å: the length scale s08 measures for constraint
 MIN_GROUP = 8            # positions, before a group is compared
 N_BOOT = 2000
-CLASS_ORDER = ["cavity-lining", "helix-helix core", "lipid-facing",
-               "cytosolic loop", "lumenal loop"]
-CLASS_COLOR = {"cavity-lining": "#B2182B", "helix-helix core": "#E8A33D",
-               "lipid-facing": "#2166AC", "cytosolic loop": "#9AA4B2",
-               "lumenal loop": "#C7CDD4"}
+# Three classes, and they partition the protein: every residue is in exactly one.
+# Inside the membrane the split is on the radial coordinate alone - which side of the
+# bundle a residue faces - so a buried helix-helix residue is no longer a class of its
+# own but is counted with whichever face it sits on. Outside the membrane the two loop
+# sides are pooled: they differ in which side they are on, which matters for insertion
+# and not for this question, and both are solvated.
+CLASS_ORDER = ["cavity", "lipid", "aqueous"]
+CLASS_LABEL = {"cavity": "cavity-lining", "lipid": "lipid-facing",
+               "aqueous": "aqueous: cytosol + lumen"}
+CLASS_COLOR = {"cavity": "#2166AC", "lipid": "#9AA4B2", "aqueous": "#C7CDD4"}
 
 
 # --------------------------------------------------------------------- loading
@@ -98,11 +103,35 @@ def bits_for(cfg) -> dict:
     if len(t) < 40:
         return {}
     t["block"] = spatial_blocks(t[["x", "y", "z"]].to_numpy(float))
-    t["is_cavity"] = (t.environ == "cavity-lining").astype(float)
     t["is_tm_f"] = (t.is_tm > 0.5).astype(float) if "is_tm" in t else 0.0
+    cut = float(pos.attrs.get("radial_cut", np.nan))
+    t["klass"] = three_way(t, cut)
+    t = t.dropna(subset=["klass"])
+    t["is_cavity"] = (t.klass == "cavity").astype(float)
     b["sites"] = t
-    b["radial_cut"] = float(pos.attrs.get("radial_cut", np.nan))
+    b["radial_cut"] = cut
+    # how many residues the class change moved, so the redefinition is visible
+    b["n_from_core"] = int(((t.environ == "helix-helix core")
+                            & (t.klass == "cavity")).sum())
+    b["n_core"] = int((t.environ == "helix-helix core").sum())
     return b
+
+
+def three_way(t: pd.DataFrame, cut: float) -> pd.Series:
+    """cavity / lipid / aqueous, exhaustive over the protein.
+
+    The earlier five-class split kept buried helix-helix residues apart from both
+    faces, which left them in the test but out of the figure. Splitting the membrane
+    on radius alone puts every TM residue on one face or the other, so the groups the
+    violins show are the groups the test compares.
+    """
+    out = pd.Series(pd.NA, index=t.index, dtype=object)
+    tm = t.is_tm_f > 0.5
+    if np.isfinite(cut):
+        out[tm & (t.radial < cut)] = "cavity"
+        out[tm & (t.radial >= cut)] = "lipid"
+    out[~tm & t.environ.notna()] = "aqueous"
+    return out
 
 
 # --------------------------------------------------------------------- the test
@@ -207,14 +236,12 @@ def figure_classes(bits: dict, names: list[str], outdir: Path) -> None:
         t = bits[g]["sites"]
         groups, cols = {}, {}
         for c in CLASS_ORDER:
-            s = t.loc[t.environ == c, "median_z"].dropna()
+            s = t.loc[t.klass == c, "median_z"].dropna()
             if len(s) < MIN_GROUP:
                 continue
-            short = c.split("-")[0] if c != "helix-helix core" else "core"
-            short = {"cavity": "cavity", "core": "core", "lipid": "lipid",
-                     "cytosolic": "cyto", "lumenal": "lumen"}.get(short, short)
-            groups[short] = s.to_numpy()
-            cols[short] = CLASS_COLOR[c]
+            lab = f"{CLASS_LABEL[c]} ({len(s)})"
+            groups[lab] = s.to_numpy()
+            cols[lab] = CLASS_COLOR[c]
         if not groups:
             empty_panel(ax, i, g, "no class has enough scored sites")
             continue
@@ -222,15 +249,16 @@ def figure_classes(bits: dict, names: list[str], outdir: Path) -> None:
         from .analyses.a15_esm_functional import Z_SITE
         ax.axhline(0, color=P.MUTED, lw=0.7)
         ax.axhline(Z_SITE, color=P.INK, lw=0.9, ls=(0, (3, 2)))
-        ax.text(len(groups) - 0.45, Z_SITE, " functional threshold", fontsize=6,
-                va="bottom", ha="right")
-        ax.tick_params(axis="x", labelsize=7)
+        ax.text(-0.45, Z_SITE, " functional threshold", fontsize=6, va="bottom",
+                ha="left")
+        ax.tick_params(axis="x", labelsize=6.5)
         panel(ax, i, g, f"{len(t)} scored sites", size=8)
         if i % 2 == 0:
             ax.set_ylabel("site median ESM-1v residual z", fontsize=7.5)
-    fig.suptitle("Lower is more constrained than the abundance assay explains. The claim "
-                 "is that the cavity violin sits below the others.", fontsize=7, x=0.01,
-                 ha="left")
+    fig.suptitle("Lower is more constrained than the abundance assay explains. The "
+                 "claim is that the blue violin sits below the grey ones. Inside the "
+                 "membrane the split is on radius alone, so the three classes cover "
+                 "every scored residue.", fontsize=7, x=0.01, ha="left")
     P.save(fig, outdir, "v01_residual_by_environment", None, "V01")
     plt.close(fig)
 
@@ -277,7 +305,7 @@ def figure_radial(bits: dict, names: list[str], trends: pd.DataFrame,
             empty_panel(ax, i, g, "too few scored TM sites")
             continue
         ax.scatter(d.radial, d.median_z, s=14,
-                   c=[CLASS_COLOR.get(e, "#B0B8C1") for e in d.environ],
+                   c=[CLASS_COLOR.get(k, "#B0B8C1") for k in d.klass],
                    edgecolor=P.INK, linewidth=0.25, zorder=3)
         binned(ax, d.radial, d.median_z,
                np.quantile(d.radial, np.linspace(0, 1, 7)), P.INK, "")
@@ -331,9 +359,12 @@ def main(argv=None):
             continue
         bits[cfg.id], _ = b, names.append(cfg.id)
         t = b["sites"]
-        print(f"  {cfg.id:<16} {len(t):>4} scored sites, "
-              f"{int(t.is_cavity.sum())} cavity-lining, "
-              f"{t.block.nunique()} spatial blocks of ~{BLOCK_A:g} Å", flush=True)
+        counts = t.klass.value_counts()
+        print(f"  {cfg.id:<16} {len(t):>4} scored sites  "
+              + "  ".join(f"{k} {int(counts.get(k, 0))}" for k in CLASS_ORDER)
+              + f"  ({b['n_from_core']} of {b['n_core']} buried helix-helix residues "
+                f"fall on the cavity side)  {t.block.nunique()} blocks of "
+                f"~{BLOCK_A:g} Å", flush=True)
     if not names:
         raise SystemExit("no protein could be tested")
 

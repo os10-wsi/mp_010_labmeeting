@@ -917,6 +917,17 @@ Three things would manufacture that answer, and each is handled rather than hope
 | **spatial autocorrelation** | S08 measured constraint travelling ~20 Å, so neighbours are not independent. Standard errors are clustered on k-means spatial blocks of about that size, and the naive interval is drawn behind the corrected one so the gap is visible |
 | **the threshold** | "cavity-lining" is a median split on distance from the bundle axis, so the claim could be an artefact of where the line fell. The radial coordinate is therefore also used continuously, with no threshold at all |
 
+**The three classes partition the protein.** Inside the membrane a residue is cavity
+or lipid by the radial coordinate alone — which side of the bundle it faces — so a
+buried helix–helix residue is counted with whichever face it sits on rather than
+forming a class of its own. Outside the membrane the cytosolic and lumenal loops are
+pooled: they differ in which side they are on, which matters for insertion and not for
+this question, and both are solvated. Every scored residue is therefore in exactly one
+violin and in exactly one side of the test, which the earlier five-class split did not
+manage — buried residues were in the test but absent from the figure. The run prints
+how many formerly-core residues fall on the cavity side, so the redefinition is visible
+rather than silent.
+
 **The spatial correction is the part that matters, and it is load-bearing.**
 `tests/test_cavity.py` plants a nuisance shared within each 20 Å patch and *no* cavity
 effect: the naive test calls the difference real at p < 0.05, while the block-clustered
@@ -930,7 +941,7 @@ interval far too narrow.
 
 | figure | what it shows |
 | --- | --- |
-| V01 | the residual by residue environment, cavity first, with A15's functional threshold drawn |
+| V01 | the residual in three classes that partition the protein — cavity-lining (blue), lipid-facing and aqueous (grey) — with A15's functional threshold drawn |
 | V02 | cavity − rest per protein and per comparison; thin bar = block-clustered interval, thick grey = naive |
 | V03 | residual against distance from the bundle axis, TM sites only — the same claim with no threshold in it |
 
