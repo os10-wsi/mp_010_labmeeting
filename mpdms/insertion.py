@@ -1,4 +1,4 @@
-"""`python -m mpdms insertion configs/AQR1_fitness.yaml configs/HXT2.yaml ...`
+"""`python -m mpdms insertion configs/AQR1_fitness.yaml configs/HXT2.yaml [--scale hessa]`
 
 Does the cost of inserting a helix set a floor on what it tolerates?
 
@@ -27,6 +27,24 @@ Coefficients are from the authors' own implementation, polyval_Kfix_14Jan2016.tx
 FleishmanLab/membrane_prediction, which is also where the convention comes from: a
 segment is laid across the membrane at linspace(-15, +15) over its residues and its
 insertion energy is the sum of the per-residue values at those depths.
+
+A second scale is available with `--scale hessa`: the position-specific matrix of
+Hessa et al. 2007 (Nature 450:1026, supplementary table S2), measured on the translocon
+itself with the Lep glycosylation assay rather than by mutational scanning. It differs
+from dsTbL in three ways that decide what it can be used for:
+
+    absolute        table S2 is kcal/mol outright, not relative to alanine. Every DDG
+                    below is a difference, so the reference cancels and DDG is
+                    comparable between scales; a whole-segment DG is not.
+    symmetric       every row reads the same from both ends, so the positive-inside
+                    rule is absent and helix orientation does nothing. Under dsTbL it
+                    does a great deal. The symmetry is asserted at import.
+    position only   the published model adds a length correction and a flanking-residue
+                    term; table S2 has neither and neither is implemented. Constant per
+                    segment, so they cancel in DDG and do not cancel in i01 and i05.
+
+The table is indexed by position in a 19-residue H-segment, not by angstroms, so
+`--depth structure` is refused for it rather than extrapolated.
 
 Two caveats worth keeping in view. The assay measured abundance, so a variant that fails
 to insert and a variant that inserts and then misfolds look the same here. And dsTbL was
@@ -84,8 +102,109 @@ DSTBL = {
 }
 
 
-def residue_dg(aa: str, z: float = 0.0) -> float:
-    """Insertion energy of one residue at depth z, kcal/mol relative to alanine."""
+# Hessa et al. 2007, Nature 450:1026-1030, Supplementary table S2: the position-specific
+# DG_app matrix, kcal/mol, for a residue of each type at position i of a 19-residue
+# H-segment, i running -9 (N-terminal end) to +9. Transcribed from the published table.
+#
+# Three things to know before reading a number out of it:
+#
+#   absolute, not relative to alanine. dsTbL quotes every residue against Ala, which is
+#   why Ala is zero there and +0.13 at the centre here. A DDG of a substitution is a
+#   difference and the reference cancels, so DDG is comparable between the two scales;
+#   an absolute segment DG is not.
+#
+#   symmetric about the centre by construction. Every row reads the same forwards and
+#   backwards (asserted at import). The positive-inside rule is therefore NOT inside
+#   this scale, where it is inside dsTbL - lysine costs the same at both ends here and
+#   costs ten times more at the outer end there. Helix orientation consequently does
+#   nothing under this scale, and the code says so rather than appearing to use it.
+#
+#   the position term only. The published model adds a length correction and a term for
+#   the flanking residues; neither is in table S2 and neither is implemented. They are
+#   constant for a given segment, so they cancel in every DDG here, and they do NOT
+#   cancel in a whole-segment DG - so i01 and i05, which use absolute helix DG, are
+#   reporting the position term alone under this scale.
+HESSA_POS = np.arange(-9, 10)
+HESSA = {
+    "A": (0.02, 0.03, 0.04, 0.06, 0.07, 0.09, 0.10, 0.12, 0.12, 0.13,
+          0.12, 0.12, 0.10, 0.09, 0.07, 0.06, 0.04, 0.03, 0.02),
+    "C": (0.00, 0.00, 0.00, 0.00, -0.01, -0.02, -0.03, -0.05, -0.07, -0.08,
+          -0.07, -0.05, -0.03, -0.02, -0.01, 0.00, 0.00, 0.00, 0.00),
+    "D": (0.44, 0.59, 0.77, 0.96, 1.17, 1.36, 1.54, 1.67, 1.76, 1.79,
+          1.76, 1.67, 1.54, 1.36, 1.17, 0.96, 0.77, 0.59, 0.44),
+    "E": (0.69, 0.80, 0.92, 1.03, 1.14, 1.23, 1.31, 1.37, 1.41, 1.42,
+          1.41, 1.37, 1.31, 1.23, 1.14, 1.03, 0.92, 0.80, 0.69),
+    "F": (-0.25, -0.26, -0.26, -0.27, -0.27, -0.27, -0.27, -0.28, -0.28, -0.28,
+          -0.28, -0.28, -0.27, -0.27, -0.27, -0.27, -0.26, -0.26, -0.25),
+    "G": (0.33, 0.36, 0.38, 0.41, 0.43, 0.45, 0.46, 0.47, 0.48, 0.48,
+          0.48, 0.47, 0.46, 0.45, 0.43, 0.41, 0.38, 0.36, 0.33),
+    "H": (0.63, 0.72, 0.81, 0.90, 0.98, 1.06, 1.12, 1.16, 1.19, 1.20,
+          1.19, 1.16, 1.12, 1.06, 0.98, 0.90, 0.81, 0.72, 0.63),
+    "I": (-0.11, -0.14, -0.19, -0.24, -0.29, -0.34, -0.39, -0.43, -0.45, -0.46,
+          -0.45, -0.43, -0.39, -0.34, -0.29, -0.24, -0.19, -0.14, -0.11),
+    "K": (0.32, 0.46, 0.63, 0.84, 1.07, 1.30, 1.52, 1.69, 1.81, 1.85,
+          1.81, 1.69, 1.52, 1.30, 1.07, 0.84, 0.63, 0.46, 0.32),
+    "L": (-0.35, -0.37, -0.38, -0.39, -0.40, -0.41, -0.42, -0.42, -0.43, -0.43,
+          -0.43, -0.42, -0.42, -0.41, -0.40, -0.39, -0.38, -0.37, -0.35),
+    "M": (0.00, 0.00, 0.00, 0.00, -0.01, -0.02, -0.03, -0.05, -0.07, -0.08,
+          -0.07, -0.05, -0.03, -0.02, -0.01, 0.00, 0.00, 0.00, 0.00),
+    "N": (0.63, 0.73, 0.84, 0.95, 1.05, 1.14, 1.22, 1.28, 1.31, 1.33,
+          1.31, 1.28, 1.22, 1.14, 1.05, 0.95, 0.84, 0.73, 0.63),
+    "P": (0.48, 0.57, 0.66, 0.76, 0.84, 0.92, 0.99, 1.04, 1.08, 1.09,
+          1.08, 1.04, 0.99, 0.92, 0.84, 0.76, 0.66, 0.57, 0.48),
+    "Q": (0.54, 0.65, 0.77, 0.89, 1.01, 1.11, 1.21, 1.28, 1.32, 1.33,
+          1.32, 1.28, 1.21, 1.11, 1.01, 0.89, 0.77, 0.65, 0.54),
+    "R": (0.03, 0.06, 0.13, 0.26, 0.46, 0.73, 1.04, 1.34, 1.57, 1.65,
+          1.57, 1.34, 1.04, 0.73, 0.46, 0.26, 0.13, 0.06, 0.03),
+    "S": (0.37, 0.43, 0.48, 0.53, 0.58, 0.62, 0.65, 0.68, 0.70, 0.70,
+          0.70, 0.68, 0.65, 0.62, 0.58, 0.53, 0.48, 0.43, 0.37),
+    "T": (0.04, 0.07, 0.11, 0.17, 0.24, 0.32, 0.40, 0.46, 0.51, 0.53,
+          0.51, 0.46, 0.40, 0.32, 0.24, 0.17, 0.11, 0.07, 0.04),
+    "V": (0.00, 0.00, 0.00, -0.01, -0.02, -0.05, -0.10, -0.17, -0.22, -0.24,
+          -0.22, -0.17, -0.10, -0.05, -0.02, -0.01, 0.00, 0.00, 0.00),
+    "W": (-0.24, -0.35, -0.42, -0.39, -0.27, -0.10, 0.07, 0.18, 0.25, 0.27,
+          0.25, 0.18, 0.07, -0.10, -0.27, -0.39, -0.42, -0.35, -0.24),
+    "Y": (-0.11, -0.19, -0.20, -0.10, 0.08, 0.27, 0.44, 0.54, 0.60, 0.62,
+          0.60, 0.54, 0.44, 0.27, 0.08, -0.10, -0.20, -0.19, -0.11),
+}
+# a transcription error that breaks the symmetry is the realistic failure mode, and it
+# is cheap to refuse at import rather than to debug in a figure
+for _aa, _v in HESSA.items():
+    assert len(_v) == 19, f"HESSA[{_aa}] has {len(_v)} positions, expected 19"
+    assert _v == tuple(reversed(_v)), f"HESSA[{_aa}] is not symmetric about i = 0"
+
+SCALES = ("dstbl", "hessa")
+SCALE_LABEL = {"dstbl": "dsT\u03b2L (Elazar 2016), kcal/mol relative to alanine",
+               "hessa": "Hessa 2007 table S2 position term, kcal/mol"}
+SCALE = "dstbl"          # set once by main(); every analysis reads it through residue_dg
+
+
+def hessa_dg(aa: str, z: float = 0.0) -> float:
+    """Table S2 at depth `z` angstroms, by linear interpolation between its positions.
+
+    The table is indexed by residue position in a 19-residue segment, not by angstroms,
+    and the rest of this module works in angstroms. The two are tied together the only
+    way the scale allows: the segment spans the bilayer, so its end positions are its
+    ends, and i = z * 9 / 15. For a helix laid out by `segment_depths` this puts residue
+    k of L exactly where the table would put residue k of 19, whatever L is; for a
+    measured depth it is an interpolation the table was not fitted for, which is why
+    --depth structure is refused for this scale.
+    """
+    v = HESSA.get(aa)
+    if v is None:
+        return float("nan")
+    i = np.clip(z * (9.0 / HALF_WIDTH), -9.0, 9.0)
+    return float(np.interp(i, HESSA_POS, v))
+
+
+def residue_dg(aa: str, z: float = 0.0, scale: str | None = None) -> float:
+    """Insertion energy of one residue at depth z, in the units of the chosen scale.
+
+    dsTbL is relative to alanine; Hessa table S2 is absolute. Differences of two calls
+    on the same scale are comparable across both; single values are not.
+    """
+    if (scale or SCALE) == "hessa":
+        return hessa_dg(aa, z)
     c = DSTBL.get(aa)
     if c is None:
         return np.nan
@@ -602,13 +721,18 @@ def main(argv=None):
     ap = argparse.ArgumentParser(
         prog="python -m mpdms insertion",
         description="Does the free energy of inserting a helix set a floor on what it "
-                    "tolerates? Tested with the dsTβL scale (Elazar et al. 2016).")
+                    "tolerates? Tested with the dsTβL scale (Elazar et al. 2016) or the "
+                    "Hessa et al. 2007 translocon scale.")
     ap.add_argument("configs", nargs="+")
     ap.add_argument("--only", help=f"comma-separated: {','.join(ANALYSES)}")
     ap.add_argument("--depth", default="ideal", choices=["ideal", "structure"],
                     help="where a residue sits in the membrane when its ΔΔG is evaluated: "
                          "'ideal' lays the helix across the bilayer the way the scale was "
                          "built, 'structure' uses the AlphaFold membrane frame")
+    ap.add_argument("--scale", default="dstbl", choices=list(SCALES),
+                    help="dsTbL (Elazar 2016), depth-dependent and relative to alanine, "
+                         "or the Hessa 2007 table S2 position term, which is absolute "
+                         "and symmetric about the bilayer centre")
     ap.add_argument("--all-helices", action="store_true",
                     help="i03 draws every helix rather than only the hardest and the "
                          "easiest of each protein to insert")
@@ -616,6 +740,12 @@ def main(argv=None):
     ap.add_argument("--style", default="paper", choices=["default", "paper"])
     ap.add_argument("--outdir", default=str(OUT))
     a = ap.parse_args(argv)
+    if a.scale == "hessa" and a.depth == "structure":
+        raise SystemExit("--scale hessa is indexed by position in a 19-residue segment, "
+                         "not by angstroms, so a measured depth is an extrapolation the "
+                         "table was never fitted for; use --depth ideal")
+    global SCALE
+    SCALE = a.scale
     P.use_style(a.style)
     keys = [k.strip() for k in (a.only.split(",") if a.only else ANALYSES)]
     bad = [k for k in keys if k not in ANALYSES]
@@ -624,6 +754,10 @@ def main(argv=None):
     outdir = Path(a.outdir)
     outdir.mkdir(parents=True, exist_ok=True)
 
+    print(f"\n  scale: {SCALE_LABEL[a.scale]}", flush=True)
+    if a.scale == "hessa":
+        print("  (position term only - no length or flanking correction, and symmetric "
+              "about the centre, so helix orientation does not enter)", flush=True)
     helices, variants, names = {}, {}, []
     for c in a.configs:
         cfg = load_config(Path(c))
@@ -642,9 +776,9 @@ def main(argv=None):
     if not names:
         raise SystemExit("no protein has enough annotated TM helices with measured "
                          "positions; each needs a topology and a dataset")
-    pd.concat([h.assign(protein=g) for g, h in helices.items()],
+    pd.concat([h.assign(protein=g, scale=a.scale) for g, h in helices.items()],
               ignore_index=True).to_csv(outdir / "helices.csv", index=False)
-    pd.concat([v.assign(protein=g) for g, v in variants.items()],
+    pd.concat([v.assign(protein=g, scale=a.scale) for g, v in variants.items()],
               ignore_index=True).to_csv(outdir / "variants.csv", index=False)
     rows = int(np.ceil(len(names) / a.cols))
     print("\n  panels: " + " | ".join(
@@ -678,6 +812,7 @@ def main(argv=None):
               f"have one, {sig} of them at p < 0.05")
         print("  (the interaction is the test; the main effect of ΔΔG is confounded with "
               "burial and says nothing about insertion on its own)")
+    out["scale"] = {"name": a.scale, "label": SCALE_LABEL[a.scale], "depth": a.depth}
     (outdir / "insertion.json").write_text(json.dumps(out, indent=2, default=str))
     try:
         shown = outdir.resolve().relative_to(REPO_ROOT)

@@ -303,3 +303,91 @@ def test_every_panel_names_its_own_two_helices(tmp_path, monkeypatch):
         assert any("easiest" in t for t in named)
     # only the first panel repeats the mean and median, which are the same everywhere
     assert sum("mean of helices" in t for lg in legends for t in lg) == 1
+
+
+# --------------------------------------------- the second scale: Hessa 2007 table S2
+def test_the_hessa_table_is_the_published_one():
+    """Twenty residues, nineteen positions, and the values the table prints."""
+    assert set(I.HESSA) == set("ACDEFGHIKLMNPQRSTVWY")
+    assert all(len(v) == 19 for v in I.HESSA.values())
+    # spot values read off table S2: i = 0 is the centre, i = +-9 the ends
+    assert I.residue_dg("K", 0.0, "hessa") == pytest.approx(1.85, abs=0.01)
+    assert I.residue_dg("K", I.HALF_WIDTH, "hessa") == pytest.approx(0.32, abs=0.01)
+    assert I.residue_dg("L", 0.0, "hessa") == pytest.approx(-0.43, abs=0.01)
+    assert I.residue_dg("D", 0.0, "hessa") == pytest.approx(1.79, abs=0.01)
+    assert I.residue_dg("W", 0.0, "hessa") == pytest.approx(0.27, abs=0.01)
+    # tryptophan is the one row that is not monotone: it prefers the interface
+    assert I.residue_dg("W", -10.0, "hessa") < I.residue_dg("W", 0.0, "hessa")
+    assert np.isnan(I.residue_dg("X", 0.0, "hessa"))
+
+
+def test_hessa_is_absolute_and_dstbl_is_relative_to_alanine():
+    """The reference states differ, so single values differ and differences agree."""
+    assert I.residue_dg("A", 0.0, "dstbl") == 0.0
+    assert I.residue_dg("A", 0.0, "hessa") == pytest.approx(0.13, abs=0.01)
+    # the two scales rank the twenty residues the same way, which is the check that
+    # catches a transcription error without demanding they agree numerically
+    aas = "ACDEFGHIKLMNPQRSTVWY"
+    rho = ss.spearmanr([I.residue_dg(a, 0.0, "dstbl") for a in aas],
+                       [I.residue_dg(a, 0.0, "hessa") for a in aas]).statistic
+    assert rho > 0.75          # 0.79 as transcribed: agreement, not equivalence
+
+
+def test_the_hessa_table_is_symmetric_so_orientation_cannot_matter():
+    """dsTbL knows which side is cytoplasmic; this table does not, and must not pretend.
+
+    Every row of table S2 reads the same forwards and backwards, so a helix scored
+    N-to-C and the same helix scored C-to-N give the same number. The positive-inside
+    rule is therefore absent from this scale - lysine costs the same at both ends here
+    and ten times more at the outer end under dsTbL.
+    """
+    for aa in "ACDEFGHIKLMNPQRSTVWY":
+        for z in (3.0, 7.5, 15.0):
+            assert I.residue_dg(aa, z, "hessa") == pytest.approx(
+                I.residue_dg(aa, -z, "hessa"), abs=1e-9), aa
+    seq = "LLKWFAGSILVTNPMAIRD"
+    old = I.SCALE
+    try:
+        I.SCALE = "hessa"
+        assert I.segment_dg(seq, orientation="in_out") == pytest.approx(
+            I.segment_dg(seq, orientation="out_in"))
+        I.SCALE = "dstbl"
+        # the other scale is not symmetric, and the same call proves the test can fail
+        assert I.segment_dg(seq, orientation="in_out") != pytest.approx(
+            I.segment_dg(seq, orientation="out_in"))
+    finally:
+        I.SCALE = old
+    assert I.residue_dg("K", -15.0, "dstbl") < I.residue_dg("K", 15.0, "dstbl") - 1.0
+
+
+def test_a_segment_lands_on_the_table_positions_whatever_its_length():
+    """Residue k of L sits where the table would put residue k of 19."""
+    old = I.SCALE
+    try:
+        I.SCALE = "hessa"
+        for length in (15, 19, 23):
+            z = I.segment_depths(length)
+            assert I.residue_dg("K", z[0]) == pytest.approx(0.32, abs=0.01)
+            assert I.residue_dg("K", z[-1]) == pytest.approx(0.32, abs=0.01)
+            assert I.residue_dg("K", z[length // 2]) == pytest.approx(1.85, abs=0.02)
+        # a poly-leucine segment is favourable, a poly-arginine one is not
+        assert I.segment_dg("L" * 19) < 0 < I.segment_dg("R" * 19)
+    finally:
+        I.SCALE = old
+
+
+def test_ddg_is_the_same_shape_under_either_scale():
+    """The analyses only ever take differences, so both scales feed them the same way."""
+    d = pd.DataFrame({"wt": ["L", "L", "A"], "mut": ["K", "L", "K"],
+                      "z_ideal": [0.0, 0.0, 0.0]})
+    old = I.SCALE
+    try:
+        for scale, k_cost in (("dstbl", None), ("hessa", 2.28)):
+            I.SCALE = scale
+            out = I.add_ddg(d)
+            assert out.ddg.iloc[1] == 0.0                 # no change costs nothing
+            assert out.ddg.iloc[0] > 0                    # leucine to lysine is costly
+            if k_cost is not None:                        # 1.85 - (-0.43)
+                assert out.ddg.iloc[0] == pytest.approx(k_cost, abs=0.01)
+    finally:
+        I.SCALE = old

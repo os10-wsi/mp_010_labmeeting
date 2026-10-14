@@ -585,11 +585,33 @@ hydrophobicity would be there whether or not insertion energetics had anything t
 it, because a substitution that raises ΔΔG is usually also one that buries badly — which
 is why RSA is a covariate in every model here and the interaction is what gets reported.
 
-The scale is **dsTβL** (Elazar et al. 2016, eLife 5:e12125): a fourth-order polynomial in
+There are two scales, chosen with `--scale`. The default is **dsTβL** (Elazar et al.
+2016, eLife 5:e12125): a fourth-order polynomial in
 depth per residue, kcal/mol relative to alanine, taken from the authors' own
 `polyval_Kfix_14Jan2016.txt`. A segment is laid across the membrane at `linspace(−15,
 +15)` and its ΔG is the sum of the per-residue values at those depths, which is that
 code's convention.
+
+`--scale hessa` is the position-specific ΔG_app matrix of **Hessa et al. 2007**
+(Nature 450:1026, supplementary table S2), measured on the translocon itself with the
+Lep glycosylation assay rather than by mutational scanning — 20 residues × 19 positions
+in a 19-residue H-segment, interpolated to the depth each residue sits at. Three
+differences decide what it can be used for:
+
+| | dsTβL | Hessa table S2 |
+| --- | --- | --- |
+| reference | relative to alanine (Ala ≡ 0) | absolute kcal/mol (Ala = +0.13 at the centre) |
+| symmetry | asymmetric — the positive-inside rule is in the scale | symmetric about the centre, so orientation does nothing |
+| completeness | the whole scale | the position term only; no length or flanking correction |
+
+So **ΔΔG is comparable between the two and an absolute segment ΔG is not**: every
+substitution effect is a difference at one position, where the reference state and the
+missing constant terms cancel, which covers I02, I03 and I04. I01 and I05 use the
+wild-type helix ΔG itself, so under Hessa they report the position term alone — and the
+two scales need not even rank the helices the same way. The table is indexed by position
+in a 19-residue segment rather than by ångström, so `--depth structure` is refused for it
+instead of extrapolated, and the transcription is checked for symmetry at import because
+a mistyped row is the realistic failure mode.
 
 Two details that matter and are easy to get wrong:
 
