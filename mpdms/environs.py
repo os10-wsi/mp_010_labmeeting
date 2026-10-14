@@ -526,9 +526,14 @@ def esm_residuals(cfg) -> pd.DataFrame | None:
     scale = 1.4826 * ss.median_abs_deviation(d.residual)
     d["z"] = d.residual / (scale or 1.0)
     g = d.groupby("pos").agg(wt=("wt", "first"), n_variants=("pos", "size"),
+                             median_residual=("residual", "median"),
                              median_z=("z", "median"),
                              median_abundance=("score_z", "median")).reset_index()
-    return g[g.n_variants >= A15_MIN]
+    g = g[g.n_variants >= A15_MIN]
+    # the one constant that separates the two columns, so a caller working in residual
+    # units can still place a threshold that was defined in z
+    g.attrs["residual_scale"] = float(scale or 1.0)
+    return g
 def network_stats(xyz: np.ndarray, pick: np.ndarray, pool: np.ndarray,
                   strata: np.ndarray | None = None, seed: int = 6) -> dict:
     """Are these positions closer together than the same number drawn at random?

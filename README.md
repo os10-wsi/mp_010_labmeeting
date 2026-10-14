@@ -934,6 +934,25 @@ effect: the naive test calls the difference real at p < 0.05, while the block-cl
 error comes out more than twice as wide and the test correctly finds nothing. Without
 it a figure like this reports a patch of the fold as a discovery.
 
+**The units are the residual's own, not the z.** A15 plots the residual divided by
+1.4826 x MAD; that is one constant shared by every residue in the protein, so a rank
+test, a KS test and the clustered p-values are numerically identical in either column —
+only the effect sizes change units, and a shift quoted in ESM-1v log-likelihood ratio is
+one a reader can interpret. (Dividing by a constant is not what makes a z-score awkward
+to test; standardising *within* each group is, and nothing here does that.) The signed
+residual is used, never its absolute value: the sign carries the direction of the claim.
+
+**Three distributions mean three comparisons**, so V01 reports all three pairs —
+cavity against each grey class, and the two grey classes against each other, which is
+the comparison that says whether "cavity" does anything "inside the membrane at all"
+does not — with Holm correction across them. Beside the rank test sit two tests the
+rank test cannot do: **Kolmogorov–Smirnov**, which sees a heavier negative tail at the
+same median, and **Brown–Forsythe**, which asks whether the spreads differ at all. A
+third p-value, the **within-block permutation**, centres the values inside each 20 Å
+patch and shuffles the labels only within patches, so every comparison the null makes
+is between residues sitting in the same patch; a large-scale gradient that happens to
+line up with the bundle axis fails it.
+
 Effect size is **Cliff's delta** — how often a cavity residue outranks a non-cavity one
 — with a confidence interval from a bootstrap that resamples *blocks*, not residues.
 Resampling residues would treat one patch as many independent draws and return an
@@ -941,7 +960,7 @@ interval far too narrow.
 
 | figure | what it shows |
 | --- | --- |
-| V01 | the residual in three classes that partition the protein — cavity-lining (blue), lipid-facing and aqueous (grey) — with A15's functional threshold drawn |
+| V01 | (a) the three distributions as rainclouds — half violin, box, and every scored residue — with Cliff's delta and the Holm-corrected rank p above each pair; (b) the same three as cumulative curves, where the KS statistic is a vertical distance you can point at |
 | V02 | cavity − rest per protein and per comparison; thin bar = block-clustered interval, thick grey = naive |
 | V03 | residual against distance from the bundle axis, TM sites only — the same claim with no threshold in it |
 
