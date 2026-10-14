@@ -723,6 +723,136 @@ def i05_ranking(helices: dict, names: list[str], outdir: Path) -> dict:
     return {"status": "ok", "headline": head, "ranking": t.to_dict("records")}
 
 
+def _with_kd(v: pd.DataFrame) -> pd.DataFrame:
+    """The variant frame with the Kyte-Doolittle change of each substitution added."""
+    from .annot import KYTE_DOOLITTLE as KD
+    v = v.copy()
+    v["delta_kd"] = [KD.get(m, np.nan) - KD.get(w, np.nan) for m, w in zip(v.mut, v.wt)]
+    return v
+
+
+def i08_ddg_vs_hydrophobicity(variants: dict, names: list[str], outdir: Path) -> dict:
+    """The two predictors against each other, one point per mutation.
+
+    i07 asks whether ddG adds anything over plain hydrophobicity and answers with a
+    nested R2, which is the right test and an invisible one. This is the same question
+    drawn: ddG on y, Kyte-Doolittle change on x, every variant in a TM helix a point.
+
+    The shape carries the answer. Kyte-Doolittle gives one number per substitution
+    TYPE, so every L->K in the protein lands on the same x; ddG is evaluated at each
+    residue's own depth, so those same variants spread vertically. The vertical smear
+    at a given x is therefore exactly what the depth-dependent scale knows and a
+    hydrophobicity table cannot: if the cloud is a thin line, ddG is hydrophobicity
+    with extra steps, and if it is a thick band, the scale is carrying real information
+    about where in the bilayer the substitution sits.
+
+    Points are coloured by depth to say which way that smear runs, and the companion
+    figure takes the part of ddG that hydrophobicity cannot explain - the residual of
+    ddG regressed on delta KD - and asks whether it predicts the measured effect. That
+    residual is the only part of ddG that i07 could not already have had for free.
+    """
+    import statsmodels.formula.api as smf
+    rows = []
+    fig, pairs, _ = grid(names, w=3.2, h=3.0, extra=0.35)
+    for i, (g, ax) in enumerate(pairs):
+        v = _with_kd(variants[g]).dropna(subset=["delta_kd", "ddg", "score_z"])
+        if len(v) < 100:
+            panel(ax, i, g, "too few variants in a TM helix", size=8)
+            continue
+        depth = np.abs(v.z_used if "z_used" in v else v.z_ideal)
+        sc = ax.scatter(v.delta_kd, v.ddg, c=depth, s=6, cmap="viridis_r", alpha=0.6,
+                        lw=0, zorder=2)
+        c1, c0 = np.polyfit(v.delta_kd, v.ddg, 1)
+        xs = np.linspace(v.delta_kd.min(), v.delta_kd.max(), 20)
+        ax.plot(xs, c0 + c1 * xs, color=P.INK, lw=1.2, zorder=3)
+        r = float(ss.pearsonr(v.delta_kd, v.ddg).statistic)
+        rho = float(ss.spearmanr(v.delta_kd, v.ddg).statistic)
+        resid = v.ddg - (c0 + c1 * v.delta_kd)
+        # how much of ddG survives hydrophobicity, in the units ddG is quoted in
+        spread = float(resid.std(ddof=1))
+        # the widest vertical smear at one substitution type: the depth effect, seen
+        per_sub = v.assign(sub=v.wt + ">" + v.mut).groupby("sub").ddg.agg(["min", "max",
+                                                                          "size"])
+        per_sub = per_sub[per_sub["size"] >= 5]
+        widest = float((per_sub["max"] - per_sub["min"]).max()) if len(per_sub) else np.nan
+        d = v[["score_z", "helix"]].assign(resid=resid).dropna()
+        m = smf.ols("score_z ~ resid", data=d).fit(cov_type="cluster",
+                                                   cov_kwds={"groups": d.helix})
+        rows.append({"protein": g, "n_variants": int(len(v)),
+                     "pearson": r, "spearman": rho, "r2": r ** 2,
+                     "slope_ddg_on_kd": float(c1),
+                     "sd_residual_ddg": spread,
+                     "sd_ddg": float(v.ddg.std(ddof=1)),
+                     "frac_ddg_variance_left": spread ** 2 / float(v.ddg.var(ddof=1)),
+                     "widest_depth_spread_one_substitution": widest,
+                     "slope_effect_on_residual": float(m.params["resid"]),
+                     "se_effect_on_residual": float(m.bse["resid"]),
+                     "p_effect_on_residual": float(m.pvalues["resid"])})
+        ax.axhline(0, color=P.MUTED, lw=0.6)
+        ax.axvline(0, color=P.MUTED, lw=0.6)
+        ax.text(0.03, 0.97, f"r = {r:+.2f}\nR² = {r ** 2:.2f}\nresidual SD "
+                            f"{spread:.2f} kcal/mol", transform=ax.transAxes,
+                va="top", ha="left", fontsize=6.4)
+        panel(ax, i, g, f"{len(v):,} variants", size=8)
+        if i == len(names) - 1:
+            fig.colorbar(sc, ax=ax, fraction=0.04, pad=0.02).set_label(
+                "|depth| from the bilayer centre (Å)", fontsize=7)
+        if i // 2 == (len(names) - 1) // 2:
+            ax.set_xlabel("Δ hydrophobicity, Kyte–Doolittle (mutant − wild type)",
+                          fontsize=7.5)
+        if i % 2 == 0:
+            ax.set_ylabel(f"ΔΔG of the substitution ({SCALE}, kcal/mol)", fontsize=7.5)
+    fig.suptitle("One point per variant in a TM helix. Kyte–Doolittle gives one value "
+                 "per substitution type, so the vertical spread at a given x is what "
+                 "the depth-dependent scale adds and a hydrophobicity table cannot "
+                 "have: a thin line means the two predictors are the same thing.",
+                 fontsize=7, x=0.01, ha="left")
+    P.save(fig, outdir, "i08_ddg_vs_hydrophobicity", None, "I08")
+    plt.close(fig)
+    if not rows:
+        return {"status": "skipped", "reason": "no protein has enough TM variants"}
+
+    # ---- the companion: does what hydrophobicity misses predict anything?
+    fig2, pairs2, _ = grid(names, w=3.1, h=2.8, extra=0.3)
+    for i, (g, ax) in enumerate(pairs2):
+        v = _with_kd(variants[g]).dropna(subset=["delta_kd", "ddg", "score_z"])
+        if len(v) < 100:
+            panel(ax, i, g, "too few variants in a TM helix", size=8)
+            continue
+        c1, c0 = np.polyfit(v.delta_kd, v.ddg, 1)
+        v = v.assign(resid=v.ddg - (c0 + c1 * v.delta_kd))
+        b = pd.qcut(v.resid, 10, duplicates="drop")
+        mm = v.groupby(b, observed=True).agg(x=("resid", "mean"), y=("score_z", "mean"),
+                                             e=("score_z", "sem")).dropna()
+        ax.fill_between(mm.x, mm.y - mm.e, mm.y + mm.e, color=P.DARK_RED, alpha=0.18,
+                        lw=0)
+        ax.plot(mm.x, mm.y, "-o", ms=4.5, lw=1.8, color=P.DARK_RED, mec=P.INK, mew=0.4)
+        ax.axhline(0, color=P.MUTED, lw=0.6)
+        ax.axvline(0, color=P.MUTED, lw=0.6, ls=(0, (1, 2)))
+        rr = [x for x in rows if x["protein"] == g][0]
+        panel(ax, i, g, f"slope {rr['slope_effect_on_residual']:+.3f} "
+                        f"(p = {rr['p_effect_on_residual']:.2g})", size=8)
+        if i // 2 == (len(names) - 1) // 2:
+            ax.set_xlabel("ΔΔG not explained by hydrophobicity (kcal/mol)", fontsize=7.5)
+        if i % 2 == 0:
+            ax.set_ylabel("mean effect", fontsize=7.5)
+    fig2.suptitle("The part of ΔΔG that a hydrophobicity table could not have given "
+                  "you, against the measured effect. A flat line here means the "
+                  "insertion scale's extra information is not what the assay is "
+                  "reading.", fontsize=7, x=0.01, ha="left")
+    P.save(fig2, outdir, "i08b_residual_ddg_vs_effect", None, "I08B")
+    plt.close(fig2)
+
+    t = pd.DataFrame(rows)
+    t.to_csv(outdir / "i08_ddg_vs_hydrophobicity.csv", index=False)
+    head = "; ".join(
+        f"{r.protein.replace('_fitness', '')} r {r.pearson:+.2f} (R² {r.r2:.2f}), "
+        f"{100 * r.frac_ddg_variance_left:.0f}% of ΔΔG left over, which predicts effect "
+        f"at {r.slope_effect_on_residual:+.3f} (p {r.p_effect_on_residual:.2g})"
+        for r in t.itertuples())
+    return {"status": "ok", "headline": head, "by_protein": t.to_dict("records")}
+
+
 def i07_hydrophobicity_control(variants: dict, names: list[str], outdir: Path,
                                n_bins: int = 10) -> dict:
     """The control for i04: plain hydrophobicity change in place of ddG.
@@ -962,7 +1092,8 @@ ANALYSES = {"i01": "helix ΔG against its tolerance",
             "i04": "the pooled curve over all helices, averaged over variants",
             "i05": "the helices ranked by wild-type insertion energy",
             "i06": "do the two scales agree, and does either match the measurement?",
-            "i07": "the control: plain hydrophobicity change instead of ΔΔG"}
+            "i07": "the control: plain hydrophobicity change instead of ΔΔG",
+            "i08": "ΔΔG against Δ hydrophobicity, one point per mutation"}
 
 
 def main(argv=None):
@@ -1053,8 +1184,10 @@ def main(argv=None):
                 r = i05_ranking(helices, names, outdir)
             elif k == "i06":
                 r = i06_scale_agreement(variants, helices, names, outdir)
-            else:
+            elif k == "i07":
                 r = i07_hydrophobicity_control(variants, names, outdir)
+            else:
+                r = i08_ddg_vs_hydrophobicity(variants, names, outdir)
         except Exception as e:
             r = {"status": "error", "reason": f"{type(e).__name__}: {e}"}
         out[k] = r

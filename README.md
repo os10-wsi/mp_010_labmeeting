@@ -656,6 +656,8 @@ Two details that matter and are easy to get wrong:
 | I06 | the two scales against each other: the same substitutions at the same depths, with the helix ordering and each scale's correlation with the measured effect in `i06_scale_agreement.csv` |
 | I06B | the twenty residues under both scales, at the bilayer centre and at the interface — where the two disagree, and which residues do it |
 | I07 | **the control for I04**: the same pooled curve with plain Kyte–Doolittle change on x instead of ΔΔG — one number per substitution, identical for every residue at every depth |
+| I08 | the two predictors against each other, one point per mutation: ΔΔG on y, Kyte–Doolittle change on x, coloured by depth. The vertical spread at one x is what the depth-dependent scale adds |
+| I08B | the part of ΔΔG that hydrophobicity cannot explain, against the measured effect |
 
 I05 is the premise of all the others and worth reading first: if a protein's helices
 all sit within a kcal/mol of each other there is no contrast to test, and a bar past

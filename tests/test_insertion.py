@@ -487,7 +487,9 @@ def _tm_variants(n=900, kd_effect=-0.06, ddg_effect=0.0, seed=11):
     rng = np.random.default_rng(seed)
     aas = list("ACDEFGHIKLMNPQRSTVWY")
     wt = rng.choice(aas, n)
-    mut = rng.choice(aas, n)
+    # a real variant frame is missense only; wt == mut would give one ddG and one
+    # delta KD of exactly zero and look like a substitution with no depth spread
+    mut = np.array([rng.choice([a for a in aas if a != w]) for w in wt])
     z = rng.uniform(-15, 15, n)
     dkd = np.array([KD[m] - KD[w] for m, w in zip(mut, wt)])
     ddg = np.array([I.residue_dg(m, zi, "dstbl") - I.residue_dg(w, zi, "dstbl")
@@ -537,3 +539,52 @@ def test_i07_treats_every_residue_the_same_way():
     deep = I.residue_dg("K", 0.0, "dstbl") - I.residue_dg("L", 0.0, "dstbl")
     edge = I.residue_dg("K", -15.0, "dstbl") - I.residue_dg("L", -15.0, "dstbl")
     assert abs(deep - edge) > 0.5
+
+
+# ---------------------------- i08: the two predictors against each other, per mutation
+def test_i08_reports_the_overlap_and_what_is_left_of_ddg(tmp_path):
+    from mpdms.insertion import i08_ddg_vs_hydrophobicity
+    v = _tm_variants(kd_effect=-0.05, ddg_effect=-0.10)
+    r = i08_ddg_vs_hydrophobicity({"T": v}, ["T"], tmp_path)
+    assert r["status"] == "ok"
+    row = r["by_protein"][0]
+    # the two predictors are strongly but not perfectly related, in opposite directions
+    assert -1 < row["pearson"] < -0.5
+    assert row["slope_ddg_on_kd"] < 0
+    assert row["r2"] == pytest.approx(row["pearson"] ** 2, abs=1e-9)
+    # and a real fraction of ddG survives hydrophobicity, which is the point
+    assert 0.1 < row["frac_ddg_variance_left"] < 0.9
+    assert row["sd_residual_ddg"] < row["sd_ddg"]
+    for f in ("i08_ddg_vs_hydrophobicity.csv", "i08_ddg_vs_hydrophobicity.png",
+              "i08b_residual_ddg_vs_effect.png"):
+        assert (tmp_path / f).exists()
+
+
+def test_i08_sees_the_depth_spread_that_hydrophobicity_cannot_have(tmp_path):
+    """One substitution type is one x and many y: that smear is the depth dependence."""
+    from mpdms.insertion import i08_ddg_vs_hydrophobicity, _with_kd
+    v = _tm_variants()
+    r = i08_ddg_vs_hydrophobicity({"T": v}, ["T"], tmp_path)["by_protein"][0]
+    assert r["widest_depth_spread_one_substitution"] > 0.5
+    # the same substitution really does take one delta KD and several ddG values
+    w = _with_kd(v).assign(sub=lambda d: d.wt + ">" + d.mut)
+    g = w.groupby("sub").agg(kd=("delta_kd", "nunique"), dg=("ddg", "nunique"),
+                             n=("ddg", "size"))
+    g = g[g.n >= 5]
+    assert (g.kd == 1).all()
+    assert (g.dg > 1).all()
+
+
+def test_i08_residual_predicts_the_effect_only_when_ddg_really_drives_it():
+    from mpdms.insertion import i08_ddg_vs_hydrophobicity
+    import tempfile
+    from pathlib import Path as _P
+    got = {}
+    for name, kw in (("kd_only", dict(kd_effect=-0.06, ddg_effect=0.0)),
+                     ("ddg_too", dict(kd_effect=-0.02, ddg_effect=-0.30))):
+        with tempfile.TemporaryDirectory() as d:
+            got[name] = i08_ddg_vs_hydrophobicity(
+                {"T": _tm_variants(**kw)}, ["T"], _P(d))["by_protein"][0]
+    assert got["kd_only"]["p_effect_on_residual"] > 0.05
+    assert got["ddg_too"]["p_effect_on_residual"] < 0.01
+    assert got["ddg_too"]["slope_effect_on_residual"] < -0.1
