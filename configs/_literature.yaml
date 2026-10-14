@@ -122,6 +122,38 @@ PHO84:
     which makes the wild-type check worth reading: an off-by-one in the source would put
     D at 179 or Y at 178 and the entry would be dropped rather than silently plotted.
 
+HXT1:
+  uniprot: null            # found by sequence match against the ESM table
+  measured:
+    # Alanine substitutions supplied by the user as sites of interest. No source and no
+    # reported phenotype was given, so function and abundance stay `unknown`: A19 will
+    # report where the screen puts these residues, but nothing here asserts a published
+    # effect, and `confidence: unverified` keeps them out of any claim that needs one.
+    # The verdict A19 prints comes from the screen's own ESM residual and abundance, not
+    # from these fields, so leaving them unknown does not weaken the enrichment test.
+    # The wild-type letters are taken from the substitution strings themselves; A19 and
+    # A21 check each against the config's FASTA and drop any that disagree, which is how
+    # a numbering mismatch gets caught rather than silently compared.
+    - {pos: 209, wt: Q, substitution: Q209A, function: unknown, abundance: unknown,
+       source: "user-supplied, source not stated", confidence: unverified}
+    - {pos: 335, wt: Q, substitution: Q335A, function: unknown, abundance: unknown,
+       source: "user-supplied, source not stated", confidence: unverified}
+    - {pos: 336, wt: Q, substitution: Q336A, function: unknown, abundance: unknown,
+       source: "user-supplied, source not stated", confidence: unverified}
+    - {pos: 363, wt: S, substitution: S363A, function: unknown, abundance: unknown,
+       source: "user-supplied, source not stated", confidence: unverified}
+    - {pos: 370, wt: N, substitution: N370A, function: unknown, abundance: unknown,
+       source: "user-supplied, source not stated", confidence: unverified}
+    - {pos: 473, wt: W, substitution: W473A, function: unknown, abundance: unknown,
+       source: "user-supplied, source not stated", confidence: unverified}
+  inferred: []
+  note: >-
+    Six alanine substitutions: Q209A, Q335A, Q336A, S363A, N370A, W473A. Three
+    glutamines, a serine, an asparagine and a tryptophan - the polar and aromatic
+    composition a sugar-binding site tends to have in this family - but no phenotype
+    was supplied with them, so they are positions of interest and not positive
+    controls. Each names a specific allele, so they drive A20 as well as A19 and A21.
+
 HXT2:
   uniprot: null            # found by sequence match against the ESM table
   measured:
