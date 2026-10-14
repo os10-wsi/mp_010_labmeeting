@@ -887,6 +887,112 @@ def r10_alternative_state(bits: dict, names: list[str], outdir: Path) -> dict:
             "models": per.to_dict("records")}
 
 
+# the three substitution classes r11 follows, each with the colour and the marker it
+# keeps in every panel. Blue, red and near-black: three series have to be told apart in
+# greyscale and by someone who cannot separate red from green, so the marker carries the
+# distinction as well as the colour.
+R11_CLASSES = {"K or R": (("K", "R"), "#2166AC", "o"),
+               "proline": (("P",), "#B2182B", "^"),
+               "glycine": (("G",), "#333333", "s")}
+
+
+def r11_breakers_vs_rsa(bits: dict, names: list[str], outdir: Path) -> dict:
+    """Inside the TM helices only: does burial decide what a charge, a proline or a
+    glycine costs?
+
+    Three substitutions with three different reasons to hurt, against one axis. A
+    lysine or arginine put into the bilayer is a charge where there is no water, so it
+    should be ruinous when buried and ordinary when exposed - the steepest slope here,
+    and the one the insertion machinery is also reading. Proline breaks the backbone
+    hydrogen bonding of the helix, which is a cost that does not need water to explain
+    it, so a shallow slope would say its damage is structural rather than environmental.
+    Glycine is the control of sorts: small and flexible, it costs little by chemistry
+    and whatever slope it has is closer to the generic cost of changing a buried
+    position at all.
+
+    The unit is a position, not a variant: each point is one TM position's mean effect
+    over that class, so a position with both a lysine and an arginine measured counts
+    once. Standard errors are clustered by helix, because neighbouring positions in one
+    helix share a burial environment and are not independent evidence about RSA.
+    """
+    rows = []
+    fig, pairs, _ = grid(names, w=3.3, h=3.0, extra=0.35)
+    for i, (g, ax) in enumerate(pairs):
+        v = bits[g]["var"]
+        v = v[(v.is_tm > 0.5)].dropna(subset=["score_z", "rsa"])
+        drew = 0
+        for label, (muts, colour, marker) in R11_CLASSES.items():
+            sub = v[v.mut.isin(muts)]
+            if sub.pos.nunique() < MIN_POSITIONS:
+                continue
+            per = sub.groupby("pos").agg(effect=("score_z", "mean"),
+                                         rsa=("rsa", "first"),
+                                         helix=("helix", "first"),
+                                         n=("score_z", "size")).reset_index()
+            per = per.dropna(subset=["effect", "rsa"])
+            if len(per) < MIN_POSITIONS:
+                continue
+            ax.scatter(per.rsa, per.effect, s=16, marker=marker, facecolor=colour,
+                       edgecolor=P.INK, linewidth=0.25, alpha=0.8, zorder=3,
+                       label=f"{label} ({len(per)})")
+            binned(ax, per.rsa, per.effect, RSA_BINS, colour, "")
+            # clustering on helices needs enough of them, and a four-helix fixture or
+            # a protein with few annotated TM segments has not got six. Falling back to
+            # a heteroscedasticity-robust error is better than reporting nothing, and
+            # the table says which one each row got rather than letting them pass as
+            # the same quantity
+            m = cluster_ols("effect ~ rsa", per[["effect", "rsa"]], per.helix)
+            kind = "clustered by helix"
+            if m is None:
+                import statsmodels.formula.api as smf
+                m = smf.ols("effect ~ rsa", data=per[["effect", "rsa"]]).fit(
+                    cov_type="HC3")
+                kind = "HC3, too few helices to cluster"
+            rho, prho = ss.spearmanr(per.rsa, per.effect)
+            rows.append({"protein": g, "substitution": label,
+                         "n_positions": int(len(per)),
+                         "n_variants": int(sub.score_z.notna().sum()),
+                         "n_helices": int(per.helix.nunique()),
+                         "mean_effect": float(per.effect.mean()),
+                         "slope": float(m.params["rsa"]),
+                         "se": float(m.bse["rsa"]), "se_kind": kind,
+                         "p": float(m.pvalues["rsa"]),
+                         "spearman": float(rho), "p_spearman": float(prho)})
+            drew += 1
+        if not drew:
+            empty_panel(ax, i, g, "no class has enough TM positions")
+            continue
+        ax.axhline(0, color=P.MUTED, lw=0.7, zorder=1)
+        here = [r for r in rows if r["protein"] == g]
+        panel(ax, i, g, "  ".join(f"{r['substitution']} {r['slope']:+.2f}"
+                                  for r in here if np.isfinite(r["slope"])), size=7.5)
+        if i == 0:
+            ax.legend(loc="lower right", fontsize=6.2, frameon=False,
+                      handletextpad=0.3)
+        if i // 2 == (len(names) - 1) // 2:
+            ax.set_xlabel("relative solvent accessibility of the position", fontsize=7.5)
+        if i % 2 == 0:
+            ax.set_ylabel("mean effect of that substitution", fontsize=7.5)
+    fig.suptitle("TM helices only. One point is one position's mean effect over that "
+                 "class of substitution; the heavy line is the binned mean. A steep "
+                 "upward slope means the substitution is tolerated where the position "
+                 "is exposed and not where it is buried. Slopes are per unit RSA; the "
+                 "error is clustered by helix where there are six or more to cluster "
+                 "and heteroscedasticity-robust otherwise, and the table says which "
+                 "each row got.", fontsize=7, x=0.01, ha="left")
+    P.save(fig, outdir, "r11_breakers_vs_rsa", None, "R11")
+    plt.close(fig)
+    t = pd.DataFrame(rows)
+    if not len(t):
+        return {"status": "skipped", "reason": "no protein has enough TM positions"}
+    t.to_csv(outdir / "r11_breakers_vs_rsa.csv", index=False)
+    head = "; ".join(
+        f"{short_name(g)} " + ", ".join(f"{r.substitution} {r.slope:+.2f}"
+                                        for r in d.itertuples())
+        for g, d in t.groupby("protein"))
+    return {"status": "ok", "headline": head, "by_class": t.to_dict("records")}
+
+
 ANALYSES = {"r01": "the dose-response, TM against loop",
             "r02": "water-facing against lipid-facing accessible area",
             "r03": "where the knee is",
@@ -896,7 +1002,8 @@ ANALYSES = {"r01": "the dose-response, TM against loop",
             "r07": "which residues care about being buried",
             "r08": "per helix: no range, no prediction",
             "r09": "the fraction at stop-codon level",
-            "r10": "burial that moves between two conformations"}
+            "r10": "burial that moves between two conformations",
+            "r11": "K/R, proline and glycine against RSA, inside the TM helices"}
 
 
 def main(argv=None):
@@ -972,7 +1079,8 @@ def main(argv=None):
              "r07": lambda: r07_by_mutant(bits, names, outdir),
              "r08": lambda: r08_by_helix(bits, names, outdir),
              "r09": lambda: r09_fraction_dead(bits, names, outdir),
-             "r10": lambda: r10_alternative_state(bits, names, outdir)}
+             "r10": lambda: r10_alternative_state(bits, names, outdir),
+             "r11": lambda: r11_breakers_vs_rsa(bits, names, outdir)}
 
     out = {}
     print()

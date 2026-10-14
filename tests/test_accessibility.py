@@ -201,3 +201,68 @@ def test_label_colour_is_chosen_from_the_fill_not_from_the_stack_order():
     assert A.readable_on("#440154") == "white"       # dark viridis purple
     assert A.readable_on("#5ec962") == "#222222"     # light viridis green
     assert A.readable_on("#ffffff") == "#222222"
+
+
+# ------------------------------- r11: K/R, proline and glycine against RSA in the TMs
+def _tm_vars(n_helix=8, per_helix=14, kr_slope=0.9, pro_slope=0.1, seed=4):
+    """TM variants where K/R depends on burial and proline barely does."""
+    rng = np.random.default_rng(seed)
+    rows, pos = [], 0
+    for h in range(n_helix):
+        for _ in range(per_helix):
+            pos += 1
+            rsa = float(rng.uniform(0, 0.8))
+            for mut, slope in (("K", kr_slope), ("R", kr_slope), ("P", pro_slope),
+                               ("G", 0.5)):
+                rows.append({"pos": pos, "wt": "L", "mut": mut, "rsa": rsa,
+                             "is_tm": 1.0, "helix": f"TM{h + 1}",
+                             "score_z": -1.2 + slope * rsa + rng.normal(0, 0.08)})
+    # loop positions, which r11 must ignore entirely
+    for k in range(60):
+        pos += 1
+        rows.append({"pos": pos, "wt": "L", "mut": "K", "rsa": 0.9, "is_tm": 0.0,
+                     "helix": None, "score_z": 0.0})
+    return pd.DataFrame(rows)
+
+
+def test_r11_recovers_the_planted_slopes_and_uses_tm_positions_only(tmp_path):
+    from mpdms.accessibility import r11_breakers_vs_rsa
+    v = _tm_vars()
+    r = r11_breakers_vs_rsa({"T": {"var": v}}, ["T"], tmp_path)
+    assert r["status"] == "ok"
+    by = {d["substitution"]: d for d in r["by_class"]}
+    assert set(by) == {"K or R", "proline", "glycine"}
+    assert by["K or R"]["slope"] == pytest.approx(0.9, abs=0.15)
+    assert by["proline"]["slope"] == pytest.approx(0.1, abs=0.15)
+    assert by["K or R"]["slope"] > by["proline"]["slope"]
+    # a position is the unit, so the 112 TM positions count once each even though
+    # K and R are both measured at every one of them
+    assert by["K or R"]["n_positions"] == 112
+    assert by["K or R"]["n_variants"] == 224
+    # the 60 exposed loop positions would flatten every slope if they leaked in
+    assert by["K or R"]["mean_effect"] < -0.5
+    assert (tmp_path / "r11_breakers_vs_rsa.csv").exists()
+    assert (tmp_path / "r11_breakers_vs_rsa.png").exists()
+
+
+def test_r11_says_which_error_it_reports():
+    """Eight helices cluster; three fall back, and the row has to admit it."""
+    from mpdms.accessibility import r11_breakers_vs_rsa
+    import tempfile
+    from pathlib import Path as _P
+    with tempfile.TemporaryDirectory() as d:
+        many = r11_breakers_vs_rsa({"T": {"var": _tm_vars(n_helix=8)}}, ["T"], _P(d))
+    with tempfile.TemporaryDirectory() as d:
+        few = r11_breakers_vs_rsa({"T": {"var": _tm_vars(n_helix=3, per_helix=20)}},
+                                  ["T"], _P(d))
+    assert all(x["se_kind"] == "clustered by helix" for x in many["by_class"])
+    assert all("too few helices" in x["se_kind"] for x in few["by_class"])
+    assert all(np.isfinite(x["slope"]) for x in many["by_class"] + few["by_class"])
+
+
+def test_r11_declines_a_class_it_cannot_measure(tmp_path):
+    from mpdms.accessibility import r11_breakers_vs_rsa
+    v = _tm_vars()
+    v = v[v.mut != "P"]                       # no proline measured anywhere
+    r = r11_breakers_vs_rsa({"T": {"var": v}}, ["T"], tmp_path)
+    assert {d["substitution"] for d in r["by_class"]} == {"K or R", "glycine"}

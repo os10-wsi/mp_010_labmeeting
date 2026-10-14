@@ -780,6 +780,7 @@ what.
 | R08 | per helix | the within-helix slope against that helix's RSA range: no range, no prediction |
 | R09 | the fraction at stop level | fraction of substitutions ≤ −0.8 against RSA, beside the rescaled mean |
 | R10 | burial that moves | ΔRSA between two conformations, with mean RSA held fixed |
+| R11 | what burial costs a charge, a proline and a glycine | **TM helices only**: RSA on x, the mean effect of K/R, of proline and of glycine at each position on y, three series in one panel |
 
 **R02 is the point of the module.** Shrake–Rupley is run at the atom level and each
 exposed atom's area is assigned to lipid or water by its own depth in the membrane
