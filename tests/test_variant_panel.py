@@ -130,3 +130,59 @@ def test_no_functional_sites_draws_nothing_rather_than_an_empty_panel(tmp_path):
         def get_path(self, *a, **k):
             return None
     assert ranking_figure(_Cfg(), _sites(), _sites().iloc[:0], tmp_path) == []
+
+
+# ----------------------------------------------- the per-variant estimate table
+def _reps(seed=1):
+    """Replicate-level rows in the shape `collect` returns."""
+    r = np.random.default_rng(seed)
+    rows = []
+    for v, centre in (("Q149A", -0.80), ("Q238A", -0.05), ("R504A", -0.40)):
+        for k in range(3):
+            rows.append({"variant": v, "replicate": f"rep{k + 1}",
+                         "value": float(centre + r.normal(0, 0.05))})
+    return pd.DataFrame(rows)
+
+
+def test_the_estimate_table_carries_a_value_and_an_error_for_every_variant():
+    from mpdms.analyses.a20_variant_panel import estimates, stats_table
+    mut = _reps()
+    syn = pd.DataFrame({"variant": "synonymous", "replicate": "rep1",
+                        "value": np.random.default_rng(2).normal(0, 0.12, 60),
+                        "syn_index": np.arange(60)})
+    syn_means = syn.value.to_numpy()
+    est = estimates(mut, syn_means, stats_table(mut, syn, syn_means))
+    assert list(est.variant) == ["Q149A", "Q238A", "R504A"]
+    assert (est.n_replicates == 3).all()
+    assert (est.se > 0).all() and (est.se < est.sd).all()        # se = sd / sqrt(3)
+    assert np.allclose(est.se, est.sd / np.sqrt(3))
+    # the interval is the t interval for two degrees of freedom, not 1.96 se
+    half = (est.ci95_hi - est.ci95_lo) / 2
+    assert ((half / est.se) > 4.0).all() and ((half / est.se) < 4.6).all()
+    assert (est.ci95_lo < est.score_z).all() and (est.score_z < est.ci95_hi).all()
+    # the strong variant's interval clears synonymous, the weak one's does not
+    strong = est[est.variant == "Q149A"].iloc[0]
+    weak = est[est.variant == "Q238A"].iloc[0]
+    assert strong.ci95_hi < strong.synonymous_median
+    assert weak.ci95_lo < weak.synonymous_median < weak.ci95_hi
+    assert est.wt.tolist() == ["Q", "Q", "R"] and est.pos.tolist() == [149, 238, 504]
+
+
+def test_the_two_kinds_of_error_are_labelled_and_never_silently_mixed():
+    """Replicate scatter and the assay's own sigma are different quantities."""
+    from mpdms.analyses.a20_variant_panel import (estimates, estimates_single,
+                                                  stats_table)
+    mut = _reps()
+    syn = pd.DataFrame({"variant": "synonymous", "replicate": "rep1",
+                        "value": np.random.default_rng(2).normal(0, 0.12, 60),
+                        "syn_index": np.arange(60)})
+    rep = estimates(mut, syn.value.to_numpy(), stats_table(mut, syn, syn.value.to_numpy()))
+    named, _ = collect_single(_df(), ["Q209A", "Q335A", "W473A"])
+    syn_all = _df().query("vclass == 'synonymous'").score_z.to_numpy()
+    one = estimates_single(named, stats_single(named, syn_all), syn_all)
+    assert set(rep.error_kind) == {"se of the replicate mean"}
+    assert set(one.error_kind) == {"sigma from the dataset, rescaled"}
+    # the same columns in the same order, so the two branches are one table downstream
+    assert list(rep.columns) == list(one.columns)
+    assert (one.n_replicates == 1).all() and one.sd.isna().all()
+    assert np.allclose(one.ci95_hi - one.ci95_lo, 2 * 1.96 * one.se)

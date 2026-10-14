@@ -19,6 +19,17 @@ TWO COMPARISONS, VERY DIFFERENT POWER - this is the whole point of the module:
                           result here means "underpowered", NOT "the same".
                           The module prints the minimum detectable difference
                           so that can be stated rather than implied.
+
+TABLES
+
+  a20_variant_estimates.csv   one row per named variant: normalised fitness, sd, se,
+                              the 95% interval, the synonymous median it is measured
+                              against, and the test result. This is the one to analyse.
+                              `error_kind` says which error it is - the se of the
+                              replicate mean, or the dataset's own sigma rescaled -
+                              because the two are not interchangeable.
+  a20_variant_stats.csv       one row per comparison, including every mutant pair.
+  a20_variant_replicates.csv  the individual replicate values behind the dots.
 """
 from __future__ import annotations
 
@@ -187,8 +198,11 @@ def stats_table(mut: pd.DataFrame, syn: pd.DataFrame, syn_means: np.ndarray) -> 
         # variants do, which they do not, so it reads far too significant. Comparing this
         # variant's mean to the spread of synonymous variant MEANS asks the right question:
         # is this further from WT than synonymous variants get on their own?
+        sd_a = float(np.std(x, ddof=1)) if len(x) > 1 else np.nan
         rows.append({"comparison": f"{v} vs synonymous", "kind": "vs_synonymous", "a": v, "b": SYN_LABEL,
                      "n_a": len(x), "n_b": len(syn_means), "mean_a": m, "mean_b": centre,
+                     "sd_a": sd_a, "se_a": sd_a / np.sqrt(len(x)) if len(x) else np.nan,
+                     "sd_b": syn_sd,
                      "difference": m - centre,
                      "z_vs_syn_variants": (m - centre) / syn_sd if syn_sd and np.isfinite(syn_sd) else np.nan,
                      "p": emp, "p_welch_replicates": float(t.pvalue) if t else np.nan,
@@ -202,6 +216,9 @@ def stats_table(mut: pd.DataFrame, syn: pd.DataFrame, syn_means: np.ndarray) -> 
         sd = float(np.sqrt((np.var(xa, ddof=1) + np.var(xb, ddof=1)) / 2))
         rows.append({"comparison": f"{a} vs {b}", "kind": "mutant_pair", "a": a, "b": b,
                      "n_a": len(xa), "n_b": len(xb), "mean_a": float(np.mean(xa)), "mean_b": float(np.mean(xb)),
+                     "sd_a": float(np.std(xa, ddof=1)), "sd_b": float(np.std(xb, ddof=1)),
+                     "se_a": float(np.std(xa, ddof=1) / np.sqrt(len(xa))),
+                     "se_b": float(np.std(xb, ddof=1) / np.sqrt(len(xb))),
                      "difference": float(np.mean(xa) - np.mean(xb)), "z_vs_syn_variants": np.nan,
                      "p": float(t.pvalue),
                      "min_detectable_difference": MDE_D * sd})
@@ -209,6 +226,71 @@ def stats_table(mut: pd.DataFrame, syn: pd.DataFrame, syn_means: np.ndarray) -> 
     if len(t):
         t["q"] = bh_fdr(t.p.fillna(1.0))
     return t
+
+
+def estimates(mut: pd.DataFrame, syn_means: np.ndarray, st: pd.DataFrame) -> pd.DataFrame:
+    """One row per named variant: the value, its error, and its interval.
+
+    The stats table is organised by comparison, which is the right shape for reading and
+    the wrong shape for analysis - a variant appears in several rows and its error does
+    not appear at all. This is the other shape: one row per variant, the normalised
+    fitness and the uncertainty on it, ready to be read straight into something else.
+
+    The error is the standard error of the replicate mean. With three replicates that is
+    a two-degree-of-freedom estimate, so the interval uses t rather than 1.96, and the
+    column saying which is which travels with the numbers rather than living in a caption.
+    """
+    centre = float(np.median(syn_means)) if len(syn_means) else 0.0
+    vs = st[st.kind == "vs_synonymous"].set_index("a") if len(st) else pd.DataFrame()
+    rows = []
+    for v, g in mut.groupby("variant", sort=False):
+        x = g.value.to_numpy(float)
+        x = x[np.isfinite(x)]
+        n = len(x)
+        m = float(np.mean(x)) if n else np.nan
+        sd = float(np.std(x, ddof=1)) if n > 1 else np.nan
+        se = sd / np.sqrt(n) if n > 1 else np.nan
+        half = float(ss.t.ppf(0.975, n - 1) * se) if n > 1 and np.isfinite(se) else np.nan
+        pr = parse_substitution(v)
+        r = vs.loc[v] if len(vs) and v in vs.index else None
+        rows.append({"variant": v,
+                     "wt": pr[0] if pr else "", "pos": pr[1] if pr else np.nan,
+                     "mut": pr[2] if pr else "",
+                     "n_replicates": n, "score_z": m, "sd": sd, "se": se,
+                     "error_kind": "se of the replicate mean",
+                     "ci95_lo": m - half, "ci95_hi": m + half,
+                     "synonymous_median": centre, "difference": m - centre,
+                     "z_vs_syn_variants": float(r.z_vs_syn_variants) if r is not None else np.nan,
+                     "p": float(r.p) if r is not None else np.nan,
+                     "q": float(r.q) if r is not None and "q" in r else np.nan})
+    return pd.DataFrame(rows)
+
+
+def estimates_single(named: pd.DataFrame, st: pd.DataFrame,
+                     syn_all: np.ndarray) -> pd.DataFrame:
+    """The same table where the dataset gives one estimate and its sigma, not replicates.
+
+    The error is then the assay's own sigma carried through the normalisation, not
+    replicate scatter, and the column says so - the two are not interchangeable and a
+    table that called both "se" without comment would invite them to be averaged.
+    """
+    centre = float(np.median(syn_all)) if len(syn_all) else 0.0
+    keyed = st.set_index("variant") if len(st) else pd.DataFrame()
+    rows = []
+    for r in named.itertuples():
+        se = float(r.se) if np.isfinite(r.se) else np.nan
+        half = 1.96 * se if np.isfinite(se) else np.nan
+        q = keyed.loc[r.variant] if len(keyed) and r.variant in keyed.index else None
+        rows.append({"variant": r.variant, "wt": r.wt, "pos": r.pos, "mut": r.mut,
+                     "n_replicates": 1, "score_z": float(r.score_z), "sd": np.nan,
+                     "se": se, "error_kind": "sigma from the dataset, rescaled",
+                     "ci95_lo": r.score_z - half, "ci95_hi": r.score_z + half,
+                     "synonymous_median": centre,
+                     "difference": float(r.score_z) - centre,
+                     "z_vs_syn_variants": float(q.z_vs_synonymous) if q is not None else np.nan,
+                     "p": float(q.p) if q is not None else np.nan,
+                     "q": float(q.q) if q is not None and "q" in q else np.nan})
+    return pd.DataFrame(rows)
 
 
 def figure(cfg, mut: pd.DataFrame, syn: pd.DataFrame, syn_means: np.ndarray,
@@ -505,6 +587,8 @@ def run(df: pd.DataFrame, cfg, outdir: Path) -> dict:
         st = stats_single(named, syn_all) if ref_syn is not None else stats_single_wt(named)
         st.to_csv(tabdir / "a20_variant_stats.csv", index=False)
         named.to_csv(tabdir / "a20_variant_values.csv", index=False)
+        est = estimates_single(named, st, syn_all)
+        est.to_csv(tabdir / "a20_variant_estimates.csv", index=False)
         figs = figure_single(cfg, named, ref_syn, sites, figdir)
         pc = percentiles(df, labels)
         if len(pc):
@@ -526,7 +610,8 @@ def run(df: pd.DataFrame, cfg, outdir: Path) -> dict:
                          ["no synonymous variants in this library: the reference is the wild "
                           "type at 0 and each variant is tested against its own sigma, which "
                           "is a weaker comparison than a synonymous spread would give"]),
-                      figs, [tabdir / "a20_variant_stats.csv"])
+                      figs, [tabdir / "a20_variant_stats.csv",
+                             tabdir / "a20_variant_estimates.csv"])
 
     mut, syn, missing = collect(df, cfg, labels)
     if not len(mut):
@@ -540,6 +625,9 @@ def run(df: pd.DataFrame, cfg, outdir: Path) -> dict:
     st.to_csv(tp, index=False)
     dp = tabdir / "a20_variant_replicates.csv"
     pd.concat([mut, syn.assign(variant=SYN_LABEL)]).to_csv(dp, index=False)
+    est = estimates(mut, syn_means, st)
+    ep = tabdir / "a20_variant_estimates.csv"
+    est.to_csv(ep, index=False)
     pc = percentiles(df, labels)
     figs = figure(cfg, mut, syn, syn_means, st, figdir)
     if len(pc):
@@ -584,4 +672,4 @@ def run(df: pd.DataFrame, cfg, outdir: Path) -> dict:
                                              "percentile": r.percentile,
                                              "rank_from_bottom": r.rank_from_bottom}
                                             for r in pc.itertuples()]},
-                  caveats, figs, [tp, dp] + ([tabdir / "a20b_percentiles.csv"] if len(pc) else []))
+                  caveats, figs, [tp, ep, dp] + ([tabdir / "a20b_percentiles.csv"] if len(pc) else []))
