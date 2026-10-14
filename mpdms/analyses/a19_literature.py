@@ -35,7 +35,12 @@ from .a15_esm_functional import Q_SITE, TOLERANT, Z_SITE
 from .base import dirs, fmt_p, result, skipped
 
 LIT_PATH = REPO_ROOT / "configs" / "_literature.yaml"
-LIT_COLOR = "#B8860B"
+# blue for the published residues, black for what this screen calls functional, grey
+# for everything else: three values that stay apart in greyscale and on a projector
+LIT_COLOR = "#2166AC"
+OTHER_COLOR = "#A9B2BC"
+FUNCTIONAL_COLOR = "#111111"
+RULE_COLOR = "#6B6B6B"
 AA3 = {"ALA": "A", "ARG": "R", "ASN": "N", "ASP": "D", "CYS": "C", "GLN": "Q", "GLU": "E", "GLY": "G",
        "HIS": "H", "ILE": "I", "LEU": "L", "LYS": "K", "MET": "M", "PHE": "F", "PRO": "P", "SER": "S",
        "THR": "T", "TRP": "W", "TYR": "Y", "VAL": "V"}
@@ -131,32 +136,33 @@ def figure(cfg, t: pd.DataFrame, sites: pd.DataFrame, figdir):
     pub = sites[sites.pos.isin(cov.pos)].median_z if len(cov) else sites.iloc[:0].median_z
     oth = sites[~sites.pos.isin(cov.pos)].median_z
     P.density_by_class(ax, {"published": pub.to_numpy(), "all other sites": oth.to_numpy()},
-                       colors={"published": LIT_COLOR, "all other sites": "#8899A6"})
-    for v, c in ((pub, LIT_COLOR), (oth, "#8899A6")):
+                       colors={"published": LIT_COLOR, "all other sites": OTHER_COLOR})
+    for v, c in ((pub, LIT_COLOR), (oth, OTHER_COLOR)):
         if len(v):
             ax.axvline(float(np.median(v)), color=c, lw=0.8, ls=(0, (2, 2)))
     if len(pub) and len(oth):
         u, pv = ss.mannwhitneyu(pub, oth, alternative="two-sided")
         ax.text(0.40, 0.96, f"Mann–Whitney {fmt_p(pv)}\nn = {len(pub)} vs {len(oth):,}",
                 transform=ax.transAxes, va="top", ha="center", fontsize=6.5)
-    ax.axvline(Z_SITE, color="#D62728", lw=0.6, ls=(0, (3, 3)))
+    ax.axvline(Z_SITE, color=RULE_COLOR, lw=0.8, ls=(0, (3, 3)))
     ax.set_xlabel("Site median ESM-1v residual z")
     ax.legend(frameon=False, fontsize=6.5, loc="upper right")
     ax.set_title("(a) Published residues vs the rest of the protein", loc="left", fontsize=8.5)
 
     ax = axes[1]
-    ax.scatter(sites.median_abundance, sites.median_z, s=4, c=P.INK, alpha=0.30, lw=0,
-               label="all tested sites", zorder=1, rasterized=len(sites) > 5000)
+    ax.scatter(sites.median_abundance, sites.median_z, s=4, c=OTHER_COLOR, alpha=0.55,
+               lw=0, label="all tested sites", zorder=1, rasterized=len(sites) > 5000)
     f = sites[sites.functional]
-    ax.scatter(f.median_abundance, f.median_z, s=7, c="#D62728", lw=0, label="A15 functional", zorder=2)
+    ax.scatter(f.median_abundance, f.median_z, s=9, c=FUNCTIONAL_COLOR, lw=0,
+               label="A15 functional", zorder=2)
     cov = t[t.tested]
     ax.scatter(cov.median_abundance, cov.median_z, s=70, facecolor="none", edgecolor=LIT_COLOR,
                lw=1.6, label="published residue", zorder=3)
     for r in cov.itertuples():
         ax.annotate(f"{r.wt}{r.pos}", (r.median_abundance, r.median_z), textcoords="offset points",
                     xytext=(7, 4), fontsize=8, color=LIT_COLOR, zorder=4)
-    ax.axhline(Z_SITE, color="#D62728", lw=0.6, ls=(0, (2, 2)))
-    ax.axvline(TOLERANT, color="#555555", lw=0.6, ls=(0, (2, 2)))
+    ax.axhline(Z_SITE, color=RULE_COLOR, lw=0.8, ls=(0, (2, 2)))
+    ax.axvline(TOLERANT, color=RULE_COLOR, lw=0.8, ls=(0, (2, 2)))
     ax.set_xlabel("median abundance (normalised fitness)")
     ax.set_ylabel("median ESM-1v residual z")
     ax.set_title(f"(b) Bottom-right = constrained (z ≤ {Z_SITE}) but abundance-tolerant "

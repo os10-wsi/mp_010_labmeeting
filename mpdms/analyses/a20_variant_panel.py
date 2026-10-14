@@ -37,12 +37,20 @@ from ..stats import bh_fdr
 from .a19_literature import load_literature
 from .base import dirs, fmt_p, result, skipped
 
-SYN_COLOR, MUT_COLOR = "#1B9E77", "#2F6DB5"
-HILITE = "#B8860B"
+# the synonymous reference is blue - fill, band, median line and zero line all from
+# the same two values - and the mutants are black points on top of it, so the figure
+# reads in one colour family and the two things never blur into each other
+SYN_COLOR, SYN_FILL = "#2166AC", "#A6C8E8"
+MUT_COLOR = "#111111"
+HILITE = "#2166AC"
 SYN_LABEL = "synonymous\n(WT)"
 MDE_D = 3.10  # Cohen's d detectable at 80% power, alpha 0.05 two-sided, n = 3 vs 3
 SYN_DISPLAY_N = 20   # synonymous variants drawn in the dot plot (fixed seed)
 SYN_DISPLAY_SEED = 20
+# the vs-synonymous test uses the SAME subset the figure draws, so the picture and the
+# p-value are about one set of variants. The cost is an empirical p floor of
+# 1/(n+1) = 0.048, which is reported on the figure and in every row of the table.
+SYN_TEST_N = SYN_DISPLAY_N
 MISS_COLOR = "#2F6DB5"
 
 
@@ -126,12 +134,31 @@ def collect(df: pd.DataFrame, cfg, labels: list[str]) -> tuple[pd.DataFrame, pd.
     return pd.DataFrame(rows), pd.DataFrame(srows), missing
 
 
+def sample_means(means: np.ndarray, n: int = SYN_TEST_N,
+                 seed: int = SYN_DISPLAY_SEED) -> np.ndarray:
+    """The subset of synonymous variant means the vs-synonymous test is run against.
+
+    Keeping the reference to the same twenty the figure draws means the picture and the
+    p-value are about one set of variants rather than two. It costs power, and the cost
+    is not small: an empirical p cannot go below 1/(n+1), so with twenty the floor is
+    0.048 and a variant can at best be called marginally significant. The floor is
+    reported on the figure, in `p_floor` on every row of the table, and in the caveats.
+    """
+    means = np.asarray(means, float)
+    means = means[np.isfinite(means)]
+    if n is None or len(means) <= n:
+        return means
+    return means[np.random.default_rng(seed).choice(len(means), n, replace=False)]
+
+
 def sample_for_display(syn: pd.DataFrame, n: int = SYN_DISPLAY_N) -> pd.DataFrame:
     """A fixed random subset of synonymous VARIANTS (all their replicates) to draw.
 
-    Display only. The vs-synonymous test keeps the full set: cutting the null to 20
-    would raise the empirical p floor to 1/21 = 0.048, so nothing could reach
-    significance. The figure says which number is which.
+    The vs-synonymous test is run against the same number (SYN_TEST_N), so the dots
+    and the p-value describe one set of variants. These are drawn from the replicate
+    table and the test's are drawn from the per-variant means, with the same seed and
+    the same count but not necessarily the same variants - the figure says how many of
+    each.
     """
     if not len(syn) or "syn_index" not in syn:
         return syn
@@ -189,7 +216,11 @@ def figure(cfg, mut: pd.DataFrame, syn: pd.DataFrame, syn_means: np.ndarray,
     syn_shown = sample_for_display(syn)
     n_shown = int(syn_shown.syn_index.nunique()) if "syn_index" in syn_shown else 0
     order = [SYN_LABEL] + list(dict.fromkeys(mut.variant))
-    fig, ax = plt.subplots(figsize=(1.35 * len(order) + 2.6, 4.6), layout="constrained")
+    # the canvas is kept near-square on purpose: MPDMS_SQUARE sets the axes box to a
+    # square at save time, and in a wide figure that leaves a small square plot adrift
+    # in the middle with every annotation overlapping it
+    w = 1.35 * len(order) + 2.6
+    fig, ax = plt.subplots(figsize=(w, max(4.6, 0.88 * w)), layout="constrained")
     rng = np.random.default_rng(20)
     syn_vals = syn.value.to_numpy()
     # the shaded band is the null the vs-synonymous test uses, so it must be the spread of
@@ -204,7 +235,7 @@ def figure(cfg, mut: pd.DataFrame, syn: pd.DataFrame, syn_means: np.ndarray,
     # is three replicates, where a violin would be a lie - those stay as the raw points
     # violin over every synonymous variant for the shape; the 20 sampled ones drawn on
     # top so individual measurements stay visible without burying the mutant columns
-    P.violin_box(ax, {SYN_LABEL: syn.value.to_numpy()}, colors={SYN_LABEL: SYN_COLOR},
+    P.violin_box(ax, {SYN_LABEL: syn.value.to_numpy()}, colors={SYN_LABEL: SYN_FILL},
                  points=0, width=0.8, show_medians=False)
     sv = syn_shown.value.to_numpy()
     ax.scatter(rng.uniform(-0.12, 0.12, len(sv)), sv, s=5, color=SYN_COLOR, alpha=0.75, lw=0, zorder=4)
@@ -212,8 +243,8 @@ def figure(cfg, mut: pd.DataFrame, syn: pd.DataFrame, syn_means: np.ndarray,
         if v == SYN_LABEL:
             continue
         vals = mut.query("variant == @v").value.to_numpy()
-        ax.scatter(i + rng.uniform(-0.09, 0.09, len(vals)), vals, s=26, color=MUT_COLOR,
-                   lw=0.4, edgecolor="white", zorder=4)
+        ax.scatter(i + rng.uniform(-0.09, 0.09, len(vals)), vals, s=30, color=MUT_COLOR,
+                   lw=0.5, edgecolor="white", zorder=4)
         if len(vals):
             m = float(np.mean(vals))
             ax.plot([i - 0.22, i + 0.22], [m, m], color=P.INK, lw=1.4, zorder=5)
@@ -236,9 +267,15 @@ def figure(cfg, mut: pd.DataFrame, syn: pd.DataFrame, syn_means: np.ndarray,
     if len(pair):
         mde = float(pair.min_detectable_difference.max())
         bits = [f"{r.comparison}: Δ = {r.difference:+.2f}, q = {r.q:.3f}" for r in pair.itertuples()]
-        ax.text(0.5, -0.185, "Between variants (Welch, 3 vs 3): " + " | ".join(bits),
+        import textwrap
+        # wrapped to the figure's own width: one long line was running off the page as
+        # soon as the panel was squared
+        body = textwrap.fill("Between variants (Welch, 3 vs 3): " + " | ".join(bits),
+                             width=int(12 * fig.get_figwidth()))
+        ax.text(0.5, -0.185, body,
                 transform=ax.transAxes, ha="center", va="top", fontsize=6.5, color=P.INK)
-        ax.text(0.5, -0.255, f"at n = 3 per side only a difference of ≈ {mde:.2f} is detectable at 80% "
+        ax.text(0.5, -0.185 - 0.035 * (1 + body.count(chr(10))),
+                f"at n = 3 per side only a difference of ≈ {mde:.2f} is detectable at 80% "
                              "power, so a null here is underpowered, not equivalent",
                 transform=ax.transAxes, ha="center", va="top", fontsize=6, color=P.MUTED, style="italic")
     ax.set_xticks(range(len(order)))
@@ -246,9 +283,11 @@ def figure(cfg, mut: pd.DataFrame, syn: pd.DataFrame, syn_means: np.ndarray,
     ax.set_xlim(-0.6, len(order) - 0.4)
     ax.set_ylim(lo - 0.40, max(0.45, (mut.value.max() if len(mut) else 0) + 0.3))
     ax.set_ylabel("Normalised fitness (synonymous = 0, nonsense = −1)")
-    ax.set_title(f"(a) Replicate fitness per variant; green band = ±1 SD of {len(syn_means)} "
-                 f"synonymous variant means; violin = all synonymous variants, "
-                 f"dots = {n_shown} drawn at random",
+    floor = 1 / (len(syn_means) + 1) if len(syn_means) else float("nan")
+    ax.set_title(f"(a) Replicate fitness per variant; blue band = ±1 SD of "
+                 f"{len(syn_means)} synonymous variant means, which is also the "
+                 f"reference the test uses (empirical p cannot go below {floor:.3f}); "
+                 f"violin = all synonymous variants, dots = {n_shown} drawn at random",
                  loc="left", fontsize=8.5)
     P.title(fig, cfg, "A20 named variants vs synonymous wild type")
     return P.save(fig, figdir, "a20_variant_panel", cfg, "A20")
@@ -493,7 +532,9 @@ def run(df: pd.DataFrame, cfg, outdir: Path) -> dict:
     if not len(mut):
         return skipped("a20", cfg, "none of the named variants are usable: " + "; ".join(missing))
 
-    syn_means = df[(df.vclass == "synonymous") & df.pass_filter].score_z.dropna().to_numpy()
+    all_syn_means = df[(df.vclass == "synonymous")
+                       & df.pass_filter].score_z.dropna().to_numpy()
+    syn_means = sample_means(all_syn_means, SYN_TEST_N)
     st = stats_table(mut, syn, syn_means)
     tp = tabdir / "a20_variant_stats.csv"
     st.to_csv(tp, index=False)
@@ -516,6 +557,9 @@ def run(df: pd.DataFrame, cfg, outdir: Path) -> dict:
                        f"{mde:.2f} fitness units is detectable at 80% power, so a null there means "
                        "underpowered, not equivalent")
     floor = float(vs.p_floor.max()) if len(vs) and vs.p_floor.notna().any() else np.nan
+    caveats.append(f"the vs-synonymous reference was cut to {len(syn_means)} of "
+                   f"{len(all_syn_means)} synonymous variant means (SYN_TEST_N), which "
+                   "is a deliberate loss of power, not a property of the data")
     caveats.append(f"vs-synonymous p is empirical against {len(syn_means)} synonymous variant means, so it "
                    f"cannot go below {floor:.2g}; p_welch_replicates in the table is the parametric "
                    "alternative and reads optimistically because replicates of one variant are correlated")
