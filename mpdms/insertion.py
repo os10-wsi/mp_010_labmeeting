@@ -258,7 +258,8 @@ def helix_frame(df: pd.DataFrame, cfg) -> pd.DataFrame:
         orient = s.get("orientation") or "in_out"
         dg = segment_dg(sub, orientation=orient)
         rows.append({"helix": s["name"], "start": a, "end": b, "length": len(sub),
-                     "orientation": orient, "dg": dg, "dg_per_residue": dg / len(sub),
+                     "orientation": orient, "seq": sub,
+                     "dg": dg, "dg_per_residue": dg / len(sub),
                      "mean_effect": float(e.mean()), "median_effect": float(e.median()),
                      "se_effect": float(e.std(ddof=1) / np.sqrt(len(e))),
                      "n_positions": int(len(e)),
@@ -302,7 +303,8 @@ def variant_frame(df: pd.DataFrame, cfg, helices: pd.DataFrame) -> pd.DataFrame:
     return d
 
 
-def add_ddg(d: pd.DataFrame, depth: str = "ideal") -> pd.DataFrame:
+def add_ddg(d: pd.DataFrame, depth: str = "ideal",
+            scale: str | None = None) -> pd.DataFrame:
     """ddG of each substitution at its residue's depth. `depth` is 'ideal' or 'structure'."""
     if not len(d):
         return d
@@ -311,7 +313,7 @@ def add_ddg(d: pd.DataFrame, depth: str = "ideal") -> pd.DataFrame:
         z = np.where(d.zdepth.notna(), d.zdepth.fillna(0).to_numpy(), z)
     out = d.copy()
     out["z_used"] = z
-    out["ddg"] = [residue_dg(m, zi) - residue_dg(w, zi)
+    out["ddg"] = [residue_dg(m, zi, scale) - residue_dg(w, zi, scale)
                   for m, w, zi in zip(out.mut, out.wt, z)]
     return out.dropna(subset=["ddg"])
 
@@ -346,7 +348,7 @@ def i01_helix_tolerance(helices: dict, names: list[str], outdir: Path) -> dict:
         else:
             panel(ax, i, g)
         if i // 2 == (len(names) - 1) // 2:
-            ax.set_xlabel("ΔG of inserting the helix (kcal/mol, dsTβL)", fontsize=7.5)
+            ax.set_xlabel(f"ΔG of inserting the helix (kcal/mol, {SCALE})", fontsize=7.5)
         if i % 2 == 0:
             ax.set_ylabel("mean effect over the helix", fontsize=7.5)
     fig.suptitle("Left = inserts comfortably, right = marginal. The claim predicts a "
@@ -706,11 +708,142 @@ def i05_ranking(helices: dict, names: list[str], outdir: Path) -> dict:
     return {"status": "ok", "headline": head, "ranking": t.to_dict("records")}
 
 
+def i06_scale_agreement(variants: dict, helices: dict, names: list[str],
+                        outdir: Path) -> dict:
+    """Do the two scales predict the same thing, and does either match the measurement?
+
+    The scales were not measured in the same membrane: dsTbL in a bacterial
+    inner-membrane reporter, Hessa on Sec61 in dog pancreas rough microsomes, which is
+    an ER membrane (check both against the papers before either appears on a slide).
+    Neither is a yeast plasma membrane, so the useful question is not which is right
+    but how much the choice matters: if the two agree closely, the membrane they came from cannot be driving any
+    conclusion drawn here, and if they disagree, every number that depends on the scale
+    has to be quoted with the scale named.
+
+    Both are evaluated at the same ideal depths, so this is the scales differing and not
+    the geometry. Reported per protein: how well the two agree on the ddG of the same
+    substitutions, how well they agree on which helix is hardest to insert, and how each
+    one correlates with the effect actually measured - that last pair being the only
+    comparison that can say anything about which membrane is the better analogue.
+    """
+    rows = []
+    fig, pairs, _ = grid(names, w=3.1, h=3.0, extra=0.3)
+    for i, (g, ax) in enumerate(pairs):
+        v = variants[g]
+        if not len(v) or "z_ideal" not in v:
+            panel(ax, i, g, "no variants in a helix", size=8)
+            continue
+        z = v.z_ideal.to_numpy(float)
+        a = np.array([residue_dg(m, zi, "dstbl") - residue_dg(w, zi, "dstbl")
+                      for m, w, zi in zip(v.mut, v.wt, z)])
+        b = np.array([residue_dg(m, zi, "hessa") - residue_dg(w, zi, "hessa")
+                      for m, w, zi in zip(v.mut, v.wt, z)])
+        ok = np.isfinite(a) & np.isfinite(b)
+        a, b, eff = a[ok], b[ok], v.score_z.to_numpy(float)[ok]
+        if len(a) < 30:
+            panel(ax, i, g, "too few variants", size=8)
+            continue
+        r = float(ss.pearsonr(a, b).statistic)
+        rho = float(ss.spearmanr(a, b).statistic)
+        slope = float(np.polyfit(a, b, 1)[0])
+        # which helix is hardest to insert, under each scale
+        h = helices[g]
+        hel_rho = np.nan
+        if "seq" in h and len(h) > 2:
+            da = [segment_dg(q.seq, orientation=q.orientation) for q in h.itertuples()]
+            old = globals()["SCALE"]
+            try:
+                globals()["SCALE"] = "hessa"
+                db = [segment_dg(q.seq, orientation=q.orientation) for q in h.itertuples()]
+            finally:
+                globals()["SCALE"] = old
+            hel_rho = float(ss.spearmanr(da, db).statistic)
+        fin = np.isfinite(eff)
+        rows.append({"protein": g, "n_variants": int(len(a)),
+                     "pearson_ddg": r, "spearman_ddg": rho,
+                     "slope_hessa_on_dstbl": slope,
+                     "n_helices": int(len(h)), "spearman_helix_dg": hel_rho,
+                     "spearman_dstbl_vs_measured":
+                         float(ss.spearmanr(a[fin], eff[fin]).statistic),
+                     "spearman_hessa_vs_measured":
+                         float(ss.spearmanr(b[fin], eff[fin]).statistic)})
+        lo = float(min(a.min(), b.min()))
+        hi = float(max(a.max(), b.max()))
+        ax.plot([lo, hi], [lo, hi], color=P.MUTED, lw=0.8, ls=(0, (3, 3)), zorder=1)
+        ax.scatter(a, b, s=5, color="#2166AC", alpha=0.35, lw=0, zorder=2)
+        xs = np.linspace(lo, hi, 20)
+        c1, c0 = np.polyfit(a, b, 1)
+        ax.plot(xs, c0 + c1 * xs, color=P.INK, lw=1.0, zorder=3)
+        ax.text(0.03, 0.97, f"r = {r:+.2f}\nρ = {rho:+.2f}\nslope {slope:+.2f}",
+                transform=ax.transAxes, va="top", ha="left", fontsize=6.5)
+        panel(ax, i, g, f"{len(a):,} variants", size=8)
+        if i // 2 == (len(names) - 1) // 2:
+            ax.set_xlabel("ΔΔG, dsTβL (kcal/mol)", fontsize=7.5)
+        if i % 2 == 0:
+            ax.set_ylabel("ΔΔG, Hessa table S2 (kcal/mol)", fontsize=7.5)
+    fig.suptitle("The same substitutions under both scales, at the same depths. The "
+                 "dashed line is equality; a slope below one means Hessa compresses "
+                 "what dsTβL spreads out. Agreement here means the membrane the scale "
+                 "came from is not driving the conclusion.", fontsize=7, x=0.01,
+                 ha="left")
+    P.save(fig, outdir, "i06_scale_agreement", None, "I06")
+    plt.close(fig)
+    t = pd.DataFrame(rows)
+    t.to_csv(outdir / "i06_scale_agreement.csv", index=False)
+    res = residue_scales(outdir)
+    head = "; ".join(f"{r.protein.replace('_fitness', '')} r {r.pearson_ddg:+.2f} "
+                     f"(helix order ρ {r.spearman_helix_dg:+.2f})"
+                     for r in t.itertuples())
+    return {"status": "ok", "headline": head, "by_protein": t.to_dict("records"),
+            "residues": res}
+
+
+def residue_scales(outdir: Path) -> list:
+    """The twenty residues under both scales, at the centre and at the interface.
+
+    Where the two scales disagree, they disagree residue by residue, and a scatter of
+    the twenty says which ones - which is more use than a single correlation when
+    deciding whether a disagreement matters for a particular protein.
+    """
+    aas = "ACDEFGHIKLMNPQRSTVWY"
+    rows = []
+    for aa in aas:
+        for where, z in (("bilayer centre", 0.0), ("interface", 12.0)):
+            rows.append({"aa": aa, "where": where, "z": z,
+                         "dstbl": residue_dg(aa, z, "dstbl"),
+                         "hessa": residue_dg(aa, z, "hessa")})
+    t = pd.DataFrame(rows)
+    fig, axes = plt.subplots(1, 2, figsize=(7.2, 3.6), layout="constrained")
+    for ax, (where, d) in zip(axes, t.groupby("where", sort=False)):
+        ax.axhline(0, color=P.MUTED, lw=0.6)
+        ax.axvline(0, color=P.MUTED, lw=0.6)
+        ax.scatter(d.dstbl, d.hessa, s=18, color="#2166AC", edgecolor=P.INK, lw=0.3)
+        P.label_points(ax, d.dstbl.to_numpy(), d.hessa.to_numpy(), d.aa.tolist(),
+                       fontsize=7)
+        rho = float(ss.spearmanr(d.dstbl, d.hessa).statistic)
+        ax.set_title(f"{where}  ρ = {rho:+.2f}", loc="left", fontsize=8)
+        ax.set_xlabel("dsTβL (kcal/mol, relative to alanine)", fontsize=7.5)
+        ax.set_ylabel("Hessa table S2 (kcal/mol, absolute)", fontsize=7.5)
+        P.no_square(ax)
+    fig.suptitle("The two scales residue by residue. They are not on the same reference "
+                 "state, so what can be compared is the ordering and the spread, not "
+                 "the values. The ordering agrees; the spread does not. dsTβL has "
+                 "1.4 to 4.8 times the range of Hessa in every residue class at both "
+                 "depths, most of all for the hydrophobics, which is the whole of the "
+                 "slope below one in I06.",
+                 fontsize=7, x=0.01, ha="left")
+    P.save(fig, outdir, "i06b_residue_scales", None, "I06B")
+    plt.close(fig)
+    t.to_csv(outdir / "i06b_residue_scales.csv", index=False)
+    return t.to_dict("records")
+
+
 ANALYSES = {"i01": "helix ΔG against its tolerance",
             "i02": "the interaction: is ΔΔG worse in a marginal helix?",
             "i03": "every helix separately, with the mean and median of them",
             "i04": "the pooled curve over all helices, averaged over variants",
-            "i05": "the helices ranked by wild-type insertion energy"}
+            "i05": "the helices ranked by wild-type insertion energy",
+            "i06": "do the two scales agree, and does either match the measurement?"}
 
 
 def main(argv=None):
@@ -797,8 +930,10 @@ def main(argv=None):
                 r = i03_helix_curves(variants, helices, names, outdir, a.all_helices)
             elif k == "i04":
                 r = i04_pooled(variants, names, outdir)
-            else:
+            elif k == "i05":
                 r = i05_ranking(helices, names, outdir)
+            else:
+                r = i06_scale_agreement(variants, helices, names, outdir)
         except Exception as e:
             r = {"status": "error", "reason": f"{type(e).__name__}: {e}"}
         out[k] = r

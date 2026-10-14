@@ -391,3 +391,74 @@ def test_ddg_is_the_same_shape_under_either_scale():
                 assert out.ddg.iloc[0] == pytest.approx(k_cost, abs=0.01)
     finally:
         I.SCALE = old
+
+
+# ------------------------------------------------- i06: do the two scales agree?
+def test_the_two_scales_agree_on_order_and_not_on_magnitude():
+    """The finding i06 exists to report, pinned so a scale edit cannot quietly undo it.
+
+    Ordering agrees - both call leucine cheap and lysine expensive - while dsTbL has
+    several times the dynamic range. A correlation alone would hide that, which is why
+    i06 reports the regression slope beside it.
+    """
+    for z in (0.0, 12.0):
+        for grp in ("LIFVMWCA", "DEKR", "NQSTHYGP"):
+            a = [I.residue_dg(x, z, "dstbl") for x in grp]
+            b = [I.residue_dg(x, z, "hessa") for x in grp]
+            # 1.39 (polar, interface) to 4.83 (hydrophobic, interface) as transcribed
+            assert (max(a) - min(a)) > 1.3 * (max(b) - min(b)), (z, grp)
+    # the widest gap is the one that matters most: the hydrophobics in the bilayer
+    wide = [I.residue_dg(x, 12.0, "dstbl") for x in "LIFVMWCA"]
+    narrow = [I.residue_dg(x, 12.0, "hessa") for x in "LIFVMWCA"]
+    assert (max(wide) - min(wide)) > 4 * (max(narrow) - min(narrow))
+
+
+def test_i06_reports_agreement_and_writes_both_figures(tmp_path):
+    from mpdms.insertion import i06_scale_agreement
+    rng = np.random.default_rng(0)
+    aas = list("ACDEFGHIKLMNPQRSTVWY")
+    n = 400
+    v = pd.DataFrame({"wt": rng.choice(aas, n), "mut": rng.choice(aas, n),
+                      "z_ideal": rng.uniform(-15, 15, n),
+                      "score_z": rng.normal(-0.5, 0.3, n), "helix": "TM1"})
+    h = pd.DataFrame({"helix": ["TM1", "TM2", "TM3", "TM4"],
+                      "seq": ["LLLLLAAAAAVVVVVIIIII", "KKKKKDDDDDEEEEERRRRR",
+                              "LLAAGGSSTTVVIIFFWWYY", "LLLLLLLLLLLLLLLLLLLL"],
+                      "orientation": ["in_out", "out_in", "in_out", "out_in"]})
+    r = i06_scale_agreement({"T": v}, {"T": h}, ["T"], tmp_path)
+    assert r["status"] == "ok"
+    row = r["by_protein"][0]
+    assert row["n_variants"] == n
+    assert row["pearson_ddg"] > 0.6              # the scales broadly agree
+    assert 0 < row["slope_hessa_on_dstbl"] < 1   # and Hessa is the compressed one
+    assert (tmp_path / "i06_scale_agreement.csv").exists()
+    assert (tmp_path / "i06b_residue_scales.csv").exists()
+    for f in ("i06_scale_agreement", "i06b_residue_scales"):
+        assert (tmp_path / f"{f}.png").exists()
+
+
+def test_i06_does_not_depend_on_which_scale_is_active():
+    """It computes both, so the --scale flag must not change what it reports."""
+    from mpdms.insertion import i06_scale_agreement
+    rng = np.random.default_rng(3)
+    aas = list("ACDEFGHIKLMNPQRSTVWY")
+    v = pd.DataFrame({"wt": rng.choice(aas, 200), "mut": rng.choice(aas, 200),
+                      "z_ideal": rng.uniform(-15, 15, 200),
+                      "score_z": rng.normal(0, 1, 200), "helix": "TM1"})
+    h = pd.DataFrame({"helix": ["TM1", "TM2", "TM3"],
+                      "seq": ["LLLLLAAAAAVVVVV", "KKKKKDDDDDEEEEE", "LLAAGGSSTTVVIIF"],
+                      "orientation": ["in_out", "out_in", "in_out"]})
+    import tempfile
+    from pathlib import Path as _P
+    got = []
+    old = I.SCALE
+    try:
+        for scale in ("dstbl", "hessa"):
+            I.SCALE = scale
+            with tempfile.TemporaryDirectory() as d:
+                got.append(i06_scale_agreement({"T": v}, {"T": h}, ["T"], _P(d))
+                           ["by_protein"][0])
+    finally:
+        I.SCALE = old
+    assert got[0]["pearson_ddg"] == pytest.approx(got[1]["pearson_ddg"])
+    assert got[0]["spearman_helix_dg"] == pytest.approx(got[1]["spearman_helix_dg"])

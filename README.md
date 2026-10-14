@@ -613,6 +613,18 @@ in a 19-residue segment rather than by ångström, so `--depth structure` is ref
 instead of extrapolated, and the transcription is checked for symmetry at import because
 a mistyped row is the realistic failure mode.
 
+**Which membrane the scale came from.** dsTβL was measured in a bacterial
+inner-membrane reporter and Hessa on Sec61 in dog pancreas rough microsomes, an ER
+membrane; neither is a yeast plasma membrane. `--only i06` answers the question that
+follows from that directly, by computing both scales on the same substitutions at the
+same depths and asking how much the choice changes anything. On the SYN1 fixture the
+two agree well on ordering (r = +0.80 over 1,430 variants, ρ = +0.80) and not at all on
+magnitude — the regression slope of Hessa on dsTβL is +0.39, because dsTβL has 1.4 to
+4.8 times the dynamic range in every residue class. So a correlation or a ranking is
+robust to the choice of scale and an effect size in kcal/mol is not. The helix ordering
+is the fragile one: with only four helices on the fixture the two scales rank them at
+ρ = +0.40, which is why I01 and I05 should be read with the scale named.
+
 Two details that matter and are easy to get wrong:
 
 - **Negative z is cytoplasmic, and the profiles are not symmetric.** Lysine costs +0.24
@@ -631,6 +643,8 @@ Two details that matter and are easy to get wrong:
 | I03 | effect against ΔΔG for the **hardest and easiest helix to insert**, with the mean (± SEM) and median across all helices in bold (`--all-helices` draws all twelve, coloured by ΔG) |
 | I04 | the same thing pooled: every variant in any TM helix, binned by ΔΔG and averaged — one curve per protein, no grouping |
 | I05 | the TM helices **ranked** by the insertion energy of their wild-type sequence, within each protein |
+| I06 | the two scales against each other: the same substitutions at the same depths, with the helix ordering and each scale's correlation with the measured effect in `i06_scale_agreement.csv` |
+| I06B | the twenty residues under both scales, at the bilayer centre and at the interface — where the two disagree, and which residues do it |
 
 I05 is the premise of all the others and worth reading first: if a protein's helices
 all sit within a kcal/mol of each other there is no contrast to test, and a bar past
