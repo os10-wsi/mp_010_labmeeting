@@ -187,6 +187,61 @@ RENDER = os.environ.get("MPDMS_RENDER", "").strip() not in ("", "0", "false", "n
 RENDER_TIMEOUT = 300
 
 
+def ssdraw_residual_figure(cfg, sites: pd.DataFrame, figdir):
+    """The residual along the sequence, drawn on the secondary structure.
+
+    The same SSDraw track the heatmap module uses for fitness, coloured instead by the
+    site median ESM-1v residual z, with the topology track above each row so a helix in
+    the cartoon can be read against the TM segment it belongs to. Red is strongly
+    negative - ESM expects more constraint than the abundance assay shows - on the same
+    symmetric scale the coloured structures use, so the flat picture and the
+    three-dimensional one cannot disagree.
+    """
+    from ..config import protein_sequence
+    from ..ssdraw_tracks import draw_track
+    from .heatmap_structure import structure_ss
+    if not len(sites):
+        return []
+    seq = protein_sequence(cfg)
+    lo, hi = int(sites.pos.min()), int(sites.pos.max())
+    hi = max(hi, len(seq)) if seq else hi
+    positions = list(range(1 if seq else lo, hi + 1))
+    ss_str, rt = structure_ss(cfg, positions)
+    vals = sites.set_index("pos").median_z.reindex(positions).to_numpy(float)
+    lim = colour_range()
+    cmap, norm = P.fitness_cmap(-lim, lim), P.fitness_norm(-lim, lim)
+    per = int(cfg.get_path("plotting.residues_per_row", 100))
+    chunks = [positions[i:i + per] for i in range(0, len(positions), per)]
+    fig, axes = plt.subplots(len(chunks) * 2, 1,
+                             figsize=(0.075 * per + 1.4, 0.62 * len(chunks) + 0.7),
+                             gridspec_kw={"height_ratios": [0.12, 0.4] * len(chunks),
+                                          "hspace": 0.05})
+    axes = np.atleast_1d(axes)
+    for k, ch in enumerate(chunks):
+        pad = per - len(ch)
+        P.topology_track(axes[2 * k], cfg, (ch[0] - 0.5, ch[0] - 0.5 + per))
+        i0 = positions.index(ch[0])
+        draw_track(axes[2 * k + 1], ss_str[i0:i0 + len(ch)] + "-" * pad,
+                   np.concatenate([vals[i0:i0 + len(ch)], np.full(pad, np.nan)]),
+                   cmap, norm, label=f"{ch[0]}–{ch[-1]}")
+    P.no_square(*axes)
+    sm = plt.cm.ScalarMappable(norm=norm, cmap=cmap)
+    cb = fig.colorbar(sm, ax=list(axes), fraction=0.015, pad=0.01, extend="both")
+    cb.set_ticks(sorted({-lim, Z_SITE, 0.0, lim}))
+    cb.ax.tick_params(labelsize=5.5)
+    # the threshold is drawn on the bar, not only mentioned in the title: the caption
+    # claimed a line that was not there until this was added
+    cb.ax.axhline(Z_SITE, color=P.INK, lw=0.9, ls=(0, (2.5, 1.5)))
+    cb.set_label("Site median ESM-1v residual z", fontsize=6)
+    n_shown = int(np.isfinite(vals).sum())
+    fig.suptitle(f"{cfg.display_name} — site median ESM-1v residual on the secondary "
+                 f"structure; red ≤ {-lim:.1f} (ESM more constrained than abundance "
+                 f"explains), grey = not scored; {n_shown} of {len(positions)} residues "
+                 f"scored; dashed line on the bar = the functional threshold {Z_SITE}",
+                 x=0.02, ha="left", fontsize=8, fontweight="bold")
+    return P.save(fig, figdir, "a15_ssdraw_residual", cfg, "A15")
+
+
 def write_structures(cfg, sites: pd.DataFrame, outdir) -> list:
     """Two coloured structures per protein, each as a PDB (B-factor carries the value) plus
     PyMOL (.pml) and ChimeraX (.cxc) scripts that load it, colour it and save a PNG:
@@ -514,6 +569,10 @@ def run(df, cfg, outdir):
                  " - they appear on the A15 panels but not in the A15b ranking, which "
                  "only ranks sites the statistics called"), flush=True)
     figs = figs + ranking_figure(cfg, sites, func, figdir)
+    try:
+        figs = figs + ssdraw_residual_figure(cfg, sites, figdir)
+    except Exception as e:                       # SSDraw is optional; never block a15
+        caveats.append(f"SSDraw residual track not drawn ({type(e).__name__}: {e})")
 
     t1, t2 = tabdir / "a15_variants.csv", tabdir / "a15_sites.csv"
     d.to_csv(t1, index=False)

@@ -330,3 +330,40 @@ def test_a_cif_structure_is_parsed_rather_than_silently_emptied(tmp_path):
     from mpdms.structure import load_structure
     good = load_structure(cif, "A")[0]
     assert sum(1 for _ in good.get_residues()) == 30
+
+
+def test_the_ssdraw_residual_track_uses_the_same_scale_as_the_structure(monkeypatch):
+    """The flat picture and the coloured structure must not disagree about red."""
+    from mpdms import plotting as P
+    from mpdms.analyses import a15_esm_functional as A15
+    lim = A15.colour_range()
+    cmap, norm = P.fitness_cmap(-lim, lim), P.fitness_norm(-lim, lim)
+    # symmetric limits, so a residual of zero is exactly white in the track as well
+    assert cmap(norm(0.0))[:3] == pytest.approx((1.0, 1.0, 1.0))
+    # and the ends are the saturated reds and blues, not something in between
+    assert cmap(norm(-lim))[0] < 0.6 and cmap(norm(-lim))[1] < 0.1
+    assert cmap(norm(lim))[2] > cmap(norm(lim))[0]
+
+
+def test_the_ssdraw_residual_figure_is_written(tmp_path):
+    import matplotlib
+    matplotlib.use("Agg")
+    import pandas as pd
+    from mpdms.analyses import a15_esm_functional as A15
+
+    class Cfg:
+        id = "T"
+        display_name = "T"
+        def get_path(self, key, default=None):
+            if key == "plotting.residues_per_row":
+                return 40
+            return default
+        def resolve(self, p):
+            return None
+
+    sites = pd.DataFrame({"pos": range(1, 61),
+                          "median_z": [-4.0 if p % 17 == 0 else 0.1 for p in range(1, 61)]})
+    out = A15.ssdraw_residual_figure(Cfg(), sites, tmp_path)
+    assert out and (tmp_path / "a15_ssdraw_residual.pdf").exists()
+    # with no structure the track still draws, as flat bars
+    assert A15.ssdraw_residual_figure(Cfg(), sites.iloc[:0], tmp_path) == []
