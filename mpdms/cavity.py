@@ -124,7 +124,8 @@ def bits_for(cfg) -> dict:
     t["is_cavity"] = (t.klass == "cavity").astype(float)
     b["sites"] = t
     b["radial_cut"] = cut
-    # A15 defines "functional" at Z_SITE in z; this is the same line in residual units
+    # the one constant between these residuals and the robust z A15 plots, kept so a
+    # caller can convert a threshold defined in z without recomputing the MAD
     b["residual_scale"] = float(res.attrs.get("residual_scale", 1.0))
     # how many residues the class change moved, so the redefinition is visible
     b["n_from_core"] = int(((t.environ == "helix-helix core")
@@ -415,14 +416,12 @@ def figure_classes(bits: dict, names: list[str], pw: pd.DataFrame,
     Right, the same three distributions as cumulative curves, where the quantity the
     Kolmogorov-Smirnov test reports is a vertical distance you can point at.
     """
-    from .analyses.a15_esm_functional import Z_SITE
     rows = len(names)
     fig, axes = plt.subplots(rows, 2, figsize=(8.0, 3.35 * rows + 0.5),
                              layout="constrained", squeeze=False,
                              gridspec_kw={"width_ratios": [1.28, 1.0]})
     for i, g in enumerate(names):
         t, axv, axe = bits[g]["sites"], axes[i][0], axes[i][1]
-        thr = Z_SITE * bits[g].get("residual_scale", 1.0)
         groups, cols, keys = {}, {}, []
         for c in CLASS_ORDER:
             v = t.loc[t.klass == c, VALUE].dropna()
@@ -439,9 +438,6 @@ def figure_classes(bits: dict, names: list[str], pw: pd.DataFrame,
         # ---- (left) the distributions themselves
         _raincloud(axv, groups, cols)
         axv.axhline(0.0, color=P.MUTED, lw=0.7, zorder=1)
-        axv.axhline(thr, color=P.INK, lw=0.9, ls=(0, (3, 2)), zorder=1)
-        axv.text(-0.60, thr, "A15 functional threshold", fontsize=6, va="bottom",
-                 ha="left", color=P.MUTED)
         axv.set_xticklabels([f"{k}\nn = {len(v)}" for k, v in groups.items()],
                             fontsize=7)
         for k, v in enumerate(groups.values()):
@@ -458,13 +454,13 @@ def figure_classes(bits: dict, names: list[str], pw: pd.DataFrame,
         # words, never dropped from any test
         allv = np.concatenate([np.asarray(v, float) for v in groups.values()])
         lo, hi = (float(x) for x in np.percentile(allv, [1, 99]))
-        lo, hi = min(lo, thr * 1.15), max(hi, 0.0)
+        lo, hi = min(lo, 0.0), max(hi, 0.0)
         span = (hi - lo) or 1.0
         n_out = int((allv < lo).sum() + (allv > hi).sum())
         if n_out:
-            axv.text(0.99, 0.012, f"{n_out} site{'s' if n_out > 1 else ''} outside the "
-                     "axis, kept in every test", transform=axv.transAxes, fontsize=6,
-                     ha="right", va="bottom", color=P.MUTED)
+            axv.text(0.012, 0.012, f"{n_out} site{'s' if n_out > 1 else ''} outside "
+                     "the axis, kept in every test", transform=axv.transAxes,
+                     fontsize=6, ha="left", va="bottom", color=P.MUTED)
         level = 0
         for r in q.itertuples():
             if r.a not in keys or r.b not in keys:
@@ -482,7 +478,6 @@ def figure_classes(bits: dict, names: list[str], pw: pd.DataFrame,
             axe.step(v, np.arange(1, len(v) + 1) / len(v), where="post",
                      color=CLASS_COLOR[c], lw=1.6,
                      label=f"{CLASS_LABEL[c]} ({len(v)})")
-        axe.axvline(thr, color=P.INK, lw=0.9, ls=(0, (3, 2)))
         axe.set_ylim(0, 1.02)
         axe.set_xlim(lo - 0.04 * span, hi + 0.04 * span)
         axe.set_ylabel("fraction of sites at or below", fontsize=7.5)
@@ -497,8 +492,6 @@ def figure_classes(bits: dict, names: list[str], pw: pd.DataFrame,
             axe.text(0.985, 0.03, "Kolmogorov–Smirnov\n" + "\n".join(lines),
                      transform=axe.transAxes, fontsize=6.2, va="bottom", ha="right",
                      color=P.INK)
-        axe.text(thr, 0.52, "A15 functional threshold ", fontsize=6, va="center",
-                 ha="right", color=P.MUTED, rotation=90)
         panel(axv, 2 * i, g, f"{len(t)} scored sites", size=8)
         panel(axe, 2 * i + 1, g, "cumulative", size=8)
         P.no_square(axv, axe)
