@@ -724,6 +724,10 @@ def figure(scored: pd.DataFrame, res: dict, by_gene: pd.DataFrame, outdir: Path,
 
 BENIGN_GREY = "#9A9A9A"
 PATHOGENIC_BLUE = "#2A5DA8"
+# one colour per predictor, by key. Conservation is the dashed grey reference, and a
+# predictor added later without an entry falls back to it rather than crashing.
+ROC_COLOR = {"am_pathogenicity": "#C0392B", "esm1v": "#1B9E77",
+             "mochi_ddg": "#8E44AD", "mu": PATHOGENIC_BLUE, "conservation": "#6B6B6B"}
 
 
 def figure_predictors(d: pd.DataFrame, res: pd.DataFrame, outdir: Path, name: str,
@@ -761,7 +765,9 @@ def figure_predictors(d: pd.DataFrame, res: pd.DataFrame, outdir: Path, name: st
         ax.set_title(f"({chr(97 + list(axes).index(ax))}) {lab}  {extra}", loc="left",
                      fontsize=9)
     ax = axes[-1]
-    cols = dict(zip(roc_keys, [PATHOGENIC_BLUE, "#1B9E77", "#C0392B", P.MUTED]))
+    # keyed by predictor, not zipped against a positional list: a fifth predictor used
+    # to run off the end of that list and leave conservation with no colour at all
+    cols = {k: ROC_COLOR.get(k, P.MUTED) for k in roc_keys}
     y = (shared.label == "pathogenic").to_numpy()
     for k in roc_keys:
         lab, sign, _ = look[k]
@@ -828,6 +834,18 @@ def main(argv=None):
     ap.add_argument("--outdir", default=str(OUT))
     a = ap.parse_args(argv)
     P.use_style(a.style)
+
+    # Every input path is checked before any work starts. The expensive steps - fetching
+    # the sequences, streaming ClinVar, streaming AlphaMissense - run in that order, so
+    # a path typed wrong in the last argument used to surface as a traceback minutes in,
+    # after the earlier reads had already been paid for. All of them are named at once.
+    wanted = [("--table", a.table), ("--alphamissense", a.alphamissense),
+              ("--mochi", a.mochi), ("--mochi-aln", a.mochi_aln)]
+    wanted += [(f"--esm {spec}", spec.partition("=")[2]) for spec in a.esm]
+    missing = [(flag, v) for flag, v in wanted if v and not Path(v).is_file()]
+    if missing:
+        raise SystemExit("file not found:\n" + "\n".join(
+            f"        {flag}  {v}" for flag, v in missing))
 
     fams = {}
     for spec in a.family:

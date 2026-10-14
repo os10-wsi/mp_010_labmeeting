@@ -594,3 +594,20 @@ def test_mochi_joins_the_predictor_comparison_per_variant(tmp_path):
     # model cannot do, and the reason this predictor is worth adding
     at10 = out[out.pos == 10].mochi_ddg.tolist()
     assert at10[0] != at10[1]
+
+
+def test_every_missing_input_is_named_before_any_work_starts(tmp_path, monkeypatch):
+    """A path typed wrong used to surface as a traceback after ClinVar had been read."""
+    from mpdms import clinvar as C
+    called = []
+    monkeypatch.setattr(C, "fetch_sequence", lambda a: called.append(a) or "MA")
+    argv = ["--family", "hexose=configs/SYN1.yaml", "--human", "SLC2A10=O95528",
+            "--table", str(tmp_path / "absent.txt.gz"),
+            "--alphamissense", str(tmp_path / "absent.tsv"),
+            "--mochi", str(tmp_path / "absent_weights.txt")]
+    with pytest.raises(SystemExit) as e:
+        C.main(argv)
+    msg = str(e.value)
+    for flag in ("--table", "--alphamissense", "--mochi"):
+        assert flag in msg
+    assert not called          # nothing was fetched or read before the check
