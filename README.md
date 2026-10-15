@@ -670,9 +670,15 @@ I09 is the published scales' own presentation turned on the measurements: the
 twenty-panel grid where a charge is a bell peaked at the bilayer centre and a
 hydrophobe is flat. x is the scale's own coordinate — position in a nineteen-residue
 segment, so it means the same thing here as in table S2 — and positions are pooled
-into three-wide bins, because one protein's twelve helices give only a handful of
-residues at each depth for each mutant. The red curves share **one** axis across all
-twenty panels, as the published figure does: per-panel autoscaling makes alanine,
+into bins `--profile-bin` wide (default 3, giving seven points across the segment)
+because a (residue, depth) cell holds only about as many measurements as the protein
+has helices. The run prints the median behind each point and suggests
+`--profile-bin 1` — the published nineteen-column resolution — when the cells are full
+enough to carry it, which twelve helices generally are. The red curves are drawn on their own dense grid rather than at the data's bin
+centres, so the scale stays a smooth function while the measurement stays as bumpy as
+it is. Each panel carries two dotted zero lines, grey for the measured axis and red
+for the prediction axis: the two origins are in different places, and one line would
+be read as belonging to both. They share **one** axis across all twenty panels, as the published figure does: per-panel autoscaling makes alanine,
 which is identically zero under dsTβL since it is the reference, look as structured
 as arginine. `i09_profiles.csv` carries each residue's rank correlation with the
 scale's profile, its effect at the centre and its effect at the edges.

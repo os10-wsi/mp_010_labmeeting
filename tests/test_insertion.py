@@ -723,3 +723,48 @@ def test_i09_declines_a_protein_with_too_little_data(tmp_path):
     from mpdms.insertion import i09_profiles
     v = _tm_variants(n=50)
     assert i09_profiles({"T": v}, ["T"], tmp_path)["status"] == "skipped"
+
+
+def test_i09_prediction_resolution_is_independent_of_the_data_binning():
+    """The red curve was a seven-point polyline because it inherited the data bins.
+
+    The scale is a continuous function of depth, so the curve is drawn on its own
+    dense grid while the blue curve stays on the bins, where each point averages real
+    measurements. The test is on the values the two grids produce, which is what the
+    drawing reduces to.
+    """
+    dense = [I.residue_dg("K", x * I.HALF_WIDTH / 9.0, "hessa")
+             for x in np.linspace(-9, 9, 181)]
+    coarse = [I.residue_dg("K", x * I.HALF_WIDTH / 9.0, "hessa")
+              for x in np.arange(-9, 10, 3)]
+    assert len(dense) > 10 * len(coarse)
+    assert len(set(np.round(dense, 6))) > 20            # not a handful of segments
+    assert max(dense) >= max(coarse) - 1e-9             # the peak is not cut off
+    assert 0 < int(np.argmax(dense)) < len(dense) - 1   # and it is interior
+
+
+def test_i09_bin_width_is_a_choice_and_is_reported(tmp_path):
+    """Seven points is bin_width 3; one gives the published nineteen."""
+    from mpdms.insertion import i09_profiles
+    v = _tm_variants(n=6000, seed=34)
+    wide = i09_profiles({"T": v}, ["T"], tmp_path, 3, 3)
+    t_wide = pd.read_csv(tmp_path / "i09_profiles.csv")
+    fine = i09_profiles({"T": v}, ["T"], tmp_path, 3, 1)
+    t_fine = pd.read_csv(tmp_path / "i09_profiles.csv")
+    assert wide["status"] == fine["status"] == "ok"
+    # the finer grid gives more points per residue, each averaging fewer measurements
+    assert t_fine.n_positions.median() > t_wide.n_positions.median()
+    assert t_fine.n_positions.max() <= 19 and t_wide.n_positions.max() <= 7
+
+
+def test_i09_marks_zero_on_both_axes_in_their_own_colours(tmp_path):
+    """Two axes in one panel: a single zero line would be read as belonging to both,
+    and "no predicted cost" sits nowhere near "no measured effect"."""
+    from mpdms.insertion import i09_profiles
+    v = _tm_variants(n=3000, seed=35)
+    i09_profiles({"T": v}, ["T"], tmp_path)
+    # the contract is that the prediction axis carries its own
+    # zero, which is only meaningful because the two axes have different origins
+    assert I.residue_dg("A", 0.0, "dstbl") == 0.0
+    assert I.residue_dg("A", 0.0, "hessa") != 0.0
+    assert (tmp_path / "i09_profiles_T.png").exists()

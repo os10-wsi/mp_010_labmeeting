@@ -946,6 +946,7 @@ def i09_profiles(variants: dict, names: list[str], outdir: Path,
         # something rather than one or two variants.
         if bin_width > 1:
             v["ipos"] = (np.rint(v.ipos / bin_width) * bin_width).astype(int)
+        filled = []
         fig, axes = plt.subplots(4, 5, figsize=(11.0, 8.4), layout="constrained",
                                  sharex=True, sharey=True)
         flat = [axes[k // 5][k % 5] for k in range(20)]
@@ -953,8 +954,12 @@ def i09_profiles(variants: dict, names: list[str], outdir: Path,
         # Letting each panel auto-scale its own red curve makes alanine - identically
         # zero under dsTbL, since it is the reference - look as structured as arginine,
         # and the comparison between residues is the entire point of drawing twenty.
-        xs_all = np.arange(-9, 10, max(bin_width, 1))
-        allp = [residue_dg(a, x * HALF_WIDTH / 9.0) for a in aas for x in xs_all]
+        # The prediction is a continuous function of depth and gets its own dense grid:
+        # drawing it only at the data's bin centres joined it with long straight
+        # segments and made a smooth scale look like a polyline. The blue curve stays
+        # on the bins, where each point is an average of real measurements.
+        xs_pred = np.linspace(-9, 9, 181)
+        allp = [residue_dg(a, x * HALF_WIDTH / 9.0) for a in aas for x in xs_pred]
         pad = 0.05 * (max(allp) - min(allp) or 1.0)
         plo, phi = min(allp) - pad, max(allp) + pad
         for k, (ax, aa) in enumerate(zip(flat, aas)):
@@ -962,10 +967,13 @@ def i09_profiles(variants: dict, names: list[str], outdir: Path,
             m = sub.groupby("ipos").agg(y=("score_z", "mean"), e=("score_z", "sem"),
                                         n=("score_z", "size"))
             m = m[m.n >= min_per_point].dropna(subset=["y"])
-            xs = np.arange(-9, 10, max(bin_width, 1))
-            pred = [residue_dg(aa, x * HALF_WIDTH / 9.0) for x in xs]
+            pred = [residue_dg(aa, x * HALF_WIDTH / 9.0) for x in xs_pred]
             ax2 = ax.twinx()
-            ax2.plot(xs, pred, color="#C0392B", lw=1.2, zorder=2)
+            # zero on the prediction axis too, in its own colour: with two axes in one
+            # panel a single zero line would be read as belonging to both, and "no
+            # predicted cost" sits somewhere quite different from "no measured effect"
+            ax2.axhline(0, color="#C0392B", lw=0.7, ls=(0, (1, 2.5)), zorder=1)
+            ax2.plot(xs_pred, pred, color="#C0392B", lw=1.3, zorder=2)
             ax2.set_ylim(plo, phi)
             ax2.tick_params(axis="y", labelsize=5, colors="#C0392B", length=2)
             if k % 5 != 4:                      # only the right-hand column is labelled
@@ -974,6 +982,7 @@ def i09_profiles(variants: dict, names: list[str], outdir: Path,
                 ax2.set_ylabel(f"ΔΔG, {SCALE} scale (kcal/mol, red)", fontsize=8,
                                color="#C0392B")
             if len(m) >= 3:
+                filled.append(float(m.n.median()))
                 ax.fill_between(m.index, m.y - m.e, m.y + m.e, color="#2166AC",
                                 alpha=0.2, lw=0, zorder=3)
                 ax.plot(m.index, m.y, "-", color="#2166AC", lw=1.6, zorder=4)
@@ -1009,6 +1018,13 @@ def i09_profiles(variants: dict, names: list[str], outdir: Path,
                      fontsize=7.5, x=0.01, ha="left")
         P.save(fig, outdir, f"i09_profiles_{g.replace('_fitness', '')}", None, "I09")
         plt.close(fig)
+        med = float(np.median(filled)) if filled else 0.0
+        print(f"    {g.replace('_fitness', ''):<12} bin width {bin_width} -> "
+              f"{len(np.arange(-9, 10, max(bin_width, 1)))} points across the segment, "
+              f"median {med:.0f} measurements behind each"
+              + ("  (try --profile-bin 1 for the published 19-column resolution)"
+                 if med >= 3 * max(min_per_point, 1) and bin_width > 1 else ""),
+              flush=True)
         out[g] = True
     if not rows:
         return {"status": "skipped", "reason": "no protein has enough TM variants"}
@@ -1415,6 +1431,13 @@ def main(argv=None):
                     help="dsTbL (Elazar 2016), depth-dependent and relative to alanine, "
                          "or the Hessa 2007 table S2 position term, which is absolute "
                          "and symmetric about the bilayer centre")
+    ap.add_argument("--profile-bin", type=int, default=3, metavar="N",
+                    help="i09: pool depths into bins N positions wide (default 3, so "
+                         "seven points across the segment). 1 gives the published "
+                         "nineteen-column resolution, which needs enough helices to "
+                         "fill each (residue, depth) cell - about twelve")
+    ap.add_argument("--profile-min-n", type=int, default=3, metavar="N",
+                    help="i09: measurements a (residue, depth) point needs to be drawn")
     ap.add_argument("--all-helices", action="store_true",
                     help="i03 draws every helix rather than only the hardest and the "
                          "easiest of each protein to insert")
@@ -1490,7 +1513,8 @@ def main(argv=None):
             elif k == "i08":
                 r = i08_ddg_vs_hydrophobicity(variants, names, outdir)
             else:
-                r = i09_profiles(variants, names, outdir)
+                r = i09_profiles(variants, names, outdir, a.profile_min_n,
+                                 a.profile_bin)
         except Exception as e:
             r = {"status": "error", "reason": f"{type(e).__name__}: {e}"}
         out[k] = r
