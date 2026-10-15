@@ -853,6 +853,7 @@ merging it with lipid would hide the most interesting positions in the protein.
 | B04 | what does a charge cost, and does depth matter? | effect against \|z\| for buried and exposed separately; the interaction is the test |
 | B05 | buried polar: packing defect, or substrate site? | six violins, core/cavity/lipid × polar/hydrophobic wild type |
 | B06 | volume or hydrophobicity — which does each environment care about? | four standardised coefficients per class, signed and absolute |
+| B12 | **the plain version of B06, for volume alone** | the same straight-line-per-class test as B11 with Δ side-chain volume on the x axis. Volume and hydrophobicity are correlated, so read it as a second view of the same variants rather than a second finding |
 | B07 | small residues at close helix–helix approaches | three violins, and the slope of effect on Δvolume where there is no room |
 | B08 | the aromatic belt | losing the ring separated from losing hydrophobicity, by depth |
 | B09 | is the cost a mismatch with the surroundings rather than an absolute? | mean effect over mutant hydrophobicity × local hydrophobicity |

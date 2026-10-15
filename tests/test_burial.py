@@ -212,8 +212,8 @@ def test_b11_recovers_each_slope_and_tests_their_difference(tmp_path):
     assert d["p"] < 0.001
     assert d["lo"] < d["difference_in_slope"] < d["hi"]
     assert (tmp_path / "b11_hydrophobicity_simple.png").exists()
-    assert (tmp_path / "b11_slopes.csv").exists()
-    assert (tmp_path / "b11_difference.csv").exists()
+    assert (tmp_path / "b11_hydrophobicity_simple_slopes.csv").exists()
+    assert (tmp_path / "b11_hydrophobicity_simple_difference.csv").exists()
 
 
 def test_b11_finds_no_difference_when_the_classes_behave_alike(tmp_path):
@@ -235,3 +235,33 @@ def test_b11_difference_is_the_interaction_not_two_separate_fits(tmp_path):
     naive = float(np.hypot(by["lipid"]["se"], by["aqueous"]["se"]))
     assert d["se"] == pytest.approx(naive, rel=0.35)      # same order, not identical
     assert d["n"] == by["lipid"]["n"] + by["aqueous"]["n"]
+
+
+def test_b12_is_the_same_test_on_volume_and_keeps_its_own_files(tmp_path):
+    """Volume and hydrophobicity share the code path, so the only thing that may
+    differ between them is the predictor - not the model or the clustering."""
+    from mpdms.burial import b11_simple, b12_volume_simple
+    rng = np.random.default_rng(6)
+    rows = []
+    for c, vslope in (("lipid", 0.004), ("aqueous", 0.0)):
+        for k in range(900):
+            dv = float(rng.uniform(-140, 140))
+            rows.append({"pos": 1 + k % 60 + (0 if c == "lipid" else 100),
+                         "bclass": c, "delta_volume": dv,
+                         "delta_kd": float(rng.uniform(-8, 8)),
+                         "score_z": -0.5 + vslope * dv + rng.normal(0, 0.25)})
+    v = pd.DataFrame(rows)
+    r = b12_volume_simple({"T": {"var": v}}, ["T"], tmp_path)
+    assert r["status"] == "ok"
+    by = {d["bclass"]: d for d in r["by_class"]}
+    assert all(d["predictor"] == "delta_volume" for d in r["by_class"])
+    assert by["lipid"]["slope"] == pytest.approx(0.004, abs=0.0015)
+    assert r["difference"][0]["difference_in_slope"] == pytest.approx(0.004, abs=0.002)
+    assert r["difference"][0]["p"] < 0.01
+    # the planted volume effect must not leak into the hydrophobicity version
+    rk = b11_simple({"T": {"var": v}}, ["T"], tmp_path)
+    assert abs(rk["difference"][0]["difference_in_slope"]) < 0.02
+    # and the two write separate files
+    for f in ("b12_volume_simple_slopes.csv", "b12_volume_simple_difference.csv",
+              "b11_hydrophobicity_simple_slopes.csv"):
+        assert (tmp_path / f).exists()

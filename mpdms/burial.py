@@ -276,63 +276,55 @@ KD_BINS = np.linspace(-9, 9, 10)
 B01A_CLASSES = ["lipid", "aqueous"]
 
 
-def b11_simple(bits: dict, names: list[str], outdir: Path) -> dict:
-    """The same comparison as b01, with one straight line per class and one test.
+def _simple_two_class(bits: dict, names: list[str], outdir: Path, col: str,
+                      bins, xlabel: str, stem: str, tag: str, lead: str) -> dict:
+    """One straight line per class through `col`, and one test for the difference.
 
-    b01 fits two slopes hinged at zero and reports their sum, which measures the right
-    thing and takes a paragraph to explain. This is the plain version: one ordinary
-    straight line through each class, and a single number for the difference between
-    them, from the interaction in
-
-        effect ~ dKD + is_lipid + dKD:is_lipid
-
-    The interaction IS the result - how much more an extra unit of hydrophobicity is
-    worth at a lipid-facing position than at an aqueous one - and it comes with one
-    standard error and one p-value. Errors are clustered by position throughout, since
-    nineteen substitutions at one residue are not nineteen independent observations.
-
-    What this gives up is direction. A straight line assumes losing hydrophobicity and
-    gaining it cost the same in magnitude and opposite in sign; b01 exists because
-    that is exactly the assumption worth testing. Read this one for the headline and
-    b01 when someone asks whether the response is one-sided.
+    Shared by b11 (hydrophobicity) and b12 (side-chain volume): the figure and the
+    model are the same, only the predictor changes, and writing it twice would be two
+    places for the clustering or the interaction to drift apart.
     """
+
+
     import statsmodels.formula.api as smf
     rows, inter = [], []
     fig, pairs, _ = grid(names, w=3.1, h=2.8, extra=0.3)
     for i, (g, ax) in enumerate(pairs):
         v = bits[g]["var"]
-        d = v[v.bclass.isin(B01A_CLASSES)].dropna(subset=["score_z", "delta_kd"])
+        d = v[v.bclass.isin(B01A_CLASSES)].dropna(subset=["score_z", col])
         drew = {}
         for c in B01A_CLASSES:
             sub = d[d.bclass == c]
             if len(sub) < MIN_GROUP * 3:
                 continue
-            binned(ax, sub.delta_kd, sub.score_z, KD_BINS, BCOLORS[c], BLABEL[c],
+            binned(ax, sub[col], sub.score_z, bins, BCOLORS[c], BLABEL[c],
                    ms=4.2)
-            m = cluster_ols("score_z ~ delta_kd", sub[["score_z", "delta_kd"]], sub.pos)
+            m = cluster_ols(f"score_z ~ {col}", sub[["score_z", col]], sub.pos)
             if m is None:
                 continue
-            xs = np.linspace(sub.delta_kd.min(), sub.delta_kd.max(), 20)
-            ax.plot(xs, m.params["Intercept"] + m.params["delta_kd"] * xs,
+            xs = np.linspace(sub[col].min(), sub[col].max(), 20)
+            ax.plot(xs, m.params["Intercept"] + m.params[col] * xs,
                     color=BCOLORS[c], lw=1.2, ls=(0, (4, 2)), zorder=5)
-            drew[c] = float(m.params["delta_kd"])
+            drew[c] = float(m.params[col])
             rows.append({"protein": g, "bclass": c, "n": int(m.nobs),
                          "n_positions": int(sub.pos.nunique()),
-                         "slope": float(m.params["delta_kd"]),
-                         "se": float(m.bse["delta_kd"]),
-                         "p": float(m.pvalues["delta_kd"]),
-                         "spearman": float(ss.spearmanr(sub.delta_kd,
+                         "predictor": col,
+                         "slope": float(m.params[col]),
+                         "se": float(m.bse[col]),
+                         "p": float(m.pvalues[col]),
+                         "spearman": float(ss.spearmanr(sub[col],
                                                         sub.score_z).statistic)})
         extra = "  ".join(f"{BLABEL[c]} {drew[c]:+.3f}" for c in B01A_CLASSES
                           if c in drew)
         if len(drew) == 2 and d.pos.nunique() >= 6:
             dd = d.assign(is_lipid=(d.bclass == "lipid").astype(float))
-            m = cluster_ols("score_z ~ delta_kd * is_lipid",
-                            dd[["score_z", "delta_kd", "is_lipid"]], dd.pos)
+            m = cluster_ols(f"score_z ~ {col} * is_lipid",
+                            dd[["score_z", col, "is_lipid"]], dd.pos)
             if m is not None:
-                k = "delta_kd:is_lipid"
+                k = f"{col}:is_lipid"
                 ci = m.conf_int().loc[k]
-                inter.append({"protein": g, "difference_in_slope": float(m.params[k]),
+                inter.append({"protein": g, "predictor": col,
+                              "difference_in_slope": float(m.params[k]),
                               "se": float(m.bse[k]), "p": float(m.pvalues[k]),
                               "lo": float(ci[0]), "hi": float(ci[1]),
                               "n": int(m.nobs),
@@ -349,21 +341,20 @@ def b11_simple(bits: dict, names: list[str], outdir: Path) -> dict:
             ax.legend(frameon=False, fontsize=6, loc="lower right")
         if i % 2 == 0:
             ax.set_ylabel("Mean effect of the substitution", fontsize=7.5)
-    fig.supxlabel("Δ hydrophobicity (Kyte–Doolittle, mutant − wild type)", fontsize=8)
+    fig.supxlabel(xlabel, fontsize=8)
     fig.suptitle("One straight line per class, and one test: the difference between "
-                 "the two slopes. Left of zero the substitution is more polar than "
-                 "the wild type. A steeper line at lipid-facing positions means "
-                 "hydrophobicity is worth more there. Errors are clustered by "
-                 "position.", fontsize=7, x=0.01, ha="left")
-    P.save(fig, outdir, "b11_hydrophobicity_simple", None, "B11")
+                 "the two slopes, as the interaction in a single model. " + lead
+                 + " Errors are clustered by position.", fontsize=7, x=0.01,
+                 ha="left")
+    P.save(fig, outdir, stem, None, tag)
     plt.close(fig)
     if not rows:
         return {"status": "skipped", "reason": "no class has enough variants to fit"}
     per = pd.DataFrame(rows)
-    per.to_csv(outdir / "b11_slopes.csv", index=False)
+    per.to_csv(outdir / f"{stem}_slopes.csv", index=False)
     it = pd.DataFrame(inter)
     if len(it):
-        it.to_csv(outdir / "b11_difference.csv", index=False)
+        it.to_csv(outdir / f"{stem}_difference.csv", index=False)
     head = "; ".join(
         f"{short_name(r.protein)} lipid − aqueous {r.difference_in_slope:+.3f} "
         f"[{r.lo:+.3f}, {r.hi:+.3f}] p {r.p:.2g}" for r in it.itertuples()
@@ -371,6 +362,47 @@ def b11_simple(bits: dict, names: list[str], outdir: Path) -> dict:
                                 for r in per.itertuples())
     return {"status": "ok", "headline": head, "by_class": per.to_dict("records"),
             "difference": it.to_dict("records")}
+
+
+def b11_simple(bits: dict, names: list[str], outdir: Path) -> dict:
+    """b01 without the hinge: one straight line per class, one test.
+
+    b01 fits two slopes hinged at zero and reports their sum, which measures the right
+    thing and takes a paragraph to explain. This is the plain version, and the
+    interaction IS the result: how much more an extra unit of hydrophobicity is worth
+    at a lipid-facing position than at an aqueous one, with one standard error and one
+    p-value.
+
+    What it gives up is direction. A straight line assumes losing hydrophobicity and
+    gaining it cost the same in magnitude and opposite in sign, and b01 exists because
+    that is exactly the assumption worth testing. Read this one for the headline and
+    b01 when someone asks whether the response is one-sided.
+    """
+    return _simple_two_class(
+        bits, names, outdir, "delta_kd", KD_BINS,
+        "Δ hydrophobicity (Kyte–Doolittle, mutant − wild type)",
+        "b11_hydrophobicity_simple", "B11",
+        "Left of zero the substitution is more polar than the wild type; a steeper "
+        "line at lipid-facing positions means hydrophobicity is worth more there.")
+
+
+def b12_volume_simple(bits: dict, names: list[str], outdir: Path) -> dict:
+    """The same plain comparison for side-chain volume rather than hydrophobicity.
+
+    Volume and hydrophobicity are not independent - the big residues are mostly the
+    oily ones - so this is a second view of the same variants rather than a second
+    finding, and the two slopes should be read together. What it adds is a different
+    mechanism: a lipid-facing position has acyl chains to push aside and might not
+    care about size, while a position packed against another helix has nowhere to put
+    a larger side chain. b06 relates the two predictors properly; this is the slide
+    version of the volume half.
+    """
+    return _simple_two_class(
+        bits, names, outdir, "delta_volume", VOL_BINS,
+        "Δ side-chain volume (Å³, mutant − wild type)",
+        "b12_volume_simple", "B12",
+        "Left of zero the substitution is smaller than the wild type; a steeper line "
+        "at lipid-facing positions means size is worth more there.")
 
 
 def b01_three_way(bits: dict, names: list[str], outdir: Path) -> dict:
@@ -1261,7 +1293,8 @@ ANALYSES = {"b01": "hydrophobicity tolerance: lipid vs core vs aqueous",
             "b09": "hydrophobic mismatch with the local environment",
             "b10": "whether ESM-1v's residuals are structured by burial",
             "b11": "the same comparison as b01, one straight line per class "
-                   "and one test"}
+                   "and one test",
+            "b12": "the same again for side-chain volume"}
 
 
 def main(argv=None):
@@ -1321,7 +1354,8 @@ def main(argv=None):
              "b08": lambda: b08_aromatic_belt(bits, names, outdir),
              "b09": lambda: b09_mismatch(bits, names, outdir),
              "b10": lambda: b10_esm_residuals(bits, names, outdir),
-             "b11": lambda: b11_simple(bits, names, outdir)}
+             "b11": lambda: b11_simple(bits, names, outdir),
+             "b12": lambda: b12_volume_simple(bits, names, outdir)}
 
     out = {}
     print()
