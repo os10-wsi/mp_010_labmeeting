@@ -183,3 +183,55 @@ def test_glycine_and_proline_are_in_neither_wild_type_group():
     assert pd.isna(g.iloc[0]) and pd.isna(g.iloc[1])
     assert list(g.iloc[2:]) == ["hydrophobic", "hydrophobic", "polar", "polar",
                                "hydrophobic"]
+
+
+# --------------------- b11: one line per class, one test for the difference
+def _two_class(lipid_slope=0.10, aqueous_slope=0.02, n=900, seed=3):
+    """Variants in two environment classes with different planted KD slopes."""
+    rng = np.random.default_rng(seed)
+    rows = []
+    for c, slope in (("lipid", lipid_slope), ("aqueous", aqueous_slope)):
+        for k in range(n):
+            dkd = float(rng.uniform(-8, 8))
+            rows.append({"pos": 1 + k % 60 + (0 if c == "lipid" else 100),
+                         "bclass": c, "delta_kd": dkd,
+                         "score_z": -0.5 + slope * dkd + rng.normal(0, 0.25)})
+    return pd.DataFrame(rows)
+
+
+def test_b11_recovers_each_slope_and_tests_their_difference(tmp_path):
+    from mpdms.burial import b11_simple
+    v = _two_class(lipid_slope=0.10, aqueous_slope=0.02)
+    r = b11_simple({"T": {"var": v}}, ["T"], tmp_path)
+    assert r["status"] == "ok"
+    by = {d["bclass"]: d for d in r["by_class"]}
+    assert by["lipid"]["slope"] == pytest.approx(0.10, abs=0.02)
+    assert by["aqueous"]["slope"] == pytest.approx(0.02, abs=0.02)
+    d = r["difference"][0]
+    assert d["difference_in_slope"] == pytest.approx(0.08, abs=0.03)
+    assert d["p"] < 0.001
+    assert d["lo"] < d["difference_in_slope"] < d["hi"]
+    assert (tmp_path / "b11_hydrophobicity_simple.png").exists()
+    assert (tmp_path / "b11_slopes.csv").exists()
+    assert (tmp_path / "b11_difference.csv").exists()
+
+
+def test_b11_finds_no_difference_when_the_classes_behave_alike(tmp_path):
+    from mpdms.burial import b11_simple
+    r = b11_simple({"T": {"var": _two_class(0.06, 0.06, seed=4)}}, ["T"], tmp_path)
+    d = r["difference"][0]
+    assert abs(d["difference_in_slope"]) < 0.03 and d["p"] > 0.05
+
+
+def test_b11_difference_is_the_interaction_not_two_separate_fits(tmp_path):
+    """One model, so the difference has one standard error rather than two added."""
+    from mpdms.burial import b11_simple
+    r = b11_simple({"T": {"var": _two_class()}}, ["T"], tmp_path)
+    by = {d["bclass"]: d for d in r["by_class"]}
+    d = r["difference"][0]
+    assert d["difference_in_slope"] == pytest.approx(
+        by["lipid"]["slope"] - by["aqueous"]["slope"], abs=1e-9)
+    # and its error is not the naive sum in quadrature of the two arms
+    naive = float(np.hypot(by["lipid"]["se"], by["aqueous"]["se"]))
+    assert d["se"] == pytest.approx(naive, rel=0.35)      # same order, not identical
+    assert d["n"] == by["lipid"]["n"] + by["aqueous"]["n"]

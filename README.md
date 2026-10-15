@@ -847,6 +847,7 @@ merging it with lipid would hide the most interesting positions in the protein.
 | | question | what the answer looks like |
 | --- | --- | --- |
 | B01 | does hydrophobicity tolerance differ between lipid, core and aqueous? | two slopes per class, hinged at zero: a one-sided V against a symmetric tent. B01a draws lipid against aqueous, B01b all four classes |
+| B11 | **the plain version of B01** | one ordinary straight line per class and one test: the difference between the two slopes, as the interaction in `effect ~ ΔKD * is_lipid`. One number, one standard error, one p-value |
 | B02 | is that a boundary, or a gradient? | the same slope swept along the radial coordinate in sliding windows |
 | B03 | is the intolerant face of a helix its hydrophobic face? | one arrow per helix on a wheel, and the resultant against a within-helix null |
 | B04 | what does a charge cost, and does depth matter? | effect against \|z\| for buried and exposed separately; the interaction is the test |

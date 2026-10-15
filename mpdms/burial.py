@@ -276,6 +276,103 @@ KD_BINS = np.linspace(-9, 9, 10)
 B01A_CLASSES = ["lipid", "aqueous"]
 
 
+def b11_simple(bits: dict, names: list[str], outdir: Path) -> dict:
+    """The same comparison as b01, with one straight line per class and one test.
+
+    b01 fits two slopes hinged at zero and reports their sum, which measures the right
+    thing and takes a paragraph to explain. This is the plain version: one ordinary
+    straight line through each class, and a single number for the difference between
+    them, from the interaction in
+
+        effect ~ dKD + is_lipid + dKD:is_lipid
+
+    The interaction IS the result - how much more an extra unit of hydrophobicity is
+    worth at a lipid-facing position than at an aqueous one - and it comes with one
+    standard error and one p-value. Errors are clustered by position throughout, since
+    nineteen substitutions at one residue are not nineteen independent observations.
+
+    What this gives up is direction. A straight line assumes losing hydrophobicity and
+    gaining it cost the same in magnitude and opposite in sign; b01 exists because
+    that is exactly the assumption worth testing. Read this one for the headline and
+    b01 when someone asks whether the response is one-sided.
+    """
+    import statsmodels.formula.api as smf
+    rows, inter = [], []
+    fig, pairs, _ = grid(names, w=3.1, h=2.8, extra=0.3)
+    for i, (g, ax) in enumerate(pairs):
+        v = bits[g]["var"]
+        d = v[v.bclass.isin(B01A_CLASSES)].dropna(subset=["score_z", "delta_kd"])
+        drew = {}
+        for c in B01A_CLASSES:
+            sub = d[d.bclass == c]
+            if len(sub) < MIN_GROUP * 3:
+                continue
+            binned(ax, sub.delta_kd, sub.score_z, KD_BINS, BCOLORS[c], BLABEL[c],
+                   ms=4.2)
+            m = cluster_ols("score_z ~ delta_kd", sub[["score_z", "delta_kd"]], sub.pos)
+            if m is None:
+                continue
+            xs = np.linspace(sub.delta_kd.min(), sub.delta_kd.max(), 20)
+            ax.plot(xs, m.params["Intercept"] + m.params["delta_kd"] * xs,
+                    color=BCOLORS[c], lw=1.2, ls=(0, (4, 2)), zorder=5)
+            drew[c] = float(m.params["delta_kd"])
+            rows.append({"protein": g, "bclass": c, "n": int(m.nobs),
+                         "n_positions": int(sub.pos.nunique()),
+                         "slope": float(m.params["delta_kd"]),
+                         "se": float(m.bse["delta_kd"]),
+                         "p": float(m.pvalues["delta_kd"]),
+                         "spearman": float(ss.spearmanr(sub.delta_kd,
+                                                        sub.score_z).statistic)})
+        extra = "  ".join(f"{BLABEL[c]} {drew[c]:+.3f}" for c in B01A_CLASSES
+                          if c in drew)
+        if len(drew) == 2 and d.pos.nunique() >= 6:
+            dd = d.assign(is_lipid=(d.bclass == "lipid").astype(float))
+            m = cluster_ols("score_z ~ delta_kd * is_lipid",
+                            dd[["score_z", "delta_kd", "is_lipid"]], dd.pos)
+            if m is not None:
+                k = "delta_kd:is_lipid"
+                ci = m.conf_int().loc[k]
+                inter.append({"protein": g, "difference_in_slope": float(m.params[k]),
+                              "se": float(m.bse[k]), "p": float(m.pvalues[k]),
+                              "lo": float(ci[0]), "hi": float(ci[1]),
+                              "n": int(m.nobs),
+                              "n_positions": int(dd.pos.nunique())})
+                extra += (f"   difference {m.params[k]:+.3f} ± {m.bse[k]:.3f} "
+                          f"(p = {m.pvalues[k]:.2g})")
+        if not drew:
+            empty_panel(ax, i, g, "neither class has enough variants")
+            continue
+        ax.axhline(0, color=P.MUTED, lw=0.6)
+        ax.axvline(0, color=P.INK, lw=0.6, ls=(0, (1, 2)))
+        panel(ax, i, g, extra, size=7)
+        if i == 0:
+            ax.legend(frameon=False, fontsize=6, loc="lower right")
+        if i % 2 == 0:
+            ax.set_ylabel("Mean effect of the substitution", fontsize=7.5)
+    fig.supxlabel("Δ hydrophobicity (Kyte–Doolittle, mutant − wild type)", fontsize=8)
+    fig.suptitle("One straight line per class, and one test: the difference between "
+                 "the two slopes. Left of zero the substitution is more polar than "
+                 "the wild type. A steeper line at lipid-facing positions means "
+                 "hydrophobicity is worth more there. Errors are clustered by "
+                 "position.", fontsize=7, x=0.01, ha="left")
+    P.save(fig, outdir, "b11_hydrophobicity_simple", None, "B11")
+    plt.close(fig)
+    if not rows:
+        return {"status": "skipped", "reason": "no class has enough variants to fit"}
+    per = pd.DataFrame(rows)
+    per.to_csv(outdir / "b11_slopes.csv", index=False)
+    it = pd.DataFrame(inter)
+    if len(it):
+        it.to_csv(outdir / "b11_difference.csv", index=False)
+    head = "; ".join(
+        f"{short_name(r.protein)} lipid − aqueous {r.difference_in_slope:+.3f} "
+        f"[{r.lo:+.3f}, {r.hi:+.3f}] p {r.p:.2g}" for r in it.itertuples()
+    ) if len(it) else "; ".join(f"{short_name(r.protein)} {r.bclass} {r.slope:+.3f}"
+                                for r in per.itertuples())
+    return {"status": "ok", "headline": head, "by_class": per.to_dict("records"),
+            "difference": it.to_dict("records")}
+
+
 def b01_three_way(bits: dict, names: list[str], outdir: Path) -> dict:
     """The comparison the whole module is built around.
 
@@ -1162,7 +1259,9 @@ ANALYSES = {"b01": "hydrophobicity tolerance: lipid vs core vs aqueous",
             "b07": "small residues at close helix-helix approaches",
             "b08": "the aromatic belt",
             "b09": "hydrophobic mismatch with the local environment",
-            "b10": "whether ESM-1v's residuals are structured by burial"}
+            "b10": "whether ESM-1v's residuals are structured by burial",
+            "b11": "the same comparison as b01, one straight line per class "
+                   "and one test"}
 
 
 def main(argv=None):
@@ -1221,7 +1320,8 @@ def main(argv=None):
              "b07": lambda: b07_small_residues(bits, names, outdir),
              "b08": lambda: b08_aromatic_belt(bits, names, outdir),
              "b09": lambda: b09_mismatch(bits, names, outdir),
-             "b10": lambda: b10_esm_residuals(bits, names, outdir)}
+             "b10": lambda: b10_esm_residuals(bits, names, outdir),
+             "b11": lambda: b11_simple(bits, names, outdir)}
 
     out = {}
     print()
