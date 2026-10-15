@@ -683,6 +683,26 @@ which is identically zero under dsTβL since it is the reference, look as struct
 as arginine. `i09_profiles.csv` carries each residue's rank correlation with the
 scale's profile, its effect at the centre and its effect at the edges.
 
+**I09B measures symmetry without needing the two curves to share units.** Any
+profile is exactly its even plus its odd part, `even(i) = [y(i)+y(−i)]/2` and
+`odd(i) = [y(i)−y(−i)]/2`, and the index is `Σodd² / (Σodd² + Σ(even−mean)²)` — 0
+symmetric, 1 purely antisymmetric. It is a ratio of two sums of squares in the same
+units, so multiplying the profile by any constant cancels and adding one is removed by
+centring: a measured profile in fitness units and a predicted one in kcal/mol are
+directly comparable, and so are two residues.
+
+Two things make it a test rather than a description. **Hessa's index is exactly zero
+for every residue** — table S2 is symmetric by construction, asserted at import — so a
+tilt in the data is something that scale structurally cannot produce, while dsTβL's
+index is large for K and R because the positive-inside rule is in it as measured; both
+are reported beside each residue. And the null is exchangeability: if a profile really
+is symmetric then a variant at +i and one at −i are interchangeable, so the depth sign
+is permuted per variant and the index recomputed, which assumes nothing about the
+distribution. The interval comes from resampling variants, and `q` is BH over the
+twenty residues. A signed statistic travels alongside, since the index throws away
+direction: `lumenal_minus_cytosolic`, positive when the substitution costs more
+towards the lumen.
+
 **Mind the sign when reading I07B against I03.** Both report ρ(helix slope, helix
 ΔG) and the claim has the *opposite* sign in each, because the x axes run opposite
 ways. A ΔΔG slope is negative — a more destabilising substitution lowers the effect —
@@ -727,6 +747,7 @@ Two details that matter and are easy to get wrong:
 | I07 | **the control for I04**: the same pooled curve with plain Kyte–Doolittle change on x instead of ΔΔG — one number per substitution, identical for every residue at every depth |
 | I07B | the same control helix by helix — **every** TM helix as its own curve, coloured by insertion ΔG with the hardest and easiest drawn over the top, plus the correlation between a helix's slope and its ΔG. The analogue of I03 with no scale in it |
 | I07C | one bar per helix: −log₁₀ q that its hydrophobicity slope is not zero, BH-corrected within each protein and coloured by insertion ΔG |
+| I09B | how tilted each residue's profile is about the bilayer centre, on a scale-free index, against a depth-sign permutation null — with dsTβL's value for the same residue as a reference and Hessa's zero as the floor |
 | I08 | the two predictors against each other, one point per mutation: ΔΔG on y, Kyte–Doolittle change on x, coloured by depth. The vertical spread at one x is what the depth-dependent scale adds |
 | I09 | **Hessa's figure, measured**: twenty panels, one per mutant residue, with position across the membrane on x — the mean effect in blue on the left axis, the scale's ΔΔG profile for that residue in red on one right axis shared by all twenty |
 | I08B | the part of ΔΔG that hydrophobicity cannot explain, against the measured effect |

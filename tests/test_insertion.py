@@ -768,3 +768,83 @@ def test_i09_marks_zero_on_both_axes_in_their_own_colours(tmp_path):
     assert I.residue_dg("A", 0.0, "dstbl") == 0.0
     assert I.residue_dg("A", 0.0, "hessa") != 0.0
     assert (tmp_path / "i09_profiles_T.png").exists()
+
+
+# ----------------------------------- i09b: is a depth profile symmetric about zero?
+def test_the_asymmetry_index_is_free_of_the_scale_it_is_measured_on():
+    """The whole point: a profile in fitness units and one in kcal/mol are comparable."""
+    idx = np.arange(-9, 10, 3)
+    tilted = np.array([-1.0, -0.6, -0.3, 0.0, 0.3, 0.6, 1.0])
+    base = I.asymmetry_index(idx, tilted)
+    for mult in (0.01, 3.0, -2.0):
+        assert I.asymmetry_index(idx, tilted * mult) == pytest.approx(base)
+    for shift in (-5.0, 0.25, 100.0):
+        assert I.asymmetry_index(idx, tilted + shift) == pytest.approx(base)
+
+
+def test_the_index_is_zero_for_a_bell_and_one_for_a_ramp():
+    idx = np.arange(-9, 10, 3)
+    bell = np.array([0.1, 0.5, 0.9, 1.2, 0.9, 0.5, 0.1])
+    ramp = np.array([-3.0, -2.0, -1.0, 0.0, 1.0, 2.0, 3.0])
+    assert I.asymmetry_index(idx, bell) == pytest.approx(0.0, abs=1e-12)
+    assert I.asymmetry_index(idx, ramp) == pytest.approx(1.0, abs=1e-12)
+    # a bell plus a ramp lands between them
+    mixed = I.asymmetry_index(idx, bell + 0.3 * ramp)
+    assert 0.05 < mixed < 0.95
+
+
+def test_an_arm_with_no_partner_is_dropped_not_paired_with_zero():
+    """Zero-filling a missing side would manufacture asymmetry out of missing data."""
+    full = np.array([-6, -3, 0, 3, 6])
+    y = np.array([0.2, 0.6, 1.0, 0.6, 0.2])
+    assert I.asymmetry_index(full, y) == pytest.approx(0.0, abs=1e-12)
+    # the same profile with one unmatched arm measured is still symmetric
+    plus = np.array([-6, -3, 0, 3, 6, 9])
+    assert I.asymmetry_index(plus, np.r_[y, 9.0]) == pytest.approx(0.0, abs=1e-12)
+    evens, odds = I.even_odd(plus, np.r_[y, 9.0])
+    assert len(odds) == 2                      # only the paired depths contribute
+
+
+def test_hessa_is_symmetric_for_every_residue_and_dstbl_is_not():
+    """The control the comparison rests on, asserted rather than assumed."""
+    idx = np.arange(-9, 10)
+    hes, dst = [], []
+    for aa in "ACDEFGHIKLMNPQRSTVWY":
+        hes.append(I.asymmetry_index(
+            idx, np.array([I.residue_dg(aa, i * I.HALF_WIDTH / 9.0, "hessa")
+                           for i in idx])))
+        dst.append(I.asymmetry_index(
+            idx, np.array([I.residue_dg(aa, i * I.HALF_WIDTH / 9.0, "dstbl")
+                           for i in idx])))
+    assert np.nanmax(hes) == pytest.approx(0.0, abs=1e-12)
+    assert np.nanmedian(dst) > 0.2
+    # and the positive-inside residues are among the most tilted under dsTbL
+    by_aa = dict(zip("ACDEFGHIKLMNPQRSTVWY", dst))
+    assert by_aa["K"] > 0.5 and by_aa["R"] > 0.5
+
+
+def _profile_variants(tilt=0.0, bell=0.6, n=1800, seed=41):
+    """TM variants for one residue whose cost is a bell plus an optional ramp."""
+    rng = np.random.default_rng(seed)
+    z = rng.uniform(-15, 15, n)
+    i = z * 9.0 / 15.0
+    y = -bell * np.exp(-(i ** 2) / 30.0) + tilt * (i / 9.0) + rng.normal(0, 0.12, n)
+    return pd.DataFrame({"wt": "L", "mut": "K", "z_ideal": z, "helix": "TM1",
+                         "score_z": y})
+
+
+def test_i09b_finds_a_planted_tilt_and_not_a_symmetric_bell(tmp_path):
+    from mpdms.insertion import i09b_symmetry
+    sym = i09b_symmetry({"T": _profile_variants(tilt=0.0)}, ["T"], tmp_path,
+                        n_perm=300, n_boot=200)
+    tilt = i09b_symmetry({"T": _profile_variants(tilt=0.9, seed=42)}, ["T"], tmp_path,
+                         n_perm=300, n_boot=200)
+    a = [d for d in sym["by_residue"] if d["mut"] == "K"][0]
+    b = [d for d in tilt["by_residue"] if d["mut"] == "K"][0]
+    assert a["asymmetry"] < 0.3 and a["p_permutation"] > 0.05
+    assert b["asymmetry"] > 0.7 and b["p_permutation"] < 0.05
+    # the signed statistic says which way, and the tilt rises towards the lumen
+    assert b["lumenal_minus_cytosolic"] > 0.3
+    assert a["asymmetry_hessa"] == pytest.approx(0.0, abs=1e-12)
+    assert (tmp_path / "i09b_profile_symmetry.csv").exists()
+    assert (tmp_path / "i09b_profile_symmetry.png").exists()

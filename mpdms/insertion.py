@@ -909,6 +909,184 @@ def _i07c_significance(t: pd.DataFrame, names: list[str], outdir: Path) -> None:
     plt.close(fig)
 
 
+def even_odd(idx: np.ndarray, y: np.ndarray) -> tuple:
+    """Split a profile into its symmetric and antisymmetric halves about depth zero.
+
+    Any profile is exactly even + odd, where even(i) = [y(i) + y(-i)] / 2 and
+    odd(i) = [y(i) - y(-i)] / 2. Only depths measured on BOTH sides can contribute:
+    an arm with no partner says nothing about symmetry and is dropped rather than
+    paired with a zero, which would manufacture asymmetry out of missing data.
+    """
+    by = dict(zip(np.asarray(idx, int), np.asarray(y, float)))
+    evens, odds = [], []
+    for i in sorted({abs(k) for k in by}):
+        if i == 0:
+            if 0 in by:
+                evens.append(by[0])
+            continue
+        if i in by and -i in by:
+            evens.append((by[i] + by[-i]) / 2.0)
+            odds.append((by[i] - by[-i]) / 2.0)
+    return np.array(evens), np.array(odds)
+
+
+def asymmetry_index(idx: np.ndarray, y: np.ndarray) -> float:
+    """How much of a profile's shape is antisymmetric: 0 symmetric, 1 purely odd.
+
+    A ratio of two sums of squares in the same units, so multiplying the profile by
+    any constant cancels and adding any constant is removed by centring the even part.
+    That is what lets a measured profile in fitness units be compared with a predicted
+    one in kcal/mol, and one residue with another on a shared axis.
+    """
+    evens, odds = even_odd(idx, y)
+    if len(odds) < 2 or len(evens) < 2:
+        return float("nan")
+    num = float(np.sum(odds ** 2))
+    den = num + float(np.sum((evens - evens.mean()) ** 2))
+    return float(num / den) if den > 0 else float("nan")
+
+
+def _binned_profile(ipos: np.ndarray, y: np.ndarray, min_n: int):
+    """Mean of y in each signed depth bin that has at least `min_n` measurements."""
+    out_i, out_y = [], []
+    for b in np.unique(ipos):
+        m = ipos == b
+        if int(m.sum()) >= min_n:
+            out_i.append(int(b))
+            out_y.append(float(y[m].mean()))
+    return np.array(out_i), np.array(out_y)
+
+
+def i09b_symmetry(variants: dict, names: list[str], outdir: Path,
+                  min_per_point: int = 3, bin_width: int = 3,
+                  n_perm: int = 1000, n_boot: int = 500) -> dict:
+    """Is each residue's measured profile symmetric about the bilayer centre?
+
+    The Hessa table is symmetric by construction - every row of S2 reads the same from
+    both ends, asserted at import - so its asymmetry index is exactly zero and the
+    scale cannot predict a tilted profile at all. dsTbL is asymmetric, because the
+    positive-inside rule is inside it as measured. Both are reported beside each
+    residue, so "this profile is as tilted as dsTbL says it should be" becomes a number
+    rather than an impression.
+
+    The null is exchangeability: if a residue's cost really is symmetric, a variant at
+    depth +i and one at -i are interchangeable, so flipping the sign of each variant's
+    depth at random and recomputing the index gives a p-value that assumes nothing
+    about the distribution. The interval comes from resampling variants.
+
+    The index discards direction, so a signed statistic travels with it: the mean
+    effect on the lumenal half minus the mean on the cytoplasmic half. Positive means
+    the substitution costs more towards the lumen.
+    """
+    aas = list("ACDEFGHIKLMNPQRSTVWY")
+    rng = np.random.default_rng(17)
+    rows = []
+    for g in names:
+        v = variants[g].dropna(subset=["score_z", "z_ideal"]).copy()
+        if len(v) < 200:
+            continue
+        v["ipos"] = np.clip(np.rint(v.z_ideal * (9.0 / HALF_WIDTH)), -9, 9).astype(int)
+        if bin_width > 1:
+            v["ipos"] = (np.rint(v.ipos / bin_width) * bin_width).astype(int)
+        for aa in aas:
+            sub = v[v.mut == aa]
+            if len(sub) < 20:
+                continue
+            ipos = sub.ipos.to_numpy(int)
+            y = sub.score_z.to_numpy(float)
+            bi, by = _binned_profile(ipos, y, min_per_point)
+            obs = asymmetry_index(bi, by)
+            if not np.isfinite(obs):
+                continue
+            # the null: a symmetric profile makes +i and -i exchangeable
+            null = []
+            for _ in range(n_perm):
+                flip = np.where(rng.random(len(ipos)) < 0.5, -1, 1)
+                a, b = _binned_profile(ipos * flip, y, min_per_point)
+                x = asymmetry_index(a, b)
+                if np.isfinite(x):
+                    null.append(x)
+            pval = ((np.sum(np.asarray(null) >= obs) + 1) / (len(null) + 1)
+                    if null else np.nan)
+            boots = []
+            for _ in range(n_boot):
+                k = rng.integers(0, len(y), len(y))
+                a, b = _binned_profile(ipos[k], y[k], min_per_point)
+                x = asymmetry_index(a, b)
+                if np.isfinite(x):
+                    boots.append(x)
+            lo, hi = (np.percentile(boots, [2.5, 97.5]) if len(boots) > 50
+                      else (np.nan, np.nan))
+            lum, cyt = y[ipos > 0], y[ipos < 0]
+            scale_idx = {}
+            for sc in SCALES:
+                pred = np.array([residue_dg(aa, i * HALF_WIDTH / 9.0, sc) for i in bi])
+                scale_idx[sc] = asymmetry_index(bi, pred)
+            rows.append({"protein": g, "mut": aa, "n_variants": int(len(sub)),
+                         "n_bins": int(len(bi)), "asymmetry": obs,
+                         "asymmetry_lo": float(lo), "asymmetry_hi": float(hi),
+                         "p_permutation": float(pval),
+                         "lumenal_minus_cytosolic":
+                             float(np.mean(lum) - np.mean(cyt)) if len(lum) and len(cyt)
+                             else np.nan,
+                         "asymmetry_dstbl": scale_idx.get("dstbl", np.nan),
+                         "asymmetry_hessa": scale_idx.get("hessa", np.nan)})
+    if not rows:
+        return {"status": "skipped", "reason": "no protein has enough TM variants"}
+    t = pd.DataFrame(rows)
+    t["q"] = np.nan
+    for _, ix in t.groupby("protein").groups.items():
+        t.loc[ix, "q"] = bh_fdr(t.loc[ix, "p_permutation"].fillna(1.0).to_numpy())
+    t.to_csv(outdir / "i09b_profile_symmetry.csv", index=False)
+
+    fig, pairs, _ = grid(names, w=3.4, h=4.2, extra=0.3)
+    for i, (g, ax) in enumerate(pairs):
+        d = t[t.protein == g].sort_values("asymmetry")
+        if not len(d):
+            panel(ax, i, g, "no residue measured on both sides", size=7.5)
+            continue
+        ypos = np.arange(len(d))
+        for k, r in enumerate(d.itertuples()):
+            if np.isfinite(r.asymmetry_lo):
+                ax.plot([r.asymmetry_lo, r.asymmetry_hi], [k, k], color=P.MUTED,
+                        lw=1.0, zorder=2)
+        col = ["#2166AC" if x > 0 else "#B2182B" for x in d.lumenal_minus_cytosolic]
+        ax.scatter(d.asymmetry, ypos, s=34, facecolor=col, edgecolor=P.INK,
+                   linewidth=0.4, zorder=4)
+        ax.scatter(d.asymmetry_dstbl, ypos, s=26, facecolor="none",
+                   edgecolor="#C0392B", linewidth=0.9, zorder=3, marker="D")
+        for k, r in enumerate(d.itertuples()):
+            if np.isfinite(r.q) and r.q < 0.05:
+                ax.text(1.0, k, "*", fontsize=9, va="center", ha="right",
+                        transform=ax.get_yaxis_transform())
+        ax.axvline(0, color="#C0392B", lw=0.9, ls=(0, (1, 2.5)))
+        ax.text(0.0, len(d) - 0.2, " Hessa = 0 for every residue", fontsize=6,
+                color="#C0392B", va="top", ha="left")
+        ax.set_yticks(ypos)
+        ax.set_yticklabels(d.mut, fontsize=7)
+        ax.set_ylim(-0.8, len(d) - 0.2)
+        ax.set_xlim(-0.03, 1.03)
+        n_sig = int((d.q < 0.05).sum())
+        panel(ax, i, g, f"{n_sig} of {len(d)} residues asymmetric at q < 0.05", size=7.5)
+        if i // 2 == (len(names) - 1) // 2:
+            ax.set_xlabel("fraction of the profile's shape that is antisymmetric",
+                          fontsize=7.5)
+    fig.suptitle("How tilted each residue's depth profile is, on a scale-free index: 0 "
+                 "symmetric, 1 purely antisymmetric. Filled circle = the data, blue if "
+                 "the substitution costs more towards the lumen and red if towards the "
+                 "cytosol; open diamond = dsTβL's value for the same residue; the "
+                 "dotted line at 0 is Hessa, which is symmetric by construction and "
+                 "cannot produce a tilt at all. * marks q < 0.05 against a "
+                 "depth-sign permutation null.", fontsize=7, x=0.01, ha="left")
+    P.save(fig, outdir, "i09b_profile_symmetry", None, "I09B")
+    plt.close(fig)
+    head = "; ".join(
+        f"{g.replace('_fitness', '')} {int((d.q < 0.05).sum())}/{len(d)} residues "
+        f"asymmetric (median index {d.asymmetry.median():.2f} vs dsTβL "
+        f"{d.asymmetry_dstbl.median():.2f})" for g, d in t.groupby("protein"))
+    return {"status": "ok", "headline": head, "by_residue": t.to_dict("records")}
+
+
 def i09_profiles(variants: dict, names: list[str], outdir: Path,
                  min_per_point: int = 3, bin_width: int = 3) -> dict:
     """Hessa's figure, measured: one panel per mutant residue, effect against position.
@@ -1408,7 +1586,8 @@ ANALYSES = {"i01": "helix ΔG against its tolerance",
             "i07": "the control: plain hydrophobicity change instead of ΔΔG",
             "i07b": "the hydrophobicity control, helix by helix",
             "i08": "ΔΔG against Δ hydrophobicity, one point per mutation",
-            "i09": "one panel per mutant residue: effect against position in the membrane"}
+            "i09": "one panel per mutant residue: effect against position in the membrane",
+            "i09b": "is each residue's depth profile symmetric about the bilayer centre?"}
 
 
 def main(argv=None):
@@ -1512,9 +1691,12 @@ def main(argv=None):
                 r = i07b_by_helix(variants, helices, names, outdir, a.all_helices)
             elif k == "i08":
                 r = i08_ddg_vs_hydrophobicity(variants, names, outdir)
-            else:
+            elif k == "i09":
                 r = i09_profiles(variants, names, outdir, a.profile_min_n,
                                  a.profile_bin)
+            else:
+                r = i09b_symmetry(variants, names, outdir, a.profile_min_n,
+                                  a.profile_bin)
         except Exception as e:
             r = {"status": "error", "reason": f"{type(e).__name__}: {e}"}
         out[k] = r
