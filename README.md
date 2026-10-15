@@ -579,6 +579,7 @@ python -m mpdms arch configs/AQR1_fitness.yaml configs/HXT1.yaml configs/HXT3.ya
 | --- | --- | --- |
 | S01 | which helix–helix interfaces are load-bearing? | a 12 × 12 matrix; the diagonal is each helix alone |
 | S02 | is there room to make a small interface residue bigger? | two slopes of effect on Δvolume, interface vs not |
+| S11 | **the plain version of S02** | one ordinary straight line per group on a shared axis, and one test: the difference between the two slopes, as the interaction in `effect ~ Δvolume * at_interface`. Falls back to a median split on inter-helical contacts where S02's any-contact rule leaves no comparison group |
 | S03 | proline, both directions | introducing one by position in the helix; removing a native kink |
 | S04 | holding your own helix, or holding the fold together? | two coefficients, each at the other's fixed value |
 | S05 | is too big worse than too small? | two slopes either side of zero, and their asymmetry |

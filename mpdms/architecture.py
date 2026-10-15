@@ -18,6 +18,7 @@ between panels even though ranks within a panel are.
     s08  how far constraint travels through space, in angstroms
     s09  which burial measure actually predicts tolerance
     s10  shells outward from the translocation pathway
+    s11  the plain version of s02: one line per group, one interaction test
 """
 from __future__ import annotations
 
@@ -196,6 +197,156 @@ def s02_small_residues(bits: dict, names: list[str], outdir: Path) -> dict:
                      + " vs ".join(f"{r.slope_per_A3:+.4f}" for r in d.itertuples())
                      for g, d in t.groupby("protein"))
     return {"status": "ok", "headline": f"slope per Å³, interface vs elsewhere: {head}"}
+
+
+# ------------------------------------------- s11 the plain version of s02
+SMALL_VOL_BINS = np.array([-60, -20, 0, 20, 40, 60, 80, 100, 140])
+S11_COLORS = {1.0: P.DARK_RED, 0.0: "#2166AC"}
+
+
+def packing_split(b: dict, v: pd.DataFrame):
+    """Split small TM positions into a packed group and a comparison group.
+
+    s02 calls a position an interface position if it makes any contact at all with
+    another helix. Inside a tightly packed bundle that is almost every small residue -
+    on these proteins it leaves the comparison group empty, which is why s02 draws one
+    line and no contrast. So the binary definition is used when it leaves both groups
+    big enough to fit, and otherwise the split falls back to a median on the number of
+    inter-helical contacts the position makes: still packed against the rest of the
+    fold versus less so, but graded, and populated by construction.
+
+    Returns the frame with an `at_interface` column, the two labels, and a short tag
+    naming the definition used, or None if neither split leaves two groups.
+    """
+    ip = interface_pairs(b)
+    n = (pd.concat([ip.pos_i, ip.pos_j]).value_counts() if len(ip)
+         else pd.Series(dtype=float))
+    cnt = v.pos.map(n).fillna(0.0).astype(float)
+    binary = (cnt > 0).astype(float)
+    if min(int((binary == 1).sum()), int((binary == 0).sum())) >= MIN_GROUP * 2:
+        return (v.assign(at_interface=binary),
+                ("at an interface", "elsewhere in a helix"),
+                "any contact with another helix")
+    thr = float(np.median(cnt))
+    graded = (cnt > thr).astype(float)
+    if min(int((graded == 1).sum()), int((graded == 0).sum())) < MIN_GROUP * 2:
+        return None
+    return (v.assign(at_interface=graded),
+            (f"more than {thr:.0f} inter-helical contacts",
+             f"{thr:.0f} or fewer"),
+            f"median inter-helical contacts (> {thr:.0f})")
+
+
+def s11_small_residue_simple(bits: dict, names: list[str], outdir: Path) -> dict:
+    """s02 without the quintiles: one straight line per group, and one test.
+
+    s02 bins each group into five quantiles of its own, so the two lines do not share
+    x positions and the comparison between them is made by eye. This is the plain
+    version: one ordinary straight line through every variant in each group, drawn
+    over binned means on a common axis, and the interaction in
+
+        score_z ~ delta_volume * at_interface
+
+    IS the result - how much more an extra cubic angstrom costs at the packed group
+    than at the comparison group, with one standard error and one p-value. Errors are
+    clustered by position, because the handful of substitutions at one glycine are not
+    independent measurements of anything.
+
+    Same variants as s02 throughout: wild-type glycine, alanine or serine inside a TM
+    helix. The claim is a negative interaction - the packed line falls faster. How the
+    two groups are defined is decided per protein by `packing_split`, and the panel
+    says which definition it used.
+    """
+    from .burial import binned, cluster_ols, empty_panel
+
+    rows, inter, how = [], [], {}
+    fig, pairs_ax, _ = grid(names, w=3.1, h=2.8, extra=0.3)
+    for i, (g, ax) in enumerate(pairs_ax):
+        b = bits[g]
+        v = b["var"].dropna(subset=["score_z", "delta_volume"])
+        v = v[v.wt.isin(list(SMALL)) & (v.is_tm > 0.5)]
+        sp = packing_split(b, v) if len(v) else None
+        if sp is None:
+            empty_panel(ax, i, g, "too few small wild-type residues to split")
+            continue
+        d, labels, how[g] = sp
+        drew = {}
+        for side, lab in ((1.0, labels[0]), (0.0, labels[1])):
+            sub = d[d.at_interface == side]
+            if len(sub) < MIN_GROUP * 2:
+                continue
+            binned(ax, sub.delta_volume, sub.score_z, SMALL_VOL_BINS,
+                   S11_COLORS[side], f"{lab} (n = {len(sub):,})", ms=4.2)
+            m = cluster_ols("score_z ~ delta_volume",
+                            sub[["score_z", "delta_volume"]], sub.pos)
+            if m is None:
+                continue
+            xs = np.linspace(sub.delta_volume.min(), sub.delta_volume.max(), 20)
+            ax.plot(xs, m.params["Intercept"] + m.params["delta_volume"] * xs,
+                    color=S11_COLORS[side], lw=1.2, ls=(0, (4, 2)), zorder=5)
+            drew[side] = float(m.params["delta_volume"])
+            rows.append({"protein": g, "group": lab, "packed": int(side),
+                         "n": int(m.nobs), "n_positions": int(sub.pos.nunique()),
+                         "slope_per_A3": float(m.params["delta_volume"]),
+                         "se": float(m.bse["delta_volume"]),
+                         "p": float(m.pvalues["delta_volume"]),
+                         "spearman": float(ss.spearmanr(sub.delta_volume,
+                                                        sub.score_z).statistic),
+                         "split": how[g]})
+        extra = "  ".join(f"{'packed' if k else 'rest'} {drew[k]:+.4f}"
+                          for k in (1.0, 0.0) if k in drew)
+        if len(drew) == 2 and d.pos.nunique() >= 6:
+            m = cluster_ols("score_z ~ delta_volume * at_interface",
+                            d[["score_z", "delta_volume", "at_interface"]], d.pos)
+            if m is not None:
+                k = "delta_volume:at_interface"
+                ci = m.conf_int().loc[k]
+                inter.append({"protein": g,
+                              "difference_in_slope": float(m.params[k]),
+                              "se": float(m.bse[k]), "p": float(m.pvalues[k]),
+                              "lo": float(ci[0]), "hi": float(ci[1]),
+                              "n": int(m.nobs),
+                              "n_positions": int(d.pos.nunique()),
+                              "split": how[g]})
+                extra += (f"   difference {m.params[k]:+.4f} ± {m.bse[k]:.4f} "
+                          f"(p = {m.pvalues[k]:.2g})")
+        if not drew:
+            empty_panel(ax, i, g, "neither group has enough variants")
+            continue
+        ax.axhline(0, color=P.MUTED, lw=0.6)
+        ax.axvline(0, color=P.INK, lw=0.6, ls=(0, (1, 2)))
+        panel(ax, i, g, extra, size=7)
+        ax.legend(frameon=False, fontsize=6, loc="upper right")
+        if i % 2 == 0:
+            ax.set_ylabel("Mean effect of the substitution", fontsize=7.5)
+    fig.supxlabel("Δ side-chain volume (Å³)", fontsize=8)
+    # one sentence for a split every protein shares, otherwise name them, because a
+    # median threshold differs between proteins and the reader needs to know which
+    note = (f"Split: {next(iter(set(how.values())))}." if len(set(how.values())) == 1
+            else "Split: " + ", ".join(f"{g.replace('_fitness','')} {t}" for g, t in how.items()) + ".")
+    fig.suptitle("Wild-type glycine, alanine or serine inside a TM helix. One straight "
+                 "line per group, and one test: the difference between the two slopes, "
+                 "as the interaction in a single model, clustered by position. A "
+                 "negative difference is no room to grow where the helix is packed. "
+                 + (note if how else ""),
+                 fontsize=7, x=0.01, ha="left", wrap=True)
+    P.save(fig, outdir, "s11_small_residue_simple", None, "S11")
+    plt.close(fig)
+    if not rows:
+        return {"status": "skipped", "reason": "no group has enough variants to fit"}
+    per = pd.DataFrame(rows)
+    per.to_csv(outdir / "s11_small_residue_simple_slopes.csv", index=False)
+    it = pd.DataFrame(inter)
+    if len(it):
+        it.to_csv(outdir / "s11_small_residue_simple_difference.csv", index=False)
+    head = "; ".join(
+        f"{r.protein.replace('_fitness','')} packed − rest "
+        f"{r.difference_in_slope:+.4f} [{r.lo:+.4f}, {r.hi:+.4f}] p {r.p:.2g}"
+        for r in it.itertuples()
+    ) if len(it) else "; ".join(f"{r.protein.replace('_fitness','')} {r.group} "
+                                f"{r.slope_per_A3:+.4f}" for r in per.itertuples())
+    return {"status": "ok", "headline": head, "by_group": per.to_dict("records"),
+            "difference": it.to_dict("records")}
 
 
 # ------------------------------------------------------- s03 proline, both ways
@@ -945,11 +1096,12 @@ ANALYSES = {"s01": "helix-helix interface map",
             "s07": "pseudo-symmetry of the two bundles",
             "s08": "how far constraint travels in space",
             "s09": "which burial measure predicts tolerance",
-            "s10": "shells outward from the pathway"}
+            "s10": "shells outward from the pathway",
+            "s11": "small residues at interfaces, the plain version"}
 RUN = {"s01": s01_interfaces, "s02": s02_small_residues, "s03": s03_proline,
        "s04": s04_contact_order, "s05": s05_packing_strain, "s06": s06_salt_bridges,
        "s07": s07_pseudo_symmetry, "s08": s08_spatial, "s09": s09_burial_measures,
-       "s10": s10_shells}
+       "s10": s10_shells, "s11": s11_small_residue_simple}
 
 
 def main(argv=None):

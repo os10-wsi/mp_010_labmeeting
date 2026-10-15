@@ -137,3 +137,86 @@ def test_weighted_contacts_rank_a_buried_centre_above_an_edge():
     w = A.weighted_contacts(xyz)
     assert w[0] == w.max()        # the centre of the cluster
     assert w[5] == w.min()        # the outlier
+
+
+# --------------------------------------------------- s11, the plain version of s02
+def _small_bits(rng, n_pos=40, contacts=True, inter=0.0, base=-0.002, seed_shift=0):
+    """Small wild-type residues in two TM helices, with a planted volume slope.
+
+    `inter` is the extra cost per cubic angstrom at a packed position, which is what
+    s11's interaction must recover.
+    """
+    helix = {p: ("TM1" if p < n_pos // 2 else "TM2") for p in range(n_pos)}
+    pairs = []
+    if contacts:
+        # the first quarter of each helix is packed against the other helix, with a
+        # graded number of partners so a median split has something to cut on
+        for p in range(n_pos // 4):
+            for k in range(1 + p % 5):
+                pairs.append({"pos_i": p, "pos_j": n_pos // 2 + k})
+    pr = pd.DataFrame(pairs or {"pos_i": [], "pos_j": []})
+    packed = set(pr.pos_i) | set(pr.pos_j)
+    rows = []
+    for p in range(n_pos):
+        for dv, mut in ((0.0, "A"), (30.0, "V"), (60.0, "L"), (110.0, "F")):
+            for _ in range(3):
+                slope = base + (inter if p in packed else 0.0)
+                rows.append({"pos": p, "wt": "G", "mut": mut, "is_tm": 1.0,
+                             "delta_volume": dv,
+                             "score_z": slope * dv + rng.normal(0, 0.02)})
+    return {"var": pd.DataFrame(rows), "pairs": pr, "helix": helix}
+
+
+def test_packing_split_uses_the_binary_rule_when_it_leaves_two_groups():
+    rng = np.random.default_rng(3)
+    b = _small_bits(rng)
+    v = b["var"]
+    d, labels, how = A.packing_split(b, v)
+    assert labels[0] == "at an interface"
+    assert how == "any contact with another helix"
+    assert 0 < d.at_interface.sum() < len(d)
+
+
+def test_packing_split_falls_back_to_a_median_when_everything_touches_a_helix():
+    """s02's definition leaves no comparison group in a tight bundle; s11 says so."""
+    rng = np.random.default_rng(4)
+    b = _small_bits(rng)
+    # every position now contacts the other helix, some far more than others
+    b["pairs"] = pd.DataFrame([{"pos_i": p, "pos_j": (p + 1) % 40}
+                               for p in range(40) for _ in range(1 + p % 7)])
+    b["helix"] = {p: ("TM1" if p % 2 else "TM2") for p in range(40)}
+    d, labels, how = A.packing_split(b, v := b["var"])
+    assert how.startswith("median inter-helical contacts")
+    assert "more than" in labels[0]
+    assert 0 < d.at_interface.sum() < len(d)       # both groups are populated
+    assert len(d) == len(v)
+
+
+def test_packing_split_refuses_rather_than_inventing_a_group():
+    rng = np.random.default_rng(5)
+    b = _small_bits(rng, n_pos=4, contacts=False)
+    assert A.packing_split(b, b["var"]) is None
+
+
+def test_s11_recovers_a_planted_interaction_and_writes_its_own_files(tmp_path):
+    rng = np.random.default_rng(6)
+    bits = {"SYN": _small_bits(rng, inter=-0.004)}
+    out = A.s11_small_residue_simple(bits, ["SYN"], tmp_path)
+    assert out["status"] == "ok"
+    it = pd.DataFrame(out["difference"])
+    assert len(it) == 1
+    assert it.difference_in_slope.iloc[0] == pytest.approx(-0.004, abs=0.001)
+    assert it.p.iloc[0] < 0.01
+    assert (tmp_path / "s11_small_residue_simple_slopes.csv").exists()
+    assert (tmp_path / "s11_small_residue_simple_difference.csv").exists()
+    # two groups, each with its own straight line
+    assert len(pd.DataFrame(out["by_group"])) == 2
+
+
+def test_s11_finds_nothing_when_packing_makes_no_difference(tmp_path):
+    rng = np.random.default_rng(7)
+    bits = {"SYN": _small_bits(rng, inter=0.0)}
+    out = A.s11_small_residue_simple(bits, ["SYN"], tmp_path)
+    it = pd.DataFrame(out["difference"])
+    assert abs(it.difference_in_slope.iloc[0]) < 0.001
+    assert it.p.iloc[0] > 0.05
