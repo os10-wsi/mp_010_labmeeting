@@ -975,3 +975,32 @@ def test_the_wild_type_sets_are_selectable_and_validated(tmp_path):
     # and the pages for sets that were not asked for are absent
     assert not (tmp_path / "i09_profiles_avli_T.png").exists()
     assert not (tmp_path / "i09_profiles_T.png").exists()
+
+
+# ---------------------------------- i04 restricted to one set of wild-type residues
+def test_i04_can_be_restricted_to_substitutions_from_one_residue(tmp_path):
+    """Starting from one wild type removes the part of the ddG spread that is really
+    about which residue was there, rather than about the substitution."""
+    from mpdms.insertion import i04_pooled
+    v = _tm_variants(n=4000, kd_effect=-0.04, ddg_effect=-0.12, seed=44)
+    allw = i04_pooled({"T": v}, ["T"], tmp_path)
+    ala = i04_pooled({"T": v}, ["T"], tmp_path, wt_set="ala")
+    assert allw["status"] == ala["status"] == "ok"
+    # separate files, so one cannot be read as the other
+    assert (tmp_path / "i04_pooled_curve.csv").exists()
+    assert (tmp_path / "i04_pooled_curve_ala.csv").exists()
+    assert (tmp_path / "i04_pooled_slopes_ala.csv").exists()
+    a, b = allw["by_protein"][0], ala["by_protein"][0]
+    assert a["wt_set"] == "all" and b["wt_set"] == "ala"
+    assert b["n_variants"] < a["n_variants"]        # a strict subset
+    assert b["slope"] < 0 and a["slope"] < 0        # the planted effect survives
+    t = pd.read_csv(tmp_path / "i04_pooled_curve_ala.csv")
+    assert set(t.wt_set) == {"ala"}
+
+
+def test_i04_declines_a_wild_type_set_with_too_little_data(tmp_path):
+    from mpdms.insertion import i04_pooled
+    v = _tm_variants(n=600, seed=45)
+    v = v[v.wt != "A"]                              # no alanine wild types at all
+    r = i04_pooled({"T": v}, ["T"], tmp_path, wt_set="ala")
+    assert r["status"] == "skipped" and "A" in r["reason"]

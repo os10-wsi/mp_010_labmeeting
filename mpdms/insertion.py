@@ -567,8 +567,8 @@ def i03_helix_curves(variants: dict, helices: dict, names: list[str], outdir: Pa
             rho, pv = ss.spearmanr(s.dg, s.slope)
             extra = f"{len(s)} helices, slope vs ΔG ρ = {rho:+.2f} (p = {pv:.2g})"
         panel(ax, i, g, extra, size=7.5)
-        if i // 2 == (len(names) - 1) // 2:
-            ax.set_xlabel(ddg_axis_label(), fontsize=7.5)
+        # the x label is set once on the figure: it names the scale and the depth
+        # convention, so it is long enough that two columns of panels collide
         if i % 2 == 0:
             ax.set_ylabel("mean effect", fontsize=7.5)
         # Every panel names a DIFFERENT helix with a different dG, so the legend cannot
@@ -597,6 +597,7 @@ def i03_helix_curves(variants: dict, helices: dict, names: list[str], outdir: Pa
                   "away faster to the right.")
                  + " Solid black = mean over all helices, dashed = median.",
                  fontsize=7, x=0.01, ha="left")
+    fig.supxlabel(ddg_axis_label(), fontsize=8)
     P.save(fig, outdir, "i03_helix_curves", None, "I03")
     plt.close(fig)
     per = pd.DataFrame(rows)
@@ -610,7 +611,7 @@ def i03_helix_curves(variants: dict, helices: dict, names: list[str], outdir: Pa
 
 # ------------------------------------ i04 the pooled curve, every helix together
 def i04_pooled(variants: dict, names: list[str], outdir: Path,
-               n_bins: int = 10) -> dict:
+               n_bins: int = 10, wt_set: str = "all") -> dict:
     """Effect against ddG over all TM helices at once, averaged over variants.
 
     The plainest version of the question, and the one the marginal/comfortable figure
@@ -628,10 +629,15 @@ def i04_pooled(variants: dict, names: list[str], outdir: Path,
     """
     import statsmodels.formula.api as smf
     rows, fits = [], []
+    keep = WT_SETS.get(wt_set)
+    tag = "" if wt_set == "all" else f"_{wt_set}"
     fig, pairs, _ = grid(names, w=3.1, h=2.8, extra=0.3)
     for i, (g, ax) in enumerate(pairs):
         v = variants[g].dropna(subset=["score_z", "ddg"])
+        if keep is not None:
+            v = v[v.wt.isin(keep)]
         if len(v) < 100:
+            panel(ax, i, g, f"too few variants from {'/'.join(keep or [])}", size=7.5)
             continue
         b = pd.qcut(v.ddg, n_bins, duplicates="drop")
         m = v.groupby(b, observed=True).agg(x=("ddg", "mean"), y=("score_z", "mean"),
@@ -641,29 +647,44 @@ def i04_pooled(variants: dict, names: list[str], outdir: Path,
         ax.plot(m.x, m.y, "-o", ms=4.5, lw=1.8, color=P.DARK_RED, mec=P.INK, mew=0.4)
         ax.axhline(0, color=P.MUTED, lw=0.6)
         ax.axvline(0, color=P.MUTED, lw=0.6, ls=(0, (1, 2)))
-        rows += [{"protein": g, "ddg": float(r.x), "mean_effect": float(r.y),
-                  "sem": float(r.e), "n_variants": int(r.n)} for r in m.itertuples()]
+        rows += [{"protein": g, "wt_set": wt_set, "ddg": float(r.x),
+                  "mean_effect": float(r.y), "sem": float(r.e),
+                  "n_variants": int(r.n)} for r in m.itertuples()]
         f = smf.ols("score_z ~ ddg", data=v).fit(
             cov_type="cluster", cov_kwds={"groups": v.helix})
-        fits.append({"protein": g, "slope": float(f.params["ddg"]),
+        fits.append({"protein": g, "wt_set": wt_set,
+                     "slope": float(f.params["ddg"]),
                      "se_clustered": float(f.bse["ddg"]),
                      "p": float(f.pvalues["ddg"]),
                      "n_variants": int(len(v)), "n_helices": int(v.helix.nunique()),
                      "spearman": float(ss.spearmanr(v.ddg, v.score_z)[0])})
         panel(ax, i, g, f"slope {fits[-1]['slope']:+.3f} ± {fits[-1]['se_clustered']:.3f} "
                         f"kcal⁻¹, {len(v):,} variants", size=7.5)
-        if i // 2 == (len(names) - 1) // 2:
-            ax.set_xlabel(ddg_axis_label(), fontsize=7.5)
+        # the x label is set once on the figure: it names the scale and the depth
+        # convention, so it is long enough that two columns of panels collide
         if i % 2 == 0:
             ax.set_ylabel("mean effect", fontsize=7.5)
-    fig.suptitle("Every missense variant in a TM helix, binned by ΔΔG and averaged. "
-                 "Band = SEM over variants; the slope's error is clustered by helix.",
-                 fontsize=7, x=0.01, ha="left")
-    P.save(fig, outdir, "i04_pooled_curve", None, "I04")
+    import textwrap
+    note = ("Every missense variant in a TM helix, binned by ΔΔG and averaged. "
+            if wt_set == "all" else
+            f"Only substitutions FROM {' or '.join(keep)}, binned by ΔΔG and "
+            "averaged. Starting from one residue removes the part of the spread "
+            "that is really about which wild type was there. ")
+    if wt_set == "ala" and SCALE == "dstbl":
+        note += ("dsTβL is quoted relative to alanine, so for these variants ΔΔG is "
+                 "the scale's own ΔG for the mutant residue. ")
+    fig.suptitle("\n".join(textwrap.wrap(
+        note + "Band = SEM over variants; the slope's error is clustered by helix.",
+        width=150)), fontsize=7, x=0.01, ha="left")
+    fig.supxlabel(ddg_axis_label(), fontsize=8)
+    P.save(fig, outdir, f"i04_pooled_curve{tag}", None, "I04")
     plt.close(fig)
-    pd.DataFrame(rows).to_csv(outdir / "i04_pooled_curve.csv", index=False)
+    if not fits:
+        return {"status": "skipped",
+                "reason": f"no protein has 100+ TM variants from {'/'.join(keep or [])}"}
+    pd.DataFrame(rows).to_csv(outdir / f"i04_pooled_curve{tag}.csv", index=False)
     ft = pd.DataFrame(fits)
-    ft.to_csv(outdir / "i04_pooled_slopes.csv", index=False)
+    ft.to_csv(outdir / f"i04_pooled_slopes{tag}.csv", index=False)
     head = "; ".join(f"{r.protein.replace('_fitness', '')} {r.slope:+.3f} ± "
                      f"{r.se_clustered:.3f} (p {r.p:.2g})" for r in ft.itertuples())
     return {"status": "ok", "headline": head, "by_protein": ft.to_dict("records")}
@@ -1732,6 +1753,10 @@ def main(argv=None):
                          "fill each (residue, depth) cell - about twelve")
     ap.add_argument("--profile-min-n", type=int, default=3, metavar="N",
                     help="i09: measurements a (residue, depth) point needs to be drawn")
+    ap.add_argument("--wt-from", default="all", choices=list(WT_SETS),
+                    help="i04: restrict the pooled curve to substitutions FROM these "
+                         "wild types. 'ala' is the matched set for dsTβL, which is "
+                         "quoted relative to alanine")
     ap.add_argument("--profile-wt", default="all,avli,ala",
                     help="i09: which wild types each page may start from - any of "
                          "all, avli (A/V/L/I) and ala. Alanine is the one that makes "
@@ -1800,7 +1825,7 @@ def main(argv=None):
             elif k == "i03":
                 r = i03_helix_curves(variants, helices, names, outdir, a.all_helices)
             elif k == "i04":
-                r = i04_pooled(variants, names, outdir)
+                r = i04_pooled(variants, names, outdir, wt_set=a.wt_from)
             elif k == "i05":
                 r = i05_ranking(helices, names, outdir)
             elif k == "i06":

@@ -683,6 +683,11 @@ has a large *positive* ΔΔG and a large *negative* effect — so the two curves
 each other even when they agree perfectly. On the `_flip` pages agreement looks like
 agreement.
 
+The same `ala` restriction is available for the pooled curve, as `--wt-from ala`:
+under dsTβL that makes I04's x axis the scale's own ΔG for the mutant residue, and it
+removes the part of the ΔΔG spread that is really about which wild type happened to be
+at each position rather than about the substitution.
+
 **Alanine is the set that matters for dsTβL**, and not merely as one more filter.
 That scale is quoted *relative to alanine*, so ΔG(A) is exactly zero at every depth
 and an alanine wild type makes ΔΔG = ΔG(X) − ΔG(A) = ΔG(X). The measured A→X profile
@@ -773,7 +778,7 @@ Two details that matter and are easy to get wrong:
 | I01 | does a helix's ΔG predict its mean tolerance? (the weak version) |
 | I02 | the interaction, two ways: slope-of-effect-on-ΔΔG per helix against that helix's ΔG, and a per-protein model with the interaction term |
 | I03 | effect against ΔΔG for the **hardest and easiest helix to insert**, with the mean (± SEM) and median across all helices in bold (`--all-helices` draws all twelve, coloured by ΔG) |
-| I04 | the same thing pooled: every variant in any TM helix, binned by ΔΔG and averaged — one curve per protein, no grouping |
+| I04 | the same thing pooled: every variant in any TM helix, binned by ΔΔG and averaged — one curve per protein, no grouping. `--wt-from {all,avli,ala}` restricts it to substitutions **from** those wild types, which writes `i04_pooled_curve_<set>` beside the unrestricted one |
 | I05 | the TM helices **ranked** by the insertion energy of their wild-type sequence, within each protein |
 | I06 | the two scales against each other: the same substitutions at the same depths, with the helix ordering and each scale's correlation with the measured effect in `i06_scale_agreement.csv` |
 | I06B | the twenty residues under both scales, at the bilayer centre and at the interface — where the two disagree, and which residues do it |
