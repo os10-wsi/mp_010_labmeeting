@@ -1118,7 +1118,14 @@ def i09b_symmetry(variants: dict, names: list[str], outdir: Path,
     return {"status": "ok", "headline": head, "by_residue": t.to_dict("records")}
 
 
-HYDROPHOBIC_WT = ("A", "V", "L", "I")
+# Which wild types a page is allowed to start from. "all" pools everything, which
+# mixes L->K with D->K; "avli" keeps a comfortable hydrophobic baseline; "ala" is the
+# one that matters for dsTbL, because that scale is quoted RELATIVE TO ALANINE, so
+# for an alanine wild type ddG = dG(X) - dG(A) = dG(X) exactly. The measured A->X
+# profile is therefore the direct empirical counterpart of the published curve, and
+# the dG and ddG pages of an "ala" run under dsTbL are the same figure.
+WT_SETS = {"all": None, "avli": ("A", "V", "L", "I"), "ala": ("A",)}
+HYDROPHOBIC_WT = WT_SETS["avli"]
 
 
 def _i09_panel_grid(v, aas, matched, prof, xs_pred, mode, flip, lim, min_per_point):
@@ -1167,7 +1174,8 @@ def _i09_panel_grid(v, aas, matched, prof, xs_pred, mode, flip, lim, min_per_poi
 
 
 def i09_profiles(variants: dict, names: list[str], outdir: Path,
-                 min_per_point: int = 3, bin_width: int = 3) -> dict:
+                 min_per_point: int = 3, bin_width: int = 3,
+                 wt_sets: tuple = ("all", "avli", "ala")) -> dict:
     """Hessa's figure, measured: one panel per mutant residue, effect against position.
 
     The published scales are drawn this way - twenty panels, position across the
@@ -1213,8 +1221,10 @@ def i09_profiles(variants: dict, names: list[str], outdir: Path,
         xs_pred = np.linspace(-9, 9, 181)
         prof = {aa: np.array([residue_dg(aa, x * HALF_WIDTH / 9.0) for x in xs_pred])
                 for aa in aas}
-        for wt_set, tag_wt in (("all", ""), ("avli", "_avli")):
-            v = v0 if wt_set == "all" else v0[v0.wt.isin(HYDROPHOBIC_WT)]
+        for wt_set in wt_sets:
+            keep = WT_SETS.get(wt_set)
+            tag_wt = "" if wt_set == "all" else f"_{wt_set}"
+            v = v0 if keep is None else v0[v0.wt.isin(keep)]
             if len(v) < 100:
                 continue
             matched = {}
@@ -1251,14 +1261,24 @@ def i09_profiles(variants: dict, names: list[str], outdir: Path,
                                   "(−9 = cytoplasmic end, +9 = lumenal end)", fontsize=8)
                     fig.supylabel("mean effect of substituting to this residue (blue)",
                                   fontsize=8)
-                    fig.suptitle(
+                    # constrained layout grows the canvas to fit an unwrapped
+                    # suptitle, and these run long: without wrapping the saved page
+                    # came out twice as wide as the axes needed
+                    import textwrap
+                    fig.suptitle("\n".join(textwrap.wrap(
                         f"{g.replace('_fitness', '')}"
-                        + (" — from A, V, L or I only" if wt_set == "avli" else "")
+                        + {"avli": " — from A, V, L or I only",
+                           "ala": " — from alanine only"}.get(wt_set, "")
                         + f": blue = the data, left axis. Red = {what}"
                         + (", NEGATED so that agreement with the data looks like "
                            "agreement rather than a mirror image" if flip else "")
+                        + (". Under dsTβL, which is quoted relative to alanine, an "
+                           "alanine wild type makes ΔΔG and ΔG the same number, so "
+                           "this is the published curve itself against its own "
+                           "measurement"
+                           if wt_set == "ala" and SCALE == "dstbl" else "")
                         + ". One red axis is shared by all twenty panels.",
-                        fontsize=7.5, x=0.01, ha="left")
+                        width=165)), fontsize=7.5, x=0.01, ha="left")
                     P.save(fig, outdir,
                            f"{stem}{tag_wt}{'_flip' if flip else ''}_"
                            f"{g.replace('_fitness', '')}", None, "I09")
@@ -1300,11 +1320,11 @@ def i09_profiles(variants: dict, names: list[str], outdir: Path,
         return {"status": "skipped", "reason": "no protein has enough TM variants"}
     t = pd.DataFrame(rows)
     t.to_csv(outdir / "i09_profiles.csv", index=False)
+    # report whichever wild-type sets were actually asked for, not a fixed pair
     head = "; ".join(
-        f"{g.replace('_fitness', '')} {d.wt_set.nunique()} wild-type sets, "
-        f"{len(d[d.wt_set == 'all'])} residues, median ρ(ΔΔG) "
-        f"{d[d.wt_set == 'all'].spearman_with_scale_ddg.median():+.2f} all / "
-        f"{d[d.wt_set == 'avli'].spearman_with_scale_ddg.median():+.2f} AVLI"
+        f"{g.replace('_fitness', '')} " + ", ".join(
+            f"{w} {len(e)} residues ρ(ΔΔG) {e.spearman_with_scale_ddg.median():+.2f}"
+            for w, e in d.groupby("wt_set"))
         for g, d in t.groupby("protein"))
     return {"status": "ok", "headline": head, "by_residue": t.to_dict("records")}
 
@@ -1712,6 +1732,11 @@ def main(argv=None):
                          "fill each (residue, depth) cell - about twelve")
     ap.add_argument("--profile-min-n", type=int, default=3, metavar="N",
                     help="i09: measurements a (residue, depth) point needs to be drawn")
+    ap.add_argument("--profile-wt", default="all,avli,ala",
+                    help="i09: which wild types each page may start from - any of "
+                         "all, avli (A/V/L/I) and ala. Alanine is the one that makes "
+                         "dsTβL's ΔΔG equal its published ΔG, since that scale is "
+                         "quoted relative to alanine")
     ap.add_argument("--all-helices", action="store_true",
                     help="i03 draws every helix rather than only the hardest and the "
                          "easiest of each protein to insert")
@@ -1787,8 +1812,13 @@ def main(argv=None):
             elif k == "i08":
                 r = i08_ddg_vs_hydrophobicity(variants, names, outdir)
             elif k == "i09":
+                wt = tuple(x.strip() for x in a.profile_wt.split(",") if x.strip())
+                bad_wt = [x for x in wt if x not in WT_SETS]
+                if bad_wt:
+                    raise SystemExit(f"--profile-wt {bad_wt}: available are "
+                                     f"{', '.join(WT_SETS)}")
                 r = i09_profiles(variants, names, outdir, a.profile_min_n,
-                                 a.profile_bin)
+                                 a.profile_bin, wt)
             else:
                 r = i09b_symmetry(variants, names, outdir, a.profile_min_n,
                                   a.profile_bin)

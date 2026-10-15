@@ -906,16 +906,16 @@ def test_i09_writes_a_dg_figure_and_an_effect_figure_from_one_pass(tmp_path):
 
 
 def test_i09_writes_the_sign_flipped_and_hydrophobic_only_pages(tmp_path):
-    """Eight pages: {dG, ddG} x {all wild types, A/V/L/I} x {as measured, negated}."""
+    """Twelve pages: {dG, ddG} x {all, A/V/L/I, alanine} x {as measured, negated}."""
     from mpdms.insertion import i09_profiles
     r = i09_profiles({"T": _tm_variants(n=6000, seed=37)}, ["T"], tmp_path)
     assert r["status"] == "ok"
     for stem in ("i09_profiles", "i09_effect"):
-        for wt in ("", "_avli"):
+        for wt in ("", "_avli", "_ala"):
             for flip in ("", "_flip"):
                 assert (tmp_path / f"{stem}{wt}{flip}_T.png").exists(), (stem, wt, flip)
     t = pd.read_csv(tmp_path / "i09_profiles.csv")
-    assert set(t.wt_set) == {"all", "avli"}
+    assert set(t.wt_set) == {"all", "avli", "ala"}
 
 
 def test_the_hydrophobic_pages_use_only_substitutions_from_a_v_l_or_i(tmp_path):
@@ -944,3 +944,34 @@ def test_a_dataset_with_no_hydrophobic_wild_types_skips_those_pages(tmp_path):
     assert (tmp_path / "i09_profiles_T.png").exists()
     assert not (tmp_path / "i09_profiles_avli_T.png").exists()
     assert set(pd.DataFrame(r["by_residue"]).wt_set) == {"all"}
+
+
+def test_under_dstbl_an_alanine_wild_type_makes_ddg_equal_dg():
+    """Why 'ala' is the set that matters for the Fleishman scale, not just one more
+    filter: dsTbL is quoted relative to alanine, so dG(A) is zero at every depth and
+    the A->X ddG IS the published curve. Hessa is absolute, so this does not hold."""
+    assert set(I.WT_SETS) == {"all", "avli", "ala"}
+    assert I.WT_SETS["ala"] == ("A",)
+    for aa in "ACDEFGHIKLMNPQRSTVWY":
+        for z in (-15.0, -7.0, 0.0, 7.0, 15.0):
+            assert I.residue_dg("A", z, "dstbl") == 0.0
+            dd = I.residue_dg(aa, z, "dstbl") - I.residue_dg("A", z, "dstbl")
+            assert dd == pytest.approx(I.residue_dg(aa, z, "dstbl"), abs=1e-12)
+    # under Hessa alanine costs something, so the two differ there
+    off = [I.residue_dg(aa, 0.0, "hessa") - I.residue_dg("A", 0.0, "hessa")
+           != I.residue_dg(aa, 0.0, "hessa") for aa in "KRDW"]
+    assert all(off)
+
+
+def test_the_wild_type_sets_are_selectable_and_validated(tmp_path):
+    from mpdms.insertion import i09_profiles
+    v = _tm_variants(n=4000, seed=43)
+    r = i09_profiles({"T": v}, ["T"], tmp_path, wt_sets=("ala",))
+    assert r["status"] == "ok"
+    assert set(pd.DataFrame(r["by_residue"]).wt_set) == {"ala"}
+    for f in ("i09_profiles_ala_T.png", "i09_effect_ala_T.png",
+              "i09_profiles_ala_flip_T.png", "i09_effect_ala_flip_T.png"):
+        assert (tmp_path / f).exists()
+    # and the pages for sets that were not asked for are absent
+    assert not (tmp_path / "i09_profiles_avli_T.png").exists()
+    assert not (tmp_path / "i09_profiles_T.png").exists()

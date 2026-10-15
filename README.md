@@ -670,22 +670,30 @@ family of tests.
 
 I09 is the published scales' own presentation turned on the measurements: the
 twenty-panel grid where a charge is a bell peaked at the bilayer centre and a
-hydrophobe is flat. It writes **eight pages per protein**, from three independent choices:
+hydrophobe is flat. It writes **twelve pages per protein** by default, from three independent choices:
 
 | choice | pages |
 | --- | --- |
 | which prediction | `i09_profiles` = the scale's **ΔG**, the published quantity, what it costs to *have* that residue there; `i09_effect` = the **ΔΔG** of changing the wild types actually present into it, which is what blue measures |
 | which sign | plain, and `_flip`, which negates the energy axis |
-| which wild types | all of them, and `_avli`, keeping only substitutions **from** A, V, L or I |
+| which wild types | all of them; `_avli`, only substitutions **from** A, V, L or I; `_ala`, only **from** alanine. `--profile-wt` selects them |
 
 The sign matters because energy and effect run opposite ways — a costly substitution
 has a large *positive* ΔΔG and a large *negative* effect — so the two curves mirror
 each other even when they agree perfectly. On the `_flip` pages agreement looks like
 agreement.
 
-The wild-type restriction matters because pooling every wild type mixes L→K with D→K,
-and those are not the same experiment: the second starts from a residue the bilayer
-already disliked. On the `_avli` pages every panel is a change from a comfortable
+**Alanine is the set that matters for dsTβL**, and not merely as one more filter.
+That scale is quoted *relative to alanine*, so ΔG(A) is exactly zero at every depth
+and an alanine wild type makes ΔΔG = ΔG(X) − ΔG(A) = ΔG(X). The measured A→X profile
+is therefore the direct empirical counterpart of the published curve, and the ΔG and
+ΔΔG pages of an `_ala` run under dsTβL are the same figure. A test asserts the
+identity across all twenty residues at five depths, and asserts it does *not* hold
+under Hessa, which is absolute.
+
+The wild-type restriction matters more generally because pooling every wild type
+mixes L→K with D→K, and those are not the same experiment: the second starts from a
+residue the bilayer already disliked. On the `_avli` pages every panel is a change from a comfortable
 hydrophobic baseline, so the profile is about the residue arriving rather than the one
 leaving. `i09_profiles.csv` carries a row per (wild-type set, residue) with a rank
 correlation against each prediction. x is the scale's own coordinate — position in a nineteen-residue
