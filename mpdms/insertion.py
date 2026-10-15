@@ -853,6 +853,127 @@ def i08_ddg_vs_hydrophobicity(variants: dict, names: list[str], outdir: Path) ->
     return {"status": "ok", "headline": head, "by_protein": t.to_dict("records")}
 
 
+def i07b_by_helix(variants: dict, helices: dict, names: list[str], outdir: Path,
+                  all_helices: bool = False) -> dict:
+    """The hydrophobicity control, helix by helix - what i03 is for ddG.
+
+    i07 pools every TM variant, which answers "what does a hydrophobicity change cost
+    in this membrane domain" and cannot answer "do the helices differ". A helix that
+    only just inserts should, on the insertion-energetics story, be the one where
+    making a residue more polar costs most - and that prediction is about plain
+    hydrophobicity as much as about a fitted scale, so it is testable here with no
+    scale at all.
+
+    The number to read is in the panel: the correlation between a helix's slope and the
+    energy of inserting it. Mind the sign, which is the opposite of i03's. A ddG slope
+    is NEGATIVE - a more destabilising substitution lowers the effect - so there the
+    marginal helices being steepest makes rho(slope, dG) negative. A Kyte-Doolittle
+    slope is POSITIVE, because the axis runs the other way: more hydrophobic is less
+    damaging. A marginal helix being more sensitive therefore shows up as a steeper
+    POSITIVE slope, and the claim here is rho(slope, dG) > 0, since dG is least
+    negative for the helix with least margin.
+
+    Each helix's slope is its own ordinary least squares fit over its own variants, so
+    a helix whose hydrophobicity hardly varies gets a flat slope with a wide error
+    rather than being dropped.
+    """
+    from .annot import KYTE_DOOLITTLE as KD
+    rows = []
+    fig, pairs, _ = grid(names, w=3.2, h=2.9, extra=0.35)
+    for i, (g, ax) in enumerate(pairs):
+        v = variants[g].copy()
+        v["delta_kd"] = [KD.get(m, np.nan) - KD.get(w, np.nan)
+                         for m, w in zip(v.mut, v.wt)]
+        v = v.dropna(subset=["score_z", "delta_kd", "helix"])
+        h = helices[g].set_index("helix")
+        if len(v) < 100 or v.helix.nunique() < 3:
+            panel(ax, i, g, "too few helices with variants", size=7.5)
+            continue
+        edges = np.unique(np.quantile(v.delta_kd, np.linspace(0, 1, N_BINS + 1)))
+        if len(edges) < 3:
+            panel(ax, i, g, "no spread in hydrophobicity change", size=7.5)
+            continue
+        v = v.assign(bin=pd.cut(v.delta_kd, edges, include_lowest=True))
+        curves, dgs = {}, {}
+        for hx, sub in v.groupby("helix"):
+            if hx not in h.index or len(sub) < MIN_VARIANTS:
+                continue
+            m = sub.groupby("bin", observed=True).agg(
+                x=("delta_kd", "mean"), y=("score_z", "mean"), n=("score_z", "size"))
+            m = m[m.n >= MIN_PER_BIN].dropna()
+            r = ss.linregress(sub.delta_kd, sub.score_z)
+            dg = float(h.loc[hx, "dg"])
+            rows.append({"protein": g, "helix": hx, "dg": dg,
+                         "slope": float(r.slope), "se": float(r.stderr),
+                         "p": float(r.pvalue), "spearman": float(
+                             ss.spearmanr(sub.delta_kd, sub.score_z).statistic),
+                         "n_variants": int(len(sub)),
+                         "mean_effect": float(sub.score_z.mean())})
+            if len(m) >= 3:
+                curves[hx], dgs[hx] = m, dg
+        if not curves:
+            panel(ax, i, g, "no helix has enough variants per bin", size=7.5)
+            continue
+        lo, hi = min(dgs.values()), max(dgs.values())
+        cmap = plt.get_cmap("viridis")
+        if all_helices:
+            for hx, m in curves.items():
+                ax.plot(m.x, m.y, "-", lw=1.0, alpha=0.8,
+                        color=cmap((dgs[hx] - lo) / (hi - lo) if hi > lo else 0.5))
+        else:
+            for hx, col, lab in ((max(dgs, key=dgs.get), P.DARK_RED, "hardest to insert"),
+                                 (min(dgs, key=dgs.get), "#2166AC", "easiest to insert")):
+                m = curves[hx]
+                ax.plot(m.x, m.y, "-o", ms=4, lw=2.0, color=col, mec=P.INK, mew=0.4,
+                        zorder=7, label=f"{hx}, {lab} (ΔG {dgs[hx]:+.1f})")
+        wide = pd.DataFrame({k: m.y for k, m in curves.items()})
+        xs = pd.concat([m.x for m in curves.values()], axis=1).median(axis=1)
+        n_h = wide.notna().sum(axis=1)
+        ok = n_h >= 3
+        mn = wide.mean(axis=1)
+        sem = wide.std(axis=1, ddof=1) / np.sqrt(n_h.clip(lower=1))
+        ax.fill_between(xs[ok], (mn - sem)[ok], (mn + sem)[ok], color=P.INK, alpha=0.12,
+                        lw=0, zorder=5)
+        ax.plot(xs[ok], mn[ok], "-o", ms=4.5, lw=2.4, color=P.INK, zorder=6,
+                label="mean of helices (± SEM)")
+        ax.plot(xs[ok], wide.median(axis=1)[ok], "--", lw=1.6, color=P.INK, zorder=6,
+                label="median of helices")
+        ax.axhline(0, color=P.MUTED, lw=0.6)
+        ax.axvline(0, color=P.MUTED, lw=0.6, ls=(0, (1, 2)))
+        here = pd.DataFrame([r for r in rows if r["protein"] == g])
+        extra = ""
+        if len(here) >= 4:
+            rho, pv = ss.spearmanr(here.dg, here.slope)
+            extra = f"{len(here)} helices, slope vs ΔG ρ = {rho:+.2f} (p = {pv:.2g})"
+        panel(ax, i, g, extra, size=7.5)
+        if i == 0:
+            ax.legend(frameon=False, fontsize=6, loc="lower right")
+        if i // 2 == (len(names) - 1) // 2:
+            ax.set_xlabel("Δ hydrophobicity, Kyte–Doolittle (mutant − wild type)",
+                          fontsize=7.5)
+        if i % 2 == 0:
+            ax.set_ylabel("mean effect", fontsize=7.5)
+    if not rows:
+        return {"status": "skipped", "reason": "no helix has enough variants"}
+    fig.suptitle("I07 helix by helix, with no insertion scale in it. A helix with less "
+                 "margin should be the most sensitive to losing hydrophobicity, so the "
+                 "correlation between a helix's slope and its ΔG is the test. Here the "
+                 "claim is a POSITIVE correlation: this axis runs the opposite way to "
+                 "I03's, since more hydrophobic is less damaging and ΔG is least "
+                 "negative for the helix that only just inserts.",
+                 fontsize=7, x=0.01, ha="left")
+    P.save(fig, outdir, "i07b_hydrophobicity_by_helix", None, "I07B")
+    plt.close(fig)
+    t = pd.DataFrame(rows)
+    t.to_csv(outdir / "i07b_hydrophobicity_by_helix.csv", index=False)
+    head = "; ".join(
+        f"{g.replace('_fitness', '')} ρ(slope, ΔG) "
+        f"{ss.spearmanr(d.dg, d.slope).statistic:+.2f} over {len(d)} helices"
+        for g, d in t.groupby("protein") if len(d) >= 4)
+    return {"status": "ok", "headline": head or f"{len(t)} helices",
+            "by_helix": t.to_dict("records")}
+
+
 def i07_hydrophobicity_control(variants: dict, names: list[str], outdir: Path,
                                n_bins: int = 10) -> dict:
     """The control for i04: plain hydrophobicity change in place of ddG.
@@ -1093,6 +1214,7 @@ ANALYSES = {"i01": "helix ΔG against its tolerance",
             "i05": "the helices ranked by wild-type insertion energy",
             "i06": "do the two scales agree, and does either match the measurement?",
             "i07": "the control: plain hydrophobicity change instead of ΔΔG",
+            "i07b": "the hydrophobicity control, helix by helix",
             "i08": "ΔΔG against Δ hydrophobicity, one point per mutation"}
 
 
@@ -1186,6 +1308,8 @@ def main(argv=None):
                 r = i06_scale_agreement(variants, helices, names, outdir)
             elif k == "i07":
                 r = i07_hydrophobicity_control(variants, names, outdir)
+            elif k == "i07b":
+                r = i07b_by_helix(variants, helices, names, outdir, a.all_helices)
             else:
                 r = i08_ddg_vs_hydrophobicity(variants, names, outdir)
         except Exception as e:

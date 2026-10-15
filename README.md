@@ -659,6 +659,15 @@ model, where `slope_ddg_given_kd` and `r2_added_by_ddg` are what the depth-depen
 scale adds once plain hydrophobicity has explained whatever it can. The two predictors
 correlate around −0.75, so this is the only honest way to separate them.
 
+**Mind the sign when reading I07B against I03.** Both report ρ(helix slope, helix
+ΔG) and the claim has the *opposite* sign in each, because the x axes run opposite
+ways. A ΔΔG slope is negative — a more destabilising substitution lowers the effect —
+so "the marginal helices are the steepest" reads as **ρ < 0** in I03. A Kyte–Doolittle
+slope is positive — more hydrophobic is less damaging — and ΔG is *least* negative for
+the helix with least margin, so the same claim reads as **ρ > 0** in I07B. A test
+plants graded slopes across five helices and asserts the positive sign, because this
+is precisely the error that would otherwise be invisible.
+
 **Which membrane the scale came from.** dsTβL was measured in a bacterial
 inner-membrane reporter and Hessa on Sec61 in dog pancreas rough microsomes, an ER
 membrane; neither is a yeast plasma membrane. `--only i06` answers the question that
@@ -692,6 +701,7 @@ Two details that matter and are easy to get wrong:
 | I06 | the two scales against each other: the same substitutions at the same depths, with the helix ordering and each scale's correlation with the measured effect in `i06_scale_agreement.csv` |
 | I06B | the twenty residues under both scales, at the bilayer centre and at the interface — where the two disagree, and which residues do it |
 | I07 | **the control for I04**: the same pooled curve with plain Kyte–Doolittle change on x instead of ΔΔG — one number per substitution, identical for every residue at every depth |
+| I07B | the same control helix by helix — one curve per TM helix, with the correlation between a helix's slope and its insertion ΔG. The analogue of I03 with no scale in it |
 | I08 | the two predictors against each other, one point per mutation: ΔΔG on y, Kyte–Doolittle change on x, coloured by depth. The vertical spread at one x is what the depth-dependent scale adds |
 | I08B | the part of ΔΔG that hydrophobicity cannot explain, against the measured effect |
 

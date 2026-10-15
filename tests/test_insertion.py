@@ -588,3 +588,69 @@ def test_i08_residual_predicts_the_effect_only_when_ddg_really_drives_it():
     assert got["kd_only"]["p_effect_on_residual"] > 0.05
     assert got["ddg_too"]["p_effect_on_residual"] < 0.01
     assert got["ddg_too"]["slope_effect_on_residual"] < -0.1
+
+
+# ------------------------------- i07b: the hydrophobicity control, helix by helix
+def _helix_variants(slopes, n_per=160, seed=21):
+    """TM variants where each helix has its own planted KD slope and its own dG."""
+    from mpdms.annot import KYTE_DOOLITTLE as KD
+    rng = np.random.default_rng(seed)
+    aas = list("ACDEFGHIKLMNPQRSTVWY")
+    rows = []
+    for hx, (slope, dg) in slopes.items():
+        wt = rng.choice(aas, n_per)
+        mut = np.array([rng.choice([a for a in aas if a != w]) for w in wt])
+        dkd = np.array([KD[m] - KD[w] for m, w in zip(mut, wt)])
+        z = rng.uniform(-15, 15, n_per)
+        rows.append(pd.DataFrame({
+            "wt": wt, "mut": mut, "helix": hx, "z_ideal": z,
+            "ddg": [I.residue_dg(m, zi, "dstbl") - I.residue_dg(w, zi, "dstbl")
+                    for m, w, zi in zip(mut, wt, z)],
+            "score_z": -0.5 + slope * dkd + rng.normal(0, 0.12, n_per)}))
+    v = pd.concat(rows, ignore_index=True)
+    h = pd.DataFrame({"helix": list(slopes), "dg": [d for _, d in slopes.values()],
+                      "seq": ["L" * 20] * len(slopes),
+                      "orientation": ["in_out"] * len(slopes)})
+    return v, h
+
+
+def test_i07b_finds_each_helix_slope_and_relates_it_to_insertion_energy(tmp_path):
+    """The marginal helices are the steep ones here, so rho(slope, dG) must be POSITIVE.
+
+    The opposite sign to i03, and the reason is the axis. A ddG slope is negative, so
+    marginal-is-steeper reads as rho < 0 there. A Kyte-Doolittle slope is positive -
+    more hydrophobic is less damaging - and dG is LEAST negative for the helix with
+    least margin, so marginal-is-steeper reads as rho > 0 here.
+    """
+    from mpdms.insertion import i07b_by_helix
+    # easiest to insert (most negative dG) is flattest; marginal is steepest
+    v, h = _helix_variants({"TM1": (0.02, -14.0), "TM2": (0.04, -12.0),
+                            "TM3": (0.07, -10.0), "TM4": (0.10, -8.0),
+                            "TM5": (0.12, -6.0)})
+    r = i07b_by_helix({"T": v}, {"T": h}, ["T"], tmp_path)
+    assert r["status"] == "ok"
+    by = {d["helix"]: d for d in r["by_helix"]}
+    assert len(by) == 5
+    assert by["TM1"]["slope"] == pytest.approx(0.02, abs=0.02)
+    assert by["TM5"]["slope"] == pytest.approx(0.12, abs=0.02)
+    rho = ss.spearmanr([by[k]["dg"] for k in by], [by[k]["slope"] for k in by]).statistic
+    assert rho > 0.9
+    assert (tmp_path / "i07b_hydrophobicity_by_helix.csv").exists()
+    assert (tmp_path / "i07b_hydrophobicity_by_helix.png").exists()
+
+
+def test_i07b_finds_nothing_when_the_helices_are_the_same(tmp_path):
+    from mpdms.insertion import i07b_by_helix
+    v, h = _helix_variants({f"TM{k}": (0.06, -14.0 + 1.5 * k) for k in range(1, 6)})
+    r = i07b_by_helix({"T": v}, {"T": h}, ["T"], tmp_path)
+    sl = [d["slope"] for d in r["by_helix"]]
+    assert max(sl) - min(sl) < 0.05        # the planted slopes really are equal
+    dg = [d["dg"] for d in r["by_helix"]]
+    assert abs(ss.spearmanr(dg, sl).statistic) < 0.9
+
+
+def test_i07b_needs_helices_and_says_so(tmp_path):
+    from mpdms.insertion import i07b_by_helix
+    v, h = _helix_variants({"TM1": (0.05, -12.0), "TM2": (0.05, -10.0)})
+    r = i07b_by_helix({"T": v}, {"T": h}, ["T"], tmp_path)
+    assert r["status"] == "skipped"
