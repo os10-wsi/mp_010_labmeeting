@@ -879,11 +879,14 @@ def _i07c_significance(t: pd.DataFrame, names: list[str], outdir: Path) -> None:
         cols = [cmap((v - lo) / (hi - lo) if hi > lo else 0.5) for v in d.dg]
         ax.bar(np.arange(len(d)), y, color=cols, edgecolor=P.INK, linewidth=0.4)
         ax.axhline(-np.log10(0.05), color=P.DARK_RED, lw=0.9, ls=(0, (3, 2)))
-        ax.text(0.995, -np.log10(0.05), "q = 0.05 ", color=P.DARK_RED, fontsize=6,
-                va="bottom", ha="right", transform=ax.get_yaxis_transform())
+        ax.text(0.012, -np.log10(0.05), "q = 0.05", color=P.DARK_RED, fontsize=6,
+                va="bottom", ha="left", transform=ax.get_yaxis_transform(),
+                bbox=dict(fc="white", ec="none", pad=0.6), zorder=8)
         ax.set_xticks(np.arange(len(d)))
         ax.set_xticklabels(d.helix, fontsize=6, rotation=90)
-        panel(ax, i, g, f"{int((d.q < 0.05).sum())} of {len(d)} helices at q < 0.05",
+        miss = list(d.loc[d.q >= 0.05, "helix"])
+        panel(ax, i, g, f"{int((d.q < 0.05).sum())} of {len(d)} helices at q < 0.05"
+                        + (f"; not {', '.join(miss)}" if miss and len(miss) <= 4 else ""),
               size=7.5)
         if i % 2 == 0:
             ax.set_ylabel("−log₁₀ q  (slope ≠ 0, BH over helices)", fontsize=7.5)
@@ -897,10 +900,11 @@ def _i07c_significance(t: pd.DataFrame, names: list[str], outdir: Path) -> None:
             cb.set_label("ΔG of inserting the helix", fontsize=6.5)
             cb.ax.tick_params(labelsize=6)
     fig.suptitle("Evidence that each helix's hydrophobicity slope is not zero, "
-                 "Benjamini-Hochberg corrected over the helices of each protein. With "
-                 "hundreds of variants per helix almost any slope clears q = 0.05, so "
-                 "read the ordering and the colour rather than the heights; the slope "
-                 "and its interval are in the table.", fontsize=7, x=0.01, ha="left")
+                 "Benjamini-Hochberg corrected over the helices of each protein and "
+                 "coloured by insertion ΔG. A bar says only that a helix HAS a slope, "
+                 "not how steep: the slope and its interval are in the table, and the "
+                 "panel titles count the helices that cleared q = 0.05.",
+                 fontsize=7, x=0.01, ha="left")
     P.save(fig, outdir, "i07c_helix_slope_significance", None, "I07C")
     plt.close(fig)
 
