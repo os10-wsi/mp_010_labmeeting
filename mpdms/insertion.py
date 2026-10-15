@@ -909,6 +909,117 @@ def _i07c_significance(t: pd.DataFrame, names: list[str], outdir: Path) -> None:
     plt.close(fig)
 
 
+def i09_profiles(variants: dict, names: list[str], outdir: Path,
+                 min_per_point: int = 3, bin_width: int = 3) -> dict:
+    """Hessa's figure, measured: one panel per mutant residue, effect against position.
+
+    The published scales are drawn this way - twenty panels, position across the
+    H-segment on x, the cost of putting that residue there on y - and the shapes carry
+    the chemistry: a charge is a steep bell with its peak at the bilayer centre, a
+    hydrophobe is flat or inverted, and tryptophan and tyrosine dip at the interfaces
+    where they actually sit. This draws the same twenty panels from the measurements
+    instead, so the two can be put side by side.
+
+    Blue is the data: the mean effect of substituting to that residue, averaged over
+    every TM position that sits at that depth in any helix. Red is the prediction, the
+    same residue's ddG profile from the active scale, on its own axis - the units are
+    not comparable, the shapes are, which is the whole comparison. Depth is expressed
+    as the scale expresses it, as position in a nineteen-residue segment, so x here and
+    x in table S2 mean the same thing.
+
+    One protein per figure, because twenty panels is already a page.
+    """
+    from .annot import KYTE_DOOLITTLE as KD
+    aas = list("ACDEFGHIKLMNPQRSTVWY")
+    rows, out = [], {}
+    for g in names:
+        v = variants[g].copy()
+        v = v.dropna(subset=["score_z", "z_ideal"])
+        if len(v) < 200:
+            continue
+        # the scale's own coordinate: position in a 19-residue segment, -9 to +9
+        v["ipos"] = np.clip(np.rint(v.z_ideal * (9.0 / HALF_WIDTH)), -9, 9).astype(int)
+        # Nineteen single-residue columns is the published resolution and needs the
+        # published number of measurements. One protein's twelve helices give only a
+        # handful of residues at each depth for each mutant, so the positions are
+        # pooled into bins `bin_width` wide: fewer points, each of them an average of
+        # something rather than one or two variants.
+        if bin_width > 1:
+            v["ipos"] = (np.rint(v.ipos / bin_width) * bin_width).astype(int)
+        fig, axes = plt.subplots(4, 5, figsize=(11.0, 8.4), layout="constrained",
+                                 sharex=True, sharey=True)
+        flat = [axes[k // 5][k % 5] for k in range(20)]
+        # ONE prediction axis for all twenty panels, as the published figure has it.
+        # Letting each panel auto-scale its own red curve makes alanine - identically
+        # zero under dsTbL, since it is the reference - look as structured as arginine,
+        # and the comparison between residues is the entire point of drawing twenty.
+        xs_all = np.arange(-9, 10, max(bin_width, 1))
+        allp = [residue_dg(a, x * HALF_WIDTH / 9.0) for a in aas for x in xs_all]
+        pad = 0.05 * (max(allp) - min(allp) or 1.0)
+        plo, phi = min(allp) - pad, max(allp) + pad
+        for k, (ax, aa) in enumerate(zip(flat, aas)):
+            sub = v[v.mut == aa]
+            m = sub.groupby("ipos").agg(y=("score_z", "mean"), e=("score_z", "sem"),
+                                        n=("score_z", "size"))
+            m = m[m.n >= min_per_point].dropna(subset=["y"])
+            xs = np.arange(-9, 10, max(bin_width, 1))
+            pred = [residue_dg(aa, x * HALF_WIDTH / 9.0) for x in xs]
+            ax2 = ax.twinx()
+            ax2.plot(xs, pred, color="#C0392B", lw=1.2, zorder=2)
+            ax2.set_ylim(plo, phi)
+            ax2.tick_params(axis="y", labelsize=5, colors="#C0392B", length=2)
+            if k % 5 != 4:                      # only the right-hand column is labelled
+                ax2.set_yticklabels([])
+            elif k == 9:                        # and one of them carries the name
+                ax2.set_ylabel(f"ΔΔG, {SCALE} scale (kcal/mol, red)", fontsize=8,
+                               color="#C0392B")
+            if len(m) >= 3:
+                ax.fill_between(m.index, m.y - m.e, m.y + m.e, color="#2166AC",
+                                alpha=0.2, lw=0, zorder=3)
+                ax.plot(m.index, m.y, "-", color="#2166AC", lw=1.6, zorder=4)
+                rho = float(ss.spearmanr(m.y, [residue_dg(aa, i * HALF_WIDTH / 9.0)
+                                               for i in m.index]).statistic)
+                rows.append({"protein": g, "mut": aa, "n_positions": int(len(m)),
+                             "n_variants": int(sub.score_z.notna().sum()),
+                             "mean_effect": float(sub.score_z.mean()),
+                             "delta_kd_from_mean_wt": float(
+                                 KD[aa] - np.mean([KD.get(w, np.nan)
+                                                   for w in sub.wt.dropna()])),
+                             "spearman_with_scale": rho,
+                             "effect_at_centre": float(m.y.reindex(
+                                 range(-2, 3)).mean()),
+                             "effect_at_edges": float(m.y.reindex(
+                                 [-9, -8, -7, 7, 8, 9]).mean())})
+            else:
+                ax.text(0.5, 0.5, "too few", transform=ax.transAxes, ha="center",
+                        va="center", fontsize=6, color=P.MUTED)
+            ax.axhline(0, color=P.MUTED, lw=0.5, ls=(0, (2, 3)))
+            ax.set_title(aa, fontsize=9, pad=2)
+            ax.set_xticks([-9, -6, -3, 0, 3, 6, 9])
+            ax.tick_params(labelsize=6)
+        fig.supxlabel("Position in the transmembrane segment "
+                      "(−9 = cytoplasmic end, +9 = lumenal end)", fontsize=8)
+        fig.supylabel("mean effect of substituting to this residue (blue)", fontsize=8)
+
+        fig.suptitle(f"{g.replace('_fitness', '')}: the measured counterpart of the "
+                     f"published per-residue profiles. Blue = the data, left axis. "
+                     f"Red = the {SCALE} ΔΔG profile for the same residue, on its own "
+                     "units but ONE axis shared by all twenty panels, so the residues "
+                     "can be compared with each other as well as with the data.",
+                     fontsize=7.5, x=0.01, ha="left")
+        P.save(fig, outdir, f"i09_profiles_{g.replace('_fitness', '')}", None, "I09")
+        plt.close(fig)
+        out[g] = True
+    if not rows:
+        return {"status": "skipped", "reason": "no protein has enough TM variants"}
+    t = pd.DataFrame(rows)
+    t.to_csv(outdir / "i09_profiles.csv", index=False)
+    head = "; ".join(
+        f"{g.replace('_fitness', '')} {len(d)} residues drawn, median ρ with the scale "
+        f"{d.spearman_with_scale.median():+.2f}" for g, d in t.groupby("protein"))
+    return {"status": "ok", "headline": head, "by_residue": t.to_dict("records")}
+
+
 def i07b_by_helix(variants: dict, helices: dict, names: list[str], outdir: Path,
                   all_helices: bool = False) -> dict:
     """The hydrophobicity control, helix by helix - what i03 is for ddG.
@@ -1280,7 +1391,8 @@ ANALYSES = {"i01": "helix ΔG against its tolerance",
             "i06": "do the two scales agree, and does either match the measurement?",
             "i07": "the control: plain hydrophobicity change instead of ΔΔG",
             "i07b": "the hydrophobicity control, helix by helix",
-            "i08": "ΔΔG against Δ hydrophobicity, one point per mutation"}
+            "i08": "ΔΔG against Δ hydrophobicity, one point per mutation",
+            "i09": "one panel per mutant residue: effect against position in the membrane"}
 
 
 def main(argv=None):
@@ -1375,8 +1487,10 @@ def main(argv=None):
                 r = i07_hydrophobicity_control(variants, names, outdir)
             elif k == "i07b":
                 r = i07b_by_helix(variants, helices, names, outdir, a.all_helices)
-            else:
+            elif k == "i08":
                 r = i08_ddg_vs_hydrophobicity(variants, names, outdir)
+            else:
+                r = i09_profiles(variants, names, outdir)
         except Exception as e:
             r = {"status": "error", "reason": f"{type(e).__name__}: {e}"}
         out[k] = r

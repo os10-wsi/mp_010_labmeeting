@@ -666,6 +666,17 @@ its interval, which `i07b_hydrophobicity_by_helix.csv` holds. The correction is 
 each protein, because twelve helices are twelve chances and two proteins are not one
 family of tests.
 
+I09 is the published scales' own presentation turned on the measurements: the
+twenty-panel grid where a charge is a bell peaked at the bilayer centre and a
+hydrophobe is flat. x is the scale's own coordinate — position in a nineteen-residue
+segment, so it means the same thing here as in table S2 — and positions are pooled
+into three-wide bins, because one protein's twelve helices give only a handful of
+residues at each depth for each mutant. The red curves share **one** axis across all
+twenty panels, as the published figure does: per-panel autoscaling makes alanine,
+which is identically zero under dsTβL since it is the reference, look as structured
+as arginine. `i09_profiles.csv` carries each residue's rank correlation with the
+scale's profile, its effect at the centre and its effect at the edges.
+
 **Mind the sign when reading I07B against I03.** Both report ρ(helix slope, helix
 ΔG) and the claim has the *opposite* sign in each, because the x axes run opposite
 ways. A ΔΔG slope is negative — a more destabilising substitution lowers the effect —
@@ -711,6 +722,7 @@ Two details that matter and are easy to get wrong:
 | I07B | the same control helix by helix — **every** TM helix as its own curve, coloured by insertion ΔG with the hardest and easiest drawn over the top, plus the correlation between a helix's slope and its ΔG. The analogue of I03 with no scale in it |
 | I07C | one bar per helix: −log₁₀ q that its hydrophobicity slope is not zero, BH-corrected within each protein and coloured by insertion ΔG |
 | I08 | the two predictors against each other, one point per mutation: ΔΔG on y, Kyte–Doolittle change on x, coloured by depth. The vertical spread at one x is what the depth-dependent scale adds |
+| I09 | **Hessa's figure, measured**: twenty panels, one per mutant residue, with position across the membrane on x — the mean effect in blue on the left axis, the scale's ΔΔG profile for that residue in red on one right axis shared by all twenty |
 | I08B | the part of ΔΔG that hydrophobicity cannot explain, against the measured effect |
 
 I05 is the premise of all the others and worth reading first: if a protein's helices

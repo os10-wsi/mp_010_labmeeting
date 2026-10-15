@@ -688,3 +688,38 @@ def test_the_helix_p_values_are_corrected_within_each_protein(tmp_path):
         # BH within six tests: the largest q is the largest p, unchanged
         assert d.q.max() == pytest.approx(d.p.max(), rel=1e-9)
         assert len(d) == 6
+
+
+# ------------------- i09: one panel per mutant residue, effect against position
+def test_i09_draws_twenty_panels_and_summarises_each_residue(tmp_path):
+    from mpdms.insertion import i09_profiles
+    v = _tm_variants(n=4000, kd_effect=-0.05, seed=31)
+    r = i09_profiles({"T": v}, ["T"], tmp_path)
+    assert r["status"] == "ok"
+    got = {d["mut"] for d in r["by_residue"]}
+    assert len(got) >= 18 and got <= set("ACDEFGHIKLMNPQRSTVWY")
+    assert (tmp_path / "i09_profiles_T.png").exists()
+    t = pd.read_csv(tmp_path / "i09_profiles.csv")
+    for c in ("mut", "n_positions", "spearman_with_scale", "effect_at_centre",
+              "effect_at_edges"):
+        assert c in t.columns
+    assert (t.n_positions >= 3).all()
+
+
+def test_i09_x_axis_is_the_scales_own_coordinate(tmp_path):
+    """x must mean what it means in the published table: position in a 19-mer, not A."""
+    from mpdms.insertion import i09_profiles
+    v = _tm_variants(n=3000, seed=32)
+    i09_profiles({"T": v}, ["T"], tmp_path)
+    # the ends of an ideally laid-out helix map to the ends of the table
+    assert np.rint(I.HALF_WIDTH * (9.0 / I.HALF_WIDTH)) == 9
+    assert np.rint(-I.HALF_WIDTH * (9.0 / I.HALF_WIDTH)) == -9
+    # and the prediction drawn at position i is the scale's value at that depth
+    assert I.residue_dg("K", 9 * I.HALF_WIDTH / 9.0, "hessa") == pytest.approx(
+        I.residue_dg("K", I.HALF_WIDTH, "hessa"))
+
+
+def test_i09_declines_a_protein_with_too_little_data(tmp_path):
+    from mpdms.insertion import i09_profiles
+    v = _tm_variants(n=50)
+    assert i09_profiles({"T": v}, ["T"], tmp_path)["status"] == "skipped"
