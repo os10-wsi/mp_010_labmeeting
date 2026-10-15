@@ -186,33 +186,126 @@ def ssdraw_only_figure(cfg, ss, positions, prof, key, label):
     return fig
 
 
+# one structure per per-position quantity: the mean over all missense, the cost of a
+# proline, and the cost of a positive charge. The last two are the two substitutions
+# whose damage has a structural reading - a broken backbone and a buried charge.
+STRUCTURE_KEYS = {"mean_missense": "mean effect over all missense substitutions",
+                  "proline": "mean effect of substituting to proline",
+                  "lys_arg": "mean effect of substituting to lysine or arginine"}
+UNSCORED = -99.0        # B-factor for a residue with no measurement, far outside the
+                        # fitness scale so it cannot be mistaken for one
+
+
+def _ranges(positions) -> str:
+    """Residue numbers as a PyMOL selection, collapsed into ranges."""
+    nums = sorted(int(p) for p in positions)
+    if not nums:
+        return ""
+    out, start, prev = [], nums[0], nums[0]
+    for n in nums[1:] + [None]:
+        if n != prev + 1:
+            out.append(str(start) if start == prev else f"{start}-{prev}")
+            start = n
+        prev = n if n is not None else prev
+    return "+".join(out)
+
+
 def write_structure_colouring(cfg, prof, tabdir):
-    """PDBs with B-factor = value, plus a PyMOL script using the heatmap colours."""
+    """One PyMOL session per quantity: B-factor carries the value, the script the colour.
+
+    The B-factor column holds the number itself, so `spectrum b` and any other tool
+    reads the same values the figures use; the script then paints each residue with
+    the project's own fitness colours, which a spectrum cannot reproduce exactly
+    because white has to sit at zero rather than at the midpoint of the range.
+    Residues with no measurement get a B-factor far outside the scale and are left
+    grey, rather than a value that would read as "no effect".
+
+    Running the script writes the .pse, so the sessions can be made on a desktop from
+    the files this produces; with MPDMS_RENDER=1 and PyMOL on the path they are also
+    built here.
+    """
+    import os
+    import shutil
+    import subprocess
+    import sys
     p = cfg.resolve(cfg.get_path("structure.path"))
     if p is None or not p.exists():
         return []
-    from Bio.PDB import PDBIO, PDBParser
+    from Bio.PDB import PDBIO
+
+    from ..structure import load_structure
     out = []
     vmin = cfg.get_path("plotting.heatmap_vmin", P.VMIN)
     vmax = cfg.get_path("plotting.heatmap_vmax", P.VMAX)
     cmap, norm = P.fitness_cmap(vmin, vmax), P.fitness_norm(vmin, vmax)
     off = int(cfg.get_path("structure.numbering_offset", 0) or 0)
-    for key in ("mean_missense", "proline"):
-        s = PDBParser(QUIET=True).get_structure("s", str(p))
-        vals = prof[key]
-        for res in s.get_residues():
-            v = vals.get(res.id[1] + off, np.nan)
+    chain = cfg.get_path("structure.chain", "A")
+    # load_structure, not a bare PDBParser: handed a .cif the latter returns an empty
+    # structure with no error, which PDBIO then writes as a file containing "END"
+    try:
+        n_res = sum(1 for _ in load_structure(p, chain)[0].get_residues())
+    except Exception as e:
+        # a file with no model at all raises inside the parser rather than coming
+        # back empty, so the guard has to cover both ways of being unusable
+        print(f"    heatmap: {p.name} could not be parsed ({type(e).__name__}) - no "
+              "coloured structure", flush=True)
+        return []
+    if not n_res:
+        print(f"    heatmap: {p.name} parsed to zero residues - no coloured structure",
+              flush=True)
+        return []
+    for key, what in STRUCTURE_KEYS.items():
+        if key not in prof:
+            continue
+        vals = prof[key].dropna()
+        if not len(vals):
+            continue
+        st = load_structure(p, chain)[0]
+        for res in st.get_residues():
+            v = prof[key].get(res.id[1] + off, np.nan)
             for a in res:
-                a.bfactor = float(v) if np.isfinite(v) else 99.0
+                a.bfactor = float(np.clip(v, -99, 99)) if np.isfinite(v) else UNSCORED
         f = tabdir / f"structure_{key}.pdb"
-        io = PDBIO(); io.set_structure(s); io.save(str(f))
-        lines = [f"load {f.name}, {cfg.id}_{key}", f"color grey70, {cfg.id}_{key}"]
-        for pos, v in vals.dropna().items():
+        io = PDBIO(); io.set_structure(st); io.save(str(f))
+        if f.stat().st_size < 1000:
+            print(f"    heatmap: {f.name} came out empty ({f.stat().st_size} bytes) - "
+                  "check structure.path in the config", flush=True)
+            f.unlink()
+            continue
+        obj = f"{cfg.id}_{key}"
+        scored = _ranges([int(x) - off for x in vals.index])
+        lines = [f"# {cfg.display_name}: {what}",
+                 f"# B-factor = the value; {UNSCORED:g} means the position was not "
+                 "measured",
+                 f"# run with:  cd <folder containing {f.name}>  then  @{f.stem}.pml",
+                 f"delete {obj}", f"load {f.name}, {obj}", "bg_color white",
+                 "hide everything", f"show cartoon, {obj}",
+                 "set ray_opaque_background, 0", "set antialias, 2",
+                 f"select {obj}_scored, {obj} and resi {scored or '0'}",
+                 f"color grey70, {obj}"]
+        for pos, v in vals.items():
             r, g, b, _ = cmap(norm(np.clip(v, vmin, vmax)))
-            lines.append(f"set_color c{pos}, [{r:.3f},{g:.3f},{b:.3f}]")
-            lines.append(f"color c{pos}, {cfg.id}_{key} and resi {pos - off}")
-        (tabdir / f"structure_{key}.pml").write_text("\n".join(lines) + "\n")
-        out += [f, tabdir / f"structure_{key}.pml"]
+            lines += [f"set_color c{key}_{pos}, [{r:.3f},{g:.3f},{b:.3f}]",
+                      f"color c{key}_{pos}, {obj} and resi {int(pos) - off}"]
+        lines += ["deselect", f"orient {obj}", f"save {f.stem}.pse",
+                  f"png {f.stem}.png, width=2400, height=1800, dpi=300, ray=1"]
+        pml = tabdir / f"structure_{key}.pml"
+        pml.write_text("\n".join(lines) + "\n")
+        out += [f, pml]
+        if not os.environ.get("MPDMS_RENDER"):
+            continue
+        exe = shutil.which("pymol")
+        cmd = ([exe, "-cq", pml.name] if exe else
+               [sys.executable, "-m", "pymol", "-cq", pml.name])
+        try:
+            subprocess.run(cmd, cwd=tabdir, timeout=600, check=False,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            for ext in ("pse", "png"):
+                if (tabdir / f"{f.stem}.{ext}").exists():
+                    out.append(tabdir / f"{f.stem}.{ext}")
+        except Exception as e:
+            print(f"    PyMOL failed ({type(e).__name__}) - open {pml.name} by hand",
+                  flush=True)
     return out
 
 

@@ -96,8 +96,10 @@ so you can choose `min_reads` for each dataset.
 ```
 outputs/<GENE>/figures/   qc_*.pdf, heatmap.pdf, heatmap_ssdraw.pdf, ssdraw_mean_effect.pdf,
                           ssdraw_proline.pdf, a01…a12_*.pdf   (PDF with embedded fonts + 300-dpi PNG)
-outputs/<GENE>/tables/    tidy CSVs; structure_{mean_missense,proline}.pdb (B-factor = score)
-                          + .pml PyMOL scripts that use the heatmap colours; a10 PyMOL selection
+outputs/<GENE>/tables/    tidy CSVs; structure_{mean_missense,proline,lys_arg}.pdb
+                          (B-factor = the value, -99 = not measured) + .pml scripts that
+                          colour with the heatmap palette and `save` a .pse session;
+                          a10 PyMOL selection
 outputs/<GENE>/stats.json one row per analysis: headline, metrics, caveats
 outputs/_cross/           stats.json, summary.csv, summary.pdf  (slide 1; † = caveat fired)
 reports/<GENE>.md         auto-assembled one-pager
