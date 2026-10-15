@@ -654,3 +654,37 @@ def test_i07b_needs_helices_and_says_so(tmp_path):
     v, h = _helix_variants({"TM1": (0.05, -12.0), "TM2": (0.05, -10.0)})
     r = i07b_by_helix({"T": v}, {"T": h}, ["T"], tmp_path)
     assert r["status"] == "skipped"
+
+
+def test_i07b_draws_every_helix_and_a_significance_bar_per_helix(tmp_path):
+    """Twelve helices, all of them on the curve figure and all of them in the bars."""
+    from mpdms.insertion import i07b_by_helix
+    v, h = _helix_variants({f"TM{k}": (0.02 + 0.008 * k, -14.0 + 0.5 * k)
+                            for k in range(1, 13)}, n_per=120)
+    r = i07b_by_helix({"T": v}, {"T": h}, ["T"], tmp_path)
+    assert r["status"] == "ok"
+    assert len({d["helix"] for d in r["by_helix"]}) == 12
+    for f in ("i07b_hydrophobicity_by_helix.png", "i07c_helix_slope_significance.png",
+              "i07b_hydrophobicity_by_helix.csv"):
+        assert (tmp_path / f).exists()
+    t = pd.read_csv(tmp_path / "i07b_hydrophobicity_by_helix.csv")
+    assert len(t) == 12
+    # the corrected p is present, never smaller than the raw one, and still a p
+    assert "q" in t and (t.q >= t.p - 1e-12).all()
+    assert ((t.q >= 0) & (t.q <= 1)).all()
+
+
+def test_the_helix_p_values_are_corrected_within_each_protein(tmp_path):
+    """Twelve helices are twelve chances, and two proteins must not pool their tests."""
+    from mpdms.insertion import i07b_by_helix
+    v1, h1 = _helix_variants({f"TM{k}": (0.05, -12.0 + k) for k in range(1, 7)},
+                             n_per=120, seed=5)
+    v2, h2 = _helix_variants({f"TM{k}": (0.05, -12.0 + k) for k in range(1, 7)},
+                             n_per=120, seed=6)
+    i07b_by_helix({"A": v1, "B": v2}, {"A": h1, "B": h2}, ["A", "B"], tmp_path)
+    t = pd.read_csv(tmp_path / "i07b_hydrophobicity_by_helix.csv")
+    assert set(t.protein) == {"A", "B"}
+    for _, d in t.groupby("protein"):
+        # BH within six tests: the largest q is the largest p, unchanged
+        assert d.q.max() == pytest.approx(d.p.max(), rel=1e-9)
+        assert len(d) == 6

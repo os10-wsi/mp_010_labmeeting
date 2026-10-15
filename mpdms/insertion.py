@@ -68,6 +68,7 @@ from .analyses.base import missense
 from .config import REPO_ROOT, load_config, protein_sequence
 from .environs import effect_color, grid, panel
 from .features import position_table
+from .stats import bh_fdr
 from .io import load_dataset
 
 OUT = REPO_ROOT / "outputs" / "_insertion"
@@ -853,6 +854,57 @@ def i08_ddg_vs_hydrophobicity(variants: dict, names: list[str], outdir: Path) ->
     return {"status": "ok", "headline": head, "by_protein": t.to_dict("records")}
 
 
+def _i07c_significance(t: pd.DataFrame, names: list[str], outdir: Path) -> None:
+    """One bar per helix: how strong the evidence is that its slope is not zero.
+
+    Read this for the ordering, not for the absolute heights. Each helix carries
+    hundreds of variants, so a slope of almost any size clears p = 0.05 easily and the
+    bars run into tens of orders of magnitude; what separates the helices is the slope
+    and its interval, which the companion table holds. The p-values are corrected
+    across the helices of each protein (Benjamini-Hochberg) because twelve helices are
+    twelve chances, and the bars are coloured by insertion energy so a reader can see
+    at once whether the strongest evidence sits with the marginal helices.
+    """
+    fig, pairs, _ = grid(names, w=3.3, h=2.9, extra=0.3)
+    cmap = plt.get_cmap("viridis")
+    for i, (g, ax) in enumerate(pairs):
+        d = t[t.protein == g].copy()
+        if not len(d):
+            panel(ax, i, g, "no helix fitted", size=7.5)
+            continue
+        d = d.sort_values("helix", key=lambda c: c.str.extract(r"(\d+)")[0]
+                          .astype(float).fillna(0))
+        y = -np.log10(d.q.clip(lower=1e-300))
+        lo, hi = float(d.dg.min()), float(d.dg.max())
+        cols = [cmap((v - lo) / (hi - lo) if hi > lo else 0.5) for v in d.dg]
+        ax.bar(np.arange(len(d)), y, color=cols, edgecolor=P.INK, linewidth=0.4)
+        ax.axhline(-np.log10(0.05), color=P.DARK_RED, lw=0.9, ls=(0, (3, 2)))
+        ax.text(0.995, -np.log10(0.05), "q = 0.05 ", color=P.DARK_RED, fontsize=6,
+                va="bottom", ha="right", transform=ax.get_yaxis_transform())
+        ax.set_xticks(np.arange(len(d)))
+        ax.set_xticklabels(d.helix, fontsize=6, rotation=90)
+        panel(ax, i, g, f"{int((d.q < 0.05).sum())} of {len(d)} helices at q < 0.05",
+              size=7.5)
+        if i % 2 == 0:
+            ax.set_ylabel("−log₁₀ q  (slope ≠ 0, BH over helices)", fontsize=7.5)
+        if hi > lo:
+            # one bar per panel, not one for the figure: the colour is normalised
+            # within a protein, so a shared bar would read as a shared scale and
+            # invite comparing a colour in one panel with the same colour in another
+            import matplotlib as mpl
+            sm = mpl.cm.ScalarMappable(cmap=cmap, norm=mpl.colors.Normalize(lo, hi))
+            cb = fig.colorbar(sm, ax=ax, fraction=0.045, pad=0.02)
+            cb.set_label("ΔG of inserting the helix", fontsize=6.5)
+            cb.ax.tick_params(labelsize=6)
+    fig.suptitle("Evidence that each helix's hydrophobicity slope is not zero, "
+                 "Benjamini-Hochberg corrected over the helices of each protein. With "
+                 "hundreds of variants per helix almost any slope clears q = 0.05, so "
+                 "read the ordering and the colour rather than the heights; the slope "
+                 "and its interval are in the table.", fontsize=7, x=0.01, ha="left")
+    P.save(fig, outdir, "i07c_helix_slope_significance", None, "I07C")
+    plt.close(fig)
+
+
 def i07b_by_helix(variants: dict, helices: dict, names: list[str], outdir: Path,
                   all_helices: bool = False) -> dict:
     """The hydrophobicity control, helix by helix - what i03 is for ddG.
@@ -916,16 +968,18 @@ def i07b_by_helix(variants: dict, helices: dict, names: list[str], outdir: Path,
             continue
         lo, hi = min(dgs.values()), max(dgs.values())
         cmap = plt.get_cmap("viridis")
-        if all_helices:
-            for hx, m in curves.items():
-                ax.plot(m.x, m.y, "-", lw=1.0, alpha=0.8,
-                        color=cmap((dgs[hx] - lo) / (hi - lo) if hi > lo else 0.5))
-        else:
-            for hx, col, lab in ((max(dgs, key=dgs.get), P.DARK_RED, "hardest to insert"),
-                                 (min(dgs, key=dgs.get), "#2166AC", "easiest to insert")):
-                m = curves[hx]
-                ax.plot(m.x, m.y, "-o", ms=4, lw=2.0, color=col, mec=P.INK, mew=0.4,
-                        zorder=7, label=f"{hx}, {lab} (ΔG {dgs[hx]:+.1f})")
+        # every helix, always: this is the per-helix figure, and with twelve of them
+        # the question is whether they form a spread or two groups, which only the
+        # whole set can answer. The two extremes are then drawn over the top so the
+        # comparison the claim is about stays readable in the crowd.
+        for hx, m in curves.items():
+            ax.plot(m.x, m.y, "-", lw=1.0, alpha=0.75, zorder=3,
+                    color=cmap((dgs[hx] - lo) / (hi - lo) if hi > lo else 0.5))
+        for hx, col, lab in ((max(dgs, key=dgs.get), P.DARK_RED, "hardest to insert"),
+                             (min(dgs, key=dgs.get), "#2166AC", "easiest to insert")):
+            m = curves[hx]
+            ax.plot(m.x, m.y, "-o", ms=4, lw=2.0, color=col, mec=P.INK, mew=0.4,
+                    zorder=7, label=f"{hx}, {lab} (ΔG {dgs[hx]:+.1f})")
         wide = pd.DataFrame({k: m.y for k, m in curves.items()})
         xs = pd.concat([m.x for m in curves.values()], axis=1).median(axis=1)
         n_h = wide.notna().sum(axis=1)
@@ -965,7 +1019,14 @@ def i07b_by_helix(variants: dict, helices: dict, names: list[str], outdir: Path,
     P.save(fig, outdir, "i07b_hydrophobicity_by_helix", None, "I07B")
     plt.close(fig)
     t = pd.DataFrame(rows)
+    # BH within each protein. Written as a loop over index groups rather than
+    # groupby().apply(): pandas drops the grouping column from the frame it hands the
+    # function, and the result then has no `protein` at all.
+    t["q"] = np.nan
+    for _, idx in t.groupby("protein").groups.items():
+        t.loc[idx, "q"] = bh_fdr(t.loc[idx, "p"].fillna(1.0).to_numpy())
     t.to_csv(outdir / "i07b_hydrophobicity_by_helix.csv", index=False)
+    _i07c_significance(t, names, outdir)
     head = "; ".join(
         f"{g.replace('_fitness', '')} ρ(slope, ΔG) "
         f"{ss.spearmanr(d.dg, d.slope).statistic:+.2f} over {len(d)} helices"
