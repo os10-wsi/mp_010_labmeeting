@@ -668,7 +668,13 @@ family of tests.
 
 I09 is the published scales' own presentation turned on the measurements: the
 twenty-panel grid where a charge is a bell peaked at the bilayer centre and a
-hydrophobe is flat. x is the scale's own coordinate — position in a nineteen-residue
+hydrophobe is flat. It writes **two figures per protein**, because a scale's per-residue value and
+the measurement are different quantities. `i09_profiles_<ID>` has the scale's **ΔG**
+profile in red, the published quantity — what it costs to *have* that residue at that
+depth. `i09_effect_<ID>` has the **ΔΔG** of changing the wild types actually present
+at each depth into it, which is what the blue curve measures, since substituting *to*
+a residue is a difference. Blue is identical in both; `i09_profiles.csv` carries a
+rank correlation against each. x is the scale's own coordinate — position in a nineteen-residue
 segment, so it means the same thing here as in table S2 — and positions are pooled
 into bins `--profile-bin` wide (default 3, giving seven points across the segment)
 because a (residue, depth) cell holds only about as many measurements as the protein
@@ -691,11 +697,16 @@ units, so multiplying the profile by any constant cancels and adding one is remo
 centring: a measured profile in fitness units and a predicted one in kcal/mol are
 directly comparable, and so are two residues.
 
-Two things make it a test rather than a description. **Hessa's index is exactly zero
-for every residue** — table S2 is symmetric by construction, asserted at import — so a
-tilt in the data is something that scale structurally cannot produce, while dsTβL's
-index is large for K and R because the positive-inside rule is in it as measured; both
-are reported beside each residue. And the null is exchangeability: if a profile really
+**A scale's per-residue value is a ΔG, not a ΔΔG**, and the two references differ
+because of it. Table S2 gives the cost of *having* a residue at a depth; your
+measurement is the cost of *changing* the wild type into it. Hessa's ΔG profile is
+symmetric by construction (asserted at import) so its index is exactly zero — but the
+matched ΔΔG, that residue against the wild types actually sitting at each depth, need
+not be symmetric under either scale, because the two halves of the membrane hold
+different wild-type residues. On the SYN1 fixture Hessa's ΔΔG reference is 0.05, not
+0. So a tilt in your data is beyond a scale's reach only when it exceeds that scale's
+**ΔΔG** reference, not merely when it exceeds zero. All four numbers are in the CSV
+(`asymmetry_{dstbl,hessa}_{dg,ddg}`). And the null is exchangeability: if a profile really
 is symmetric then a variant at +i and one at −i are interchangeable, so the depth sign
 is permuted per variant and the index recomputed, which assumes nothing about the
 distribution. The interval comes from resampling variants, and `q` is BH over the

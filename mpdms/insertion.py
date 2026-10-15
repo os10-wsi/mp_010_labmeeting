@@ -175,6 +175,10 @@ for _aa, _v in HESSA.items():
     assert _v == tuple(reversed(_v)), f"HESSA[{_aa}] is not symmetric about i = 0"
 
 SCALES = ("dstbl", "hessa")
+# A scale's per-residue value is a dG - the cost of HAVING that residue at that depth,
+# one residue at a time. A ddG is a difference of two of them, which is what add_ddg
+# forms and what i02-i08 use. The two are not interchangeable and the axis says which.
+SCALE_DG = {"dstbl": "ΔG relative to alanine", "hessa": "ΔG_app"}
 SCALE_LABEL = {"dstbl": "dsT\u03b2L (Elazar 2016), kcal/mol relative to alanine",
                "hessa": "Hessa 2007 table S2 position term, kcal/mol"}
 SCALE = "dstbl"          # set once by main(); every analysis reads it through residue_dg
@@ -962,12 +966,18 @@ def i09b_symmetry(variants: dict, names: list[str], outdir: Path,
                   n_perm: int = 1000, n_boot: int = 500) -> dict:
     """Is each residue's measured profile symmetric about the bilayer centre?
 
-    The Hessa table is symmetric by construction - every row of S2 reads the same from
-    both ends, asserted at import - so its asymmetry index is exactly zero and the
-    scale cannot predict a tilted profile at all. dsTbL is asymmetric, because the
-    positive-inside rule is inside it as measured. Both are reported beside each
-    residue, so "this profile is as tilted as dsTbL says it should be" becomes a number
-    rather than an impression.
+    Two references per scale, because a scale's per-residue number is a dG - the cost
+    of HAVING that residue at that depth - while the measurement is the cost of
+    CHANGING the wild type into it, which is a ddG.
+
+    The dG profile is the published quantity. Hessa's is symmetric by construction,
+    every row of S2 reading the same from both ends and asserted at import, so its
+    index is exactly zero; dsTbL's is not, because the positive-inside rule is in it as
+    measured. The matched ddG - this residue against the wild types actually sitting at
+    each depth - need not be symmetric under EITHER scale, since the two halves of the
+    membrane hold different wild-type residues. So a tilt in the data is only beyond a
+    scale's reach when it exceeds that scale's ddG reference, not merely when it
+    exceeds zero.
 
     The null is exchangeability: if a residue's cost really is symmetric, a variant at
     depth +i and one at -i are interchangeable, so flipping the sign of each variant's
@@ -1018,10 +1028,24 @@ def i09b_symmetry(variants: dict, names: list[str], outdir: Path,
             lo, hi = (np.percentile(boots, [2.5, 97.5]) if len(boots) > 50
                       else (np.nan, np.nan))
             lum, cyt = y[ipos > 0], y[ipos < 0]
-            scale_idx = {}
+            # Two references per scale, and they are NOT the same thing. The dG
+            # profile is the published quantity and Hessa's is symmetric by
+            # construction, so its index is exactly zero. The matched ddG - this
+            # residue against the wild types actually present at each depth - need
+            # not be symmetric at all, because the sequence is not: the two halves of
+            # the membrane hold different wild-type residues. A tilt in the data is
+            # therefore only beyond Hessa's reach when it also exceeds this one.
+            scale_idx, scale_dd = {}, {}
             for sc in SCALES:
                 pred = np.array([residue_dg(aa, i * HALF_WIDTH / 9.0, sc) for i in bi])
                 scale_idx[sc] = asymmetry_index(bi, pred)
+                d = (sub.assign(_d=[residue_dg(aa, zz * HALF_WIDTH / 9.0, sc)
+                                    - residue_dg(w, zz * HALF_WIDTH / 9.0, sc)
+                                    for w, zz in zip(sub.wt, sub.ipos)])
+                     .groupby("ipos")._d.mean())
+                d = d.reindex(bi).dropna()
+                scale_dd[sc] = (asymmetry_index(d.index.to_numpy(), d.to_numpy())
+                                if len(d) >= 4 else np.nan)
             rows.append({"protein": g, "mut": aa, "n_variants": int(len(sub)),
                          "n_bins": int(len(bi)), "asymmetry": obs,
                          "asymmetry_lo": float(lo), "asymmetry_hi": float(hi),
@@ -1029,8 +1053,10 @@ def i09b_symmetry(variants: dict, names: list[str], outdir: Path,
                          "lumenal_minus_cytosolic":
                              float(np.mean(lum) - np.mean(cyt)) if len(lum) and len(cyt)
                              else np.nan,
-                         "asymmetry_dstbl": scale_idx.get("dstbl", np.nan),
-                         "asymmetry_hessa": scale_idx.get("hessa", np.nan)})
+                         "asymmetry_dstbl_dg": scale_idx.get("dstbl", np.nan),
+                         "asymmetry_hessa_dg": scale_idx.get("hessa", np.nan),
+                         "asymmetry_dstbl_ddg": scale_dd.get("dstbl", np.nan),
+                         "asymmetry_hessa_ddg": scale_dd.get("hessa", np.nan)})
     if not rows:
         return {"status": "skipped", "reason": "no protein has enough TM variants"}
     t = pd.DataFrame(rows)
@@ -1053,14 +1079,16 @@ def i09b_symmetry(variants: dict, names: list[str], outdir: Path,
         col = ["#2166AC" if x > 0 else "#B2182B" for x in d.lumenal_minus_cytosolic]
         ax.scatter(d.asymmetry, ypos, s=34, facecolor=col, edgecolor=P.INK,
                    linewidth=0.4, zorder=4)
-        ax.scatter(d.asymmetry_dstbl, ypos, s=26, facecolor="none",
+        ax.scatter(d.asymmetry_dstbl_ddg, ypos, s=26, facecolor="none",
                    edgecolor="#C0392B", linewidth=0.9, zorder=3, marker="D")
+        ax.scatter(d.asymmetry_hessa_ddg, ypos, s=20, facecolor="none",
+                   edgecolor="#888888", linewidth=0.8, zorder=3, marker="s")
         for k, r in enumerate(d.itertuples()):
             if np.isfinite(r.q) and r.q < 0.05:
                 ax.text(1.0, k, "*", fontsize=9, va="center", ha="right",
                         transform=ax.get_yaxis_transform())
         ax.axvline(0, color="#C0392B", lw=0.9, ls=(0, (1, 2.5)))
-        ax.text(0.0, len(d) - 0.2, " Hessa = 0 for every residue", fontsize=6,
+        ax.text(0.0, len(d) - 0.2, " Hessa ΔG = 0 for every residue", fontsize=6,
                 color="#C0392B", va="top", ha="left")
         ax.set_yticks(ypos)
         ax.set_yticklabels(d.mut, fontsize=7)
@@ -1074,16 +1102,19 @@ def i09b_symmetry(variants: dict, names: list[str], outdir: Path,
     fig.suptitle("How tilted each residue's depth profile is, on a scale-free index: 0 "
                  "symmetric, 1 purely antisymmetric. Filled circle = the data, blue if "
                  "the substitution costs more towards the lumen and red if towards the "
-                 "cytosol; open diamond = dsTβL's value for the same residue; the "
-                 "dotted line at 0 is Hessa, which is symmetric by construction and "
-                 "cannot produce a tilt at all. * marks q < 0.05 against a "
-                 "depth-sign permutation null.", fontsize=7, x=0.01, ha="left")
+                 "cytosol. The open markers are the two scales' ΔΔG against the wild "
+                 "types actually present - diamond dsTβL, square Hessa - which can be "
+                 "tilted even for Hessa, because the sequence is not symmetric even "
+                 "though its table is. The dotted line is Hessa's ΔG profile, which is "
+                 "symmetric by construction. * marks q < 0.05 against a depth-sign "
+                 "permutation null.", fontsize=7, x=0.01, ha="left")
     P.save(fig, outdir, "i09b_profile_symmetry", None, "I09B")
     plt.close(fig)
     head = "; ".join(
         f"{g.replace('_fitness', '')} {int((d.q < 0.05).sum())}/{len(d)} residues "
-        f"asymmetric (median index {d.asymmetry.median():.2f} vs dsTβL "
-        f"{d.asymmetry_dstbl.median():.2f})" for g, d in t.groupby("protein"))
+        f"asymmetric (median index {d.asymmetry.median():.2f}; dsTβL ΔΔG "
+        f"{d.asymmetry_dstbl_ddg.median():.2f}, Hessa ΔΔG "
+        f"{d.asymmetry_hessa_ddg.median():.2f})" for g, d in t.groupby("protein"))
     return {"status": "ok", "headline": head, "by_residue": t.to_dict("records")}
 
 
@@ -1095,24 +1126,35 @@ def i09_profiles(variants: dict, names: list[str], outdir: Path,
     H-segment on x, the cost of putting that residue there on y - and the shapes carry
     the chemistry: a charge is a steep bell with its peak at the bilayer centre, a
     hydrophobe is flat or inverted, and tryptophan and tyrosine dip at the interfaces
-    where they actually sit. This draws the same twenty panels from the measurements
-    instead, so the two can be put side by side.
+    where they actually sit. This draws the same twenty panels from the measurements.
 
-    Blue is the data: the mean effect of substituting to that residue, averaged over
-    every TM position that sits at that depth in any helix. Red is the prediction, the
-    same residue's ddG profile from the active scale, on its own axis - the units are
-    not comparable, the shapes are, which is the whole comparison. Depth is expressed
-    as the scale expresses it, as position in a nineteen-residue segment, so x here and
-    x in table S2 mean the same thing.
+    TWO figures per protein, because a scale's per-residue value and the measurement
+    are not the same quantity:
 
-    One protein per figure, because twenty panels is already a page.
+      i09_profiles      red = the scale's dG profile for that residue, which is the
+                        published quantity: what it costs to HAVE this residue at this
+                        depth, one residue at a time.
+      i09_effect        red = the ddG of changing the wild types actually sitting at
+                        each depth into this residue. That is what the blue curve
+                        measures, so this is the comparison that is like for like.
+
+    Blue is the same in both: the mean effect of substituting to that residue, over
+    every TM position at that depth in any helix. The red axis is its own, with the
+    units named on it; the shapes are comparable, the values are not. Depth is
+    expressed as the scale expresses it, as position in a nineteen-residue segment,
+    so x here and x in table S2 mean the same thing.
     """
     from .annot import KYTE_DOOLITTLE as KD
     aas = list("ACDEFGHIKLMNPQRSTVWY")
     rows, out = [], {}
+    titles = {"dg": ("i09_profiles", "I09",
+                     f"Red = the {SCALE} {SCALE_DG[SCALE]} profile for this residue, "
+                     "the published quantity: the cost of HAVING it at that depth."),
+              "ddg": ("i09_effect", "I09",
+                      f"Red = the {SCALE} ΔΔG of changing the wild types actually at "
+                      "each depth into this residue - the quantity blue measures.")}
     for g in names:
-        v = variants[g].copy()
-        v = v.dropna(subset=["score_z", "z_ideal"])
+        v = variants[g].dropna(subset=["score_z", "z_ideal"]).copy()
         if len(v) < 200:
             continue
         # the scale's own coordinate: position in a 19-residue segment, -9 to +9
@@ -1120,82 +1162,110 @@ def i09_profiles(variants: dict, names: list[str], outdir: Path,
         # Nineteen single-residue columns is the published resolution and needs the
         # published number of measurements. One protein's twelve helices give only a
         # handful of residues at each depth for each mutant, so the positions are
-        # pooled into bins `bin_width` wide: fewer points, each of them an average of
-        # something rather than one or two variants.
+        # pooled into bins `bin_width` wide.
         if bin_width > 1:
             v["ipos"] = (np.rint(v.ipos / bin_width) * bin_width).astype(int)
-        filled = []
-        fig, axes = plt.subplots(4, 5, figsize=(11.0, 8.4), layout="constrained",
-                                 sharex=True, sharey=True)
-        flat = [axes[k // 5][k % 5] for k in range(20)]
-        # ONE prediction axis for all twenty panels, as the published figure has it.
-        # Letting each panel auto-scale its own red curve makes alanine - identically
-        # zero under dsTbL, since it is the reference - look as structured as arginine,
-        # and the comparison between residues is the entire point of drawing twenty.
-        # The prediction is a continuous function of depth and gets its own dense grid:
-        # drawing it only at the data's bin centres joined it with long straight
-        # segments and made a smooth scale look like a polyline. The blue curve stays
-        # on the bins, where each point is an average of real measurements.
-        xs_pred = np.linspace(-9, 9, 181)
-        allp = [residue_dg(a, x * HALF_WIDTH / 9.0) for a in aas for x in xs_pred]
-        pad = 0.05 * (max(allp) - min(allp) or 1.0)
-        plo, phi = min(allp) - pad, max(allp) + pad
-        for k, (ax, aa) in enumerate(zip(flat, aas)):
-            sub = v[v.mut == aa]
-            m = sub.groupby("ipos").agg(y=("score_z", "mean"), e=("score_z", "sem"),
-                                        n=("score_z", "size"))
-            m = m[m.n >= min_per_point].dropna(subset=["y"])
-            pred = [residue_dg(aa, x * HALF_WIDTH / 9.0) for x in xs_pred]
-            ax2 = ax.twinx()
-            # zero on the prediction axis too, in its own colour: with two axes in one
-            # panel a single zero line would be read as belonging to both, and "no
-            # predicted cost" sits somewhere quite different from "no measured effect"
-            ax2.axhline(0, color="#C0392B", lw=0.7, ls=(0, (1, 2.5)), zorder=1)
-            ax2.plot(xs_pred, pred, color="#C0392B", lw=1.3, zorder=2)
-            ax2.set_ylim(plo, phi)
-            ax2.tick_params(axis="y", labelsize=5, colors="#C0392B", length=2)
-            if k % 5 != 4:                      # only the right-hand column is labelled
-                ax2.set_yticklabels([])
-            elif k == 9:                        # and one of them carries the name
-                ax2.set_ylabel(f"ΔΔG, {SCALE} scale (kcal/mol, red)", fontsize=8,
-                               color="#C0392B")
-            if len(m) >= 3:
-                filled.append(float(m.n.median()))
-                ax.fill_between(m.index, m.y - m.e, m.y + m.e, color="#2166AC",
-                                alpha=0.2, lw=0, zorder=3)
-                ax.plot(m.index, m.y, "-", color="#2166AC", lw=1.6, zorder=4)
-                rho = float(ss.spearmanr(m.y, [residue_dg(aa, i * HALF_WIDTH / 9.0)
-                                               for i in m.index]).statistic)
-                rows.append({"protein": g, "mut": aa, "n_positions": int(len(m)),
-                             "n_variants": int(sub.score_z.notna().sum()),
-                             "mean_effect": float(sub.score_z.mean()),
-                             "delta_kd_from_mean_wt": float(
-                                 KD[aa] - np.mean([KD.get(w, np.nan)
-                                                   for w in sub.wt.dropna()])),
-                             "spearman_with_scale": rho,
-                             "effect_at_centre": float(m.y.reindex(
-                                 range(-2, 3)).mean()),
-                             "effect_at_edges": float(m.y.reindex(
-                                 [-9, -8, -7, 7, 8, 9]).mean())})
-            else:
-                ax.text(0.5, 0.5, "too few", transform=ax.transAxes, ha="center",
-                        va="center", fontsize=6, color=P.MUTED)
-            ax.axhline(0, color=P.MUTED, lw=0.5, ls=(0, (2, 3)))
-            ax.set_title(aa, fontsize=9, pad=2)
-            ax.set_xticks([-9, -6, -3, 0, 3, 6, 9])
-            ax.tick_params(labelsize=6)
-        fig.supxlabel("Position in the transmembrane segment "
-                      "(−9 = cytoplasmic end, +9 = lumenal end)", fontsize=8)
-        fig.supylabel("mean effect of substituting to this residue (blue)", fontsize=8)
 
-        fig.suptitle(f"{g.replace('_fitness', '')}: the measured counterpart of the "
-                     f"published per-residue profiles. Blue = the data, left axis. "
-                     f"Red = the {SCALE} ΔΔG profile for the same residue, on its own "
-                     "units but ONE axis shared by all twenty panels, so the residues "
-                     "can be compared with each other as well as with the data.",
-                     fontsize=7.5, x=0.01, ha="left")
-        P.save(fig, outdir, f"i09_profiles_{g.replace('_fitness', '')}", None, "I09")
-        plt.close(fig)
+        # The prediction is a continuous function of depth and gets its own dense
+        # grid: drawn only at the data's bin centres it became a polyline. The blue
+        # curve stays on the bins, where each point averages real measurements.
+        xs_pred = np.linspace(-9, 9, 181)
+        prof = {aa: np.array([residue_dg(aa, x * HALF_WIDTH / 9.0) for x in xs_pred])
+                for aa in aas}
+        matched = {}
+        for aa in aas:
+            sub = v[v.mut == aa]
+            matched[aa] = (sub.assign(_d=[residue_dg(aa, zz * HALF_WIDTH / 9.0)
+                                          - residue_dg(w, zz * HALF_WIDTH / 9.0)
+                                          for w, zz in zip(sub.wt, sub.ipos)])
+                           .groupby("ipos")._d.mean()) if len(sub) else pd.Series(
+                               dtype=float)
+        # ONE prediction axis per figure, as the published one has it: autoscaling
+        # each panel makes alanine, identically zero under dsTbL since it is the
+        # reference, look as structured as arginine.
+        lim = {}
+        for mode, series in (("dg", list(prof.values())),
+                             ("ddg", [x.to_numpy() for x in matched.values()])):
+            allp = np.concatenate([np.asarray(x, float) for x in series
+                                   if len(np.asarray(x, float))])
+            allp = allp[np.isfinite(allp)]
+            pad = 0.05 * (float(allp.max() - allp.min()) or 1.0)
+            lim[mode] = (float(allp.min()) - pad, float(allp.max()) + pad)
+
+        filled = []
+        for mode in ("dg", "ddg"):
+            name, tag, note = titles[mode]
+            fig, axes = plt.subplots(4, 5, figsize=(11.0, 8.4), layout="constrained",
+                                     sharex=True, sharey=True)
+            flat = [axes[k // 5][k % 5] for k in range(20)]
+            for k, (ax, aa) in enumerate(zip(flat, aas)):
+                sub = v[v.mut == aa]
+                m = sub.groupby("ipos").agg(y=("score_z", "mean"),
+                                            e=("score_z", "sem"),
+                                            n=("score_z", "size"))
+                m = m[m.n >= min_per_point].dropna(subset=["y"])
+                ax2 = ax.twinx()
+                # zero on the prediction axis too, in its own colour: with two axes in
+                # one panel a single zero line reads as belonging to both, and "no
+                # predicted cost" sits nowhere near "no measured effect"
+                ax2.axhline(0, color="#C0392B", lw=0.7, ls=(0, (1, 2.5)), zorder=1)
+                if mode == "dg":
+                    ax2.plot(xs_pred, prof[aa], color="#C0392B", lw=1.3, zorder=2)
+                elif len(matched[aa]) >= 3:
+                    ax2.plot(matched[aa].index, matched[aa].to_numpy(), "-o", ms=3,
+                             color="#C0392B", lw=1.3, zorder=2)
+                ax2.set_ylim(*lim[mode])
+                ax2.tick_params(axis="y", labelsize=5, colors="#C0392B", length=2)
+                if k % 5 != 4:              # only the right-hand column is labelled
+                    ax2.set_yticklabels([])
+                elif k == 9:                # and one of them carries the name
+                    ax2.set_ylabel(
+                        (f"{SCALE_DG[SCALE]}, {SCALE} (kcal/mol, red)" if mode == "dg"
+                         else f"ΔΔG from the wild type, {SCALE} (kcal/mol, red)"),
+                        fontsize=7.5, color="#C0392B")
+                if len(m) >= 3:
+                    ax.fill_between(m.index, m.y - m.e, m.y + m.e, color="#2166AC",
+                                    alpha=0.2, lw=0, zorder=3)
+                    ax.plot(m.index, m.y, "-", color="#2166AC", lw=1.6, zorder=4)
+                    if mode == "dg":
+                        filled.append(float(m.n.median()))
+                        rho = float(ss.spearmanr(
+                            m.y, [residue_dg(aa, i * HALF_WIDTH / 9.0)
+                                  for i in m.index]).statistic)
+                        md = matched[aa].reindex(m.index).dropna()
+                        rho_dd = (float(ss.spearmanr(
+                            m.y.reindex(md.index), md).statistic)
+                            if len(md) >= 3 else np.nan)
+                        rows.append({
+                            "protein": g, "mut": aa, "n_positions": int(len(m)),
+                            "n_variants": int(sub.score_z.notna().sum()),
+                            "mean_effect": float(sub.score_z.mean()),
+                            "delta_kd_from_mean_wt": float(
+                                KD[aa] - np.mean([KD.get(w, np.nan)
+                                                  for w in sub.wt.dropna()])),
+                            "spearman_with_scale_dg": rho,
+                            "spearman_with_scale_ddg": rho_dd,
+                            "effect_at_centre": float(m.y.reindex(range(-2, 3)).mean()),
+                            "effect_at_edges": float(
+                                m.y.reindex([-9, -8, -7, 7, 8, 9]).mean())})
+                else:
+                    ax.text(0.5, 0.5, "too few", transform=ax.transAxes, ha="center",
+                            va="center", fontsize=6, color=P.MUTED)
+                ax.axhline(0, color=P.MUTED, lw=0.5, ls=(0, (2, 3)))
+                ax.set_title(aa, fontsize=9, pad=2)
+                ax.set_xticks([-9, -6, -3, 0, 3, 6, 9])
+                ax.tick_params(labelsize=6)
+            fig.supxlabel("Position in the transmembrane segment "
+                          "(−9 = cytoplasmic end, +9 = lumenal end)", fontsize=8)
+            fig.supylabel("mean effect of substituting to this residue (blue)",
+                          fontsize=8)
+            fig.suptitle(f"{g.replace('_fitness', '')}: the measured counterpart of "
+                         f"the published per-residue profiles. Blue = the data, left "
+                         f"axis. {note} One red axis is shared by all twenty panels, "
+                         "so the residues can be compared with each other as well as "
+                         "with the data.", fontsize=7.5, x=0.01, ha="left")
+            P.save(fig, outdir, f"{name}_{g.replace('_fitness', '')}", None, tag)
+            plt.close(fig)
         med = float(np.median(filled)) if filled else 0.0
         print(f"    {g.replace('_fitness', ''):<12} bin width {bin_width} -> "
               f"{len(np.arange(-9, 10, max(bin_width, 1)))} points across the segment, "
@@ -1209,8 +1279,10 @@ def i09_profiles(variants: dict, names: list[str], outdir: Path,
     t = pd.DataFrame(rows)
     t.to_csv(outdir / "i09_profiles.csv", index=False)
     head = "; ".join(
-        f"{g.replace('_fitness', '')} {len(d)} residues drawn, median ρ with the scale "
-        f"{d.spearman_with_scale.median():+.2f}" for g, d in t.groupby("protein"))
+        f"{g.replace('_fitness', '')} {len(d)} residues drawn, median ρ with the "
+        f"scale {d.spearman_with_scale_dg.median():+.2f} (ΔG) and "
+        f"{d.spearman_with_scale_ddg.median():+.2f} (ΔΔG)"
+        for g, d in t.groupby("protein"))
     return {"status": "ok", "headline": head, "by_residue": t.to_dict("records")}
 
 

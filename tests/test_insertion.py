@@ -698,10 +698,12 @@ def test_i09_draws_twenty_panels_and_summarises_each_residue(tmp_path):
     assert r["status"] == "ok"
     got = {d["mut"] for d in r["by_residue"]}
     assert len(got) >= 18 and got <= set("ACDEFGHIKLMNPQRSTVWY")
+    # both comparisons get their own figure: the published dG and the matched ddG
     assert (tmp_path / "i09_profiles_T.png").exists()
+    assert (tmp_path / "i09_effect_T.png").exists()
     t = pd.read_csv(tmp_path / "i09_profiles.csv")
-    for c in ("mut", "n_positions", "spearman_with_scale", "effect_at_centre",
-              "effect_at_edges"):
+    for c in ("mut", "n_positions", "spearman_with_scale_dg",
+              "spearman_with_scale_ddg", "effect_at_centre", "effect_at_edges"):
         assert c in t.columns
     assert (t.n_positions >= 3).all()
 
@@ -845,6 +847,58 @@ def test_i09b_finds_a_planted_tilt_and_not_a_symmetric_bell(tmp_path):
     assert b["asymmetry"] > 0.7 and b["p_permutation"] < 0.05
     # the signed statistic says which way, and the tilt rises towards the lumen
     assert b["lumenal_minus_cytosolic"] > 0.3
-    assert a["asymmetry_hessa"] == pytest.approx(0.0, abs=1e-12)
+    # the dG profile is symmetric by construction; the ddG against the real wild
+    # types need not be, because the sequence either side of the centre differs
+    assert a["asymmetry_hessa_dg"] == pytest.approx(0.0, abs=1e-12)
+    assert np.isfinite(a["asymmetry_hessa_ddg"])
     assert (tmp_path / "i09b_profile_symmetry.csv").exists()
     assert (tmp_path / "i09b_profile_symmetry.png").exists()
+
+
+def test_a_scale_value_is_a_dg_and_only_a_difference_of_two_is_a_ddg():
+    """The distinction i09 labels: residue_dg is per residue, add_ddg forms the pair."""
+    # dsTbL quotes each residue against alanine, so alanine is zero and lysine is not
+    assert I.residue_dg("A", 0.0, "dstbl") == 0.0
+    assert I.residue_dg("K", 0.0, "dstbl") != 0.0
+    # Hessa is absolute, so even alanine costs something
+    assert I.residue_dg("A", 0.0, "hessa") == pytest.approx(0.13, abs=0.01)
+    # and a ddG is the difference, which is what the measurement corresponds to
+    d = pd.DataFrame({"wt": ["L"], "mut": ["K"], "z_ideal": [0.0]})
+    got = I.add_ddg(d, scale="hessa").ddg.iloc[0]
+    assert got == pytest.approx(I.residue_dg("K", 0.0, "hessa")
+                                - I.residue_dg("L", 0.0, "hessa"))
+    assert got != I.residue_dg("K", 0.0, "hessa")
+
+
+def test_hessas_ddg_can_be_tilted_even_though_its_table_cannot(tmp_path):
+    """The correction: a symmetric table still gives an asymmetric ddG, via the
+    sequence. The two halves of the membrane hold different wild-type residues."""
+    from mpdms.insertion import i09b_symmetry
+    rng = np.random.default_rng(7)
+    n = 1200
+    z = rng.uniform(-15, 15, n)
+    # wild types deliberately differ between the halves, as a real helix's do
+    wt = np.where(z < 0, rng.choice(list("LIVF"), n), rng.choice(list("STNQ"), n))
+    v = pd.DataFrame({"wt": wt, "mut": "K", "z_ideal": z, "helix": "TM1",
+                      "score_z": rng.normal(-0.5, 0.2, n)})
+    r = i09b_symmetry({"T": v}, ["T"], tmp_path, n_perm=200, n_boot=100)
+    row = [d for d in r["by_residue"] if d["mut"] == "K"][0]
+    assert row["asymmetry_hessa_dg"] == pytest.approx(0.0, abs=1e-12)
+    assert row["asymmetry_hessa_ddg"] > 0.2
+
+
+def test_i09_writes_a_dg_figure_and_an_effect_figure_from_one_pass(tmp_path):
+    """Two questions, two figures: what it costs to HAVE a residue there, and what it
+    costs to CHANGE the wild types that are there into it."""
+    from mpdms.insertion import i09_profiles
+    v = _tm_variants(n=3000, seed=36)
+    r = i09_profiles({"T": v}, ["T"], tmp_path)
+    assert r["status"] == "ok"
+    assert (tmp_path / "i09_profiles_T.png").exists()
+    assert (tmp_path / "i09_effect_T.png").exists()
+    # one table for both, with a correlation against each comparison
+    t = pd.read_csv(tmp_path / "i09_profiles.csv")
+    assert len(t) == len(set(t.mut))          # the stats are not collected twice
+    assert t.spearman_with_scale_dg.notna().any()
+    assert t.spearman_with_scale_ddg.notna().any()
+    assert not t.spearman_with_scale_dg.equals(t.spearman_with_scale_ddg)
