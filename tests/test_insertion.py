@@ -898,7 +898,49 @@ def test_i09_writes_a_dg_figure_and_an_effect_figure_from_one_pass(tmp_path):
     assert (tmp_path / "i09_effect_T.png").exists()
     # one table for both, with a correlation against each comparison
     t = pd.read_csv(tmp_path / "i09_profiles.csv")
-    assert len(t) == len(set(t.mut))          # the stats are not collected twice
+    # one row per (wild-type set, residue), and the stats are not collected per page
+    assert len(t) == len(t.drop_duplicates(["wt_set", "mut"]))
     assert t.spearman_with_scale_dg.notna().any()
     assert t.spearman_with_scale_ddg.notna().any()
     assert not t.spearman_with_scale_dg.equals(t.spearman_with_scale_ddg)
+
+
+def test_i09_writes_the_sign_flipped_and_hydrophobic_only_pages(tmp_path):
+    """Eight pages: {dG, ddG} x {all wild types, A/V/L/I} x {as measured, negated}."""
+    from mpdms.insertion import i09_profiles
+    r = i09_profiles({"T": _tm_variants(n=6000, seed=37)}, ["T"], tmp_path)
+    assert r["status"] == "ok"
+    for stem in ("i09_profiles", "i09_effect"):
+        for wt in ("", "_avli"):
+            for flip in ("", "_flip"):
+                assert (tmp_path / f"{stem}{wt}{flip}_T.png").exists(), (stem, wt, flip)
+    t = pd.read_csv(tmp_path / "i09_profiles.csv")
+    assert set(t.wt_set) == {"all", "avli"}
+
+
+def test_the_hydrophobic_pages_use_only_substitutions_from_a_v_l_or_i(tmp_path):
+    """The restriction is on the WILD type, so every panel is a change from a
+    comfortable hydrophobic baseline rather than a mixture of starting points."""
+    from mpdms.insertion import HYDROPHOBIC_WT, i09_profiles
+    assert set(HYDROPHOBIC_WT) == {"A", "V", "L", "I"}
+    v = _tm_variants(n=6000, seed=38)
+    r = i09_profiles({"T": v}, ["T"], tmp_path)
+    t = pd.DataFrame(r["by_residue"])
+    all_n = t[t.wt_set == "all"].set_index("mut").n_variants
+    avli_n = t[t.wt_set == "avli"].set_index("mut").n_variants
+    shared = all_n.index.intersection(avli_n.index)
+    assert len(shared) > 10
+    assert (avli_n[shared] < all_n[shared]).all()      # a strict subset everywhere
+    # and the subset is about the right size: four of nineteen possible wild types
+    assert 0.1 < float((avli_n[shared] / all_n[shared]).median()) < 0.4
+
+
+def test_a_dataset_with_no_hydrophobic_wild_types_skips_those_pages(tmp_path):
+    from mpdms.insertion import i09_profiles
+    v = _tm_variants(n=3000, seed=39)
+    v = v[~v.wt.isin(list("AVLI"))]
+    r = i09_profiles({"T": v}, ["T"], tmp_path)
+    assert r["status"] == "ok"
+    assert (tmp_path / "i09_profiles_T.png").exists()
+    assert not (tmp_path / "i09_profiles_avli_T.png").exists()
+    assert set(pd.DataFrame(r["by_residue"]).wt_set) == {"all"}

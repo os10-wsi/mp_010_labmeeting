@@ -1118,6 +1118,54 @@ def i09b_symmetry(variants: dict, names: list[str], outdir: Path,
     return {"status": "ok", "headline": head, "by_residue": t.to_dict("records")}
 
 
+HYDROPHOBIC_WT = ("A", "V", "L", "I")
+
+
+def _i09_panel_grid(v, aas, matched, prof, xs_pred, mode, flip, lim, min_per_point):
+    """One 4x5 page: blue measured profile per residue, red prediction on a twin axis."""
+    sgn = -1.0 if flip else 1.0
+    fig, axes = plt.subplots(4, 5, figsize=(11.0, 8.4), layout="constrained",
+                             sharex=True, sharey=True)
+    flat = [axes[k // 5][k % 5] for k in range(20)]
+    drawn = []
+    for k, (ax, aa) in enumerate(zip(flat, aas)):
+        sub = v[v.mut == aa]
+        m = sub.groupby("ipos").agg(y=("score_z", "mean"), e=("score_z", "sem"),
+                                    n=("score_z", "size"))
+        m = m[m.n >= min_per_point].dropna(subset=["y"])
+        ax2 = ax.twinx()
+        # zero on the prediction axis too, in its own colour: with two axes in one
+        # panel a single zero line reads as belonging to both, and "no predicted
+        # cost" sits nowhere near "no measured effect"
+        ax2.axhline(0, color="#C0392B", lw=0.7, ls=(0, (1, 2.5)), zorder=1)
+        if mode == "dg":
+            ax2.plot(xs_pred, sgn * prof[aa], color="#C0392B", lw=1.3, zorder=2)
+        elif len(matched[aa]) >= 3:
+            ax2.plot(matched[aa].index, sgn * matched[aa].to_numpy(), "-o", ms=3,
+                     color="#C0392B", lw=1.3, zorder=2)
+        ax2.set_ylim(*(sorted(sgn * np.array(lim[mode]))))
+        ax2.tick_params(axis="y", labelsize=5, colors="#C0392B", length=2)
+        if k % 5 != 4:                  # only the right-hand column is labelled
+            ax2.set_yticklabels([])
+        elif k == 9:                    # and one of them carries the name
+            base = (f"{SCALE_DG[SCALE]}" if mode == "dg" else "ΔΔG from the wild type")
+            ax2.set_ylabel(f"{'−' if flip else ''}{base}, {SCALE} (kcal/mol, red)",
+                           fontsize=7.5, color="#C0392B")
+        if len(m) >= 3:
+            drawn.append((aa, m, sub))
+            ax.fill_between(m.index, m.y - m.e, m.y + m.e, color="#2166AC", alpha=0.2,
+                            lw=0, zorder=3)
+            ax.plot(m.index, m.y, "-", color="#2166AC", lw=1.6, zorder=4)
+        else:
+            ax.text(0.5, 0.5, "too few", transform=ax.transAxes, ha="center",
+                    va="center", fontsize=6, color=P.MUTED)
+        ax.axhline(0, color=P.MUTED, lw=0.5, ls=(0, (2, 3)))
+        ax.set_title(aa, fontsize=9, pad=2)
+        ax.set_xticks([-9, -6, -3, 0, 3, 6, 9])
+        ax.tick_params(labelsize=6)
+    return fig, drawn
+
+
 def i09_profiles(variants: dict, names: list[str], outdir: Path,
                  min_per_point: int = 3, bin_width: int = 3) -> dict:
     """Hessa's figure, measured: one panel per mutant residue, effect against position.
@@ -1128,160 +1176,135 @@ def i09_profiles(variants: dict, names: list[str], outdir: Path,
     hydrophobe is flat or inverted, and tryptophan and tyrosine dip at the interfaces
     where they actually sit. This draws the same twenty panels from the measurements.
 
-    TWO figures per protein, because a scale's per-residue value and the measurement
-    are not the same quantity:
+    Eight pages per protein, from three independent choices.
 
-      i09_profiles      red = the scale's dG profile for that residue, which is the
-                        published quantity: what it costs to HAVE this residue at this
-                        depth, one residue at a time.
-      i09_effect        red = the ddG of changing the wild types actually sitting at
-                        each depth into this residue. That is what the blue curve
-                        measures, so this is the comparison that is like for like.
+    WHICH PREDICTION. A scale's per-residue value is a dG, the cost of HAVING that
+    residue at that depth; the measurement is the cost of CHANGING the wild type into
+    it, a ddG. `profiles` draws the dG, which is the published quantity, and `effect`
+    draws the ddG against the wild types actually present, which is what blue measures.
 
-    Blue is the same in both: the mean effect of substituting to that residue, over
-    every TM position at that depth in any helix. The red axis is its own, with the
-    units named on it; the shapes are comparable, the values are not. Depth is
-    expressed as the scale expresses it, as position in a nineteen-residue segment,
-    so x here and x in table S2 mean the same thing.
+    WHICH SIGN. Energy and effect run opposite ways: a costly substitution has a large
+    POSITIVE ddG and a large NEGATIVE effect, so the two curves mirror each other even
+    when they agree perfectly. The `flip` pages negate the energy axis, after which
+    agreement looks like agreement.
+
+    WHICH WILD TYPES. Pooling every wild type mixes L->K with D->K, which are not the
+    same experiment: the second starts from a residue the bilayer already disliked.
+    The `avli` pages keep only substitutions FROM alanine, valine, leucine or
+    isoleucine, so every panel is a change from a comfortable hydrophobic baseline and
+    the profile is about the residue arriving rather than the one leaving.
     """
     from .annot import KYTE_DOOLITTLE as KD
     aas = list("ACDEFGHIKLMNPQRSTVWY")
     rows, out = [], {}
-    titles = {"dg": ("i09_profiles", "I09",
-                     f"Red = the {SCALE} {SCALE_DG[SCALE]} profile for this residue, "
-                     "the published quantity: the cost of HAVING it at that depth."),
-              "ddg": ("i09_effect", "I09",
-                      f"Red = the {SCALE} ΔΔG of changing the wild types actually at "
-                      "each depth into this residue - the quantity blue measures.")}
     for g in names:
-        v = variants[g].dropna(subset=["score_z", "z_ideal"]).copy()
-        if len(v) < 200:
+        v0 = variants[g].dropna(subset=["score_z", "z_ideal"]).copy()
+        if len(v0) < 200:
             continue
         # the scale's own coordinate: position in a 19-residue segment, -9 to +9
-        v["ipos"] = np.clip(np.rint(v.z_ideal * (9.0 / HALF_WIDTH)), -9, 9).astype(int)
+        v0["ipos"] = np.clip(np.rint(v0.z_ideal * (9.0 / HALF_WIDTH)), -9, 9).astype(int)
         # Nineteen single-residue columns is the published resolution and needs the
-        # published number of measurements. One protein's twelve helices give only a
-        # handful of residues at each depth for each mutant, so the positions are
-        # pooled into bins `bin_width` wide.
+        # published number of measurements; one protein's helices give only a handful
+        # of residues at each depth per mutant, so depths are pooled bin_width wide.
         if bin_width > 1:
-            v["ipos"] = (np.rint(v.ipos / bin_width) * bin_width).astype(int)
-
-        # The prediction is a continuous function of depth and gets its own dense
-        # grid: drawn only at the data's bin centres it became a polyline. The blue
-        # curve stays on the bins, where each point averages real measurements.
+            v0["ipos"] = (np.rint(v0.ipos / bin_width) * bin_width).astype(int)
+        # the prediction is continuous in depth and gets its own dense grid; drawn at
+        # the data's bin centres it became a polyline
         xs_pred = np.linspace(-9, 9, 181)
         prof = {aa: np.array([residue_dg(aa, x * HALF_WIDTH / 9.0) for x in xs_pred])
                 for aa in aas}
-        matched = {}
-        for aa in aas:
-            sub = v[v.mut == aa]
-            matched[aa] = (sub.assign(_d=[residue_dg(aa, zz * HALF_WIDTH / 9.0)
-                                          - residue_dg(w, zz * HALF_WIDTH / 9.0)
-                                          for w, zz in zip(sub.wt, sub.ipos)])
-                           .groupby("ipos")._d.mean()) if len(sub) else pd.Series(
-                               dtype=float)
-        # ONE prediction axis per figure, as the published one has it: autoscaling
-        # each panel makes alanine, identically zero under dsTbL since it is the
-        # reference, look as structured as arginine.
-        lim = {}
-        for mode, series in (("dg", list(prof.values())),
-                             ("ddg", [x.to_numpy() for x in matched.values()])):
-            allp = np.concatenate([np.asarray(x, float) for x in series
-                                   if len(np.asarray(x, float))])
-            allp = allp[np.isfinite(allp)]
-            pad = 0.05 * (float(allp.max() - allp.min()) or 1.0)
-            lim[mode] = (float(allp.min()) - pad, float(allp.max()) + pad)
-
-        filled = []
-        for mode in ("dg", "ddg"):
-            name, tag, note = titles[mode]
-            fig, axes = plt.subplots(4, 5, figsize=(11.0, 8.4), layout="constrained",
-                                     sharex=True, sharey=True)
-            flat = [axes[k // 5][k % 5] for k in range(20)]
-            for k, (ax, aa) in enumerate(zip(flat, aas)):
+        for wt_set, tag_wt in (("all", ""), ("avli", "_avli")):
+            v = v0 if wt_set == "all" else v0[v0.wt.isin(HYDROPHOBIC_WT)]
+            if len(v) < 100:
+                continue
+            matched = {}
+            for aa in aas:
                 sub = v[v.mut == aa]
-                m = sub.groupby("ipos").agg(y=("score_z", "mean"),
-                                            e=("score_z", "sem"),
-                                            n=("score_z", "size"))
-                m = m[m.n >= min_per_point].dropna(subset=["y"])
-                ax2 = ax.twinx()
-                # zero on the prediction axis too, in its own colour: with two axes in
-                # one panel a single zero line reads as belonging to both, and "no
-                # predicted cost" sits nowhere near "no measured effect"
-                ax2.axhline(0, color="#C0392B", lw=0.7, ls=(0, (1, 2.5)), zorder=1)
-                if mode == "dg":
-                    ax2.plot(xs_pred, prof[aa], color="#C0392B", lw=1.3, zorder=2)
-                elif len(matched[aa]) >= 3:
-                    ax2.plot(matched[aa].index, matched[aa].to_numpy(), "-o", ms=3,
-                             color="#C0392B", lw=1.3, zorder=2)
-                ax2.set_ylim(*lim[mode])
-                ax2.tick_params(axis="y", labelsize=5, colors="#C0392B", length=2)
-                if k % 5 != 4:              # only the right-hand column is labelled
-                    ax2.set_yticklabels([])
-                elif k == 9:                # and one of them carries the name
-                    ax2.set_ylabel(
-                        (f"{SCALE_DG[SCALE]}, {SCALE} (kcal/mol, red)" if mode == "dg"
-                         else f"ΔΔG from the wild type, {SCALE} (kcal/mol, red)"),
-                        fontsize=7.5, color="#C0392B")
-                if len(m) >= 3:
-                    ax.fill_between(m.index, m.y - m.e, m.y + m.e, color="#2166AC",
-                                    alpha=0.2, lw=0, zorder=3)
-                    ax.plot(m.index, m.y, "-", color="#2166AC", lw=1.6, zorder=4)
-                    if mode == "dg":
-                        filled.append(float(m.n.median()))
-                        rho = float(ss.spearmanr(
-                            m.y, [residue_dg(aa, i * HALF_WIDTH / 9.0)
-                                  for i in m.index]).statistic)
-                        md = matched[aa].reindex(m.index).dropna()
-                        rho_dd = (float(ss.spearmanr(
-                            m.y.reindex(md.index), md).statistic)
-                            if len(md) >= 3 else np.nan)
-                        rows.append({
-                            "protein": g, "mut": aa, "n_positions": int(len(m)),
-                            "n_variants": int(sub.score_z.notna().sum()),
-                            "mean_effect": float(sub.score_z.mean()),
-                            "delta_kd_from_mean_wt": float(
-                                KD[aa] - np.mean([KD.get(w, np.nan)
-                                                  for w in sub.wt.dropna()])),
-                            "spearman_with_scale_dg": rho,
-                            "spearman_with_scale_ddg": rho_dd,
-                            "effect_at_centre": float(m.y.reindex(range(-2, 3)).mean()),
-                            "effect_at_edges": float(
-                                m.y.reindex([-9, -8, -7, 7, 8, 9]).mean())})
-                else:
-                    ax.text(0.5, 0.5, "too few", transform=ax.transAxes, ha="center",
-                            va="center", fontsize=6, color=P.MUTED)
-                ax.axhline(0, color=P.MUTED, lw=0.5, ls=(0, (2, 3)))
-                ax.set_title(aa, fontsize=9, pad=2)
-                ax.set_xticks([-9, -6, -3, 0, 3, 6, 9])
-                ax.tick_params(labelsize=6)
-            fig.supxlabel("Position in the transmembrane segment "
-                          "(−9 = cytoplasmic end, +9 = lumenal end)", fontsize=8)
-            fig.supylabel("mean effect of substituting to this residue (blue)",
-                          fontsize=8)
-            fig.suptitle(f"{g.replace('_fitness', '')}: the measured counterpart of "
-                         f"the published per-residue profiles. Blue = the data, left "
-                         f"axis. {note} One red axis is shared by all twenty panels, "
-                         "so the residues can be compared with each other as well as "
-                         "with the data.", fontsize=7.5, x=0.01, ha="left")
-            P.save(fig, outdir, f"{name}_{g.replace('_fitness', '')}", None, tag)
-            plt.close(fig)
-        med = float(np.median(filled)) if filled else 0.0
-        print(f"    {g.replace('_fitness', ''):<12} bin width {bin_width} -> "
-              f"{len(np.arange(-9, 10, max(bin_width, 1)))} points across the segment, "
-              f"median {med:.0f} measurements behind each"
-              + ("  (try --profile-bin 1 for the published 19-column resolution)"
-                 if med >= 3 * max(min_per_point, 1) and bin_width > 1 else ""),
-              flush=True)
+                matched[aa] = (sub.assign(_d=[residue_dg(aa, zz * HALF_WIDTH / 9.0)
+                                              - residue_dg(w, zz * HALF_WIDTH / 9.0)
+                                              for w, zz in zip(sub.wt, sub.ipos)])
+                               .groupby("ipos")._d.mean()) if len(sub) else pd.Series(
+                                   dtype=float)
+            # ONE prediction axis per page, as the published figure has it: letting
+            # each panel autoscale makes alanine, identically zero under dsTbL since
+            # it is the reference, look as structured as arginine
+            lim = {}
+            for mode, series in (("dg", list(prof.values())),
+                                 ("ddg", [x.to_numpy() for x in matched.values()])):
+                allp = [np.asarray(x, float) for x in series if len(np.asarray(x, float))]
+                allp = np.concatenate(allp) if allp else np.array([0.0, 1.0])
+                allp = allp[np.isfinite(allp)]
+                pad = 0.05 * (float(allp.max() - allp.min()) or 1.0)
+                lim[mode] = (float(allp.min()) - pad, float(allp.max()) + pad)
+
+            for mode in ("dg", "ddg"):
+                for flip in (False, True):
+                    fig, drawn = _i09_panel_grid(v, aas, matched, prof, xs_pred, mode,
+                                                 flip, lim, min_per_point)
+                    stem = ("i09_profiles" if mode == "dg" else "i09_effect")
+                    what = ("the scale's " + SCALE_DG[SCALE] + " for this residue, the "
+                            "published quantity: the cost of HAVING it there"
+                            if mode == "dg" else
+                            "the ΔΔG of changing the wild types actually at each depth "
+                            "into this residue, which is what blue measures")
+                    fig.supxlabel("Position in the transmembrane segment "
+                                  "(−9 = cytoplasmic end, +9 = lumenal end)", fontsize=8)
+                    fig.supylabel("mean effect of substituting to this residue (blue)",
+                                  fontsize=8)
+                    fig.suptitle(
+                        f"{g.replace('_fitness', '')}"
+                        + (" — from A, V, L or I only" if wt_set == "avli" else "")
+                        + f": blue = the data, left axis. Red = {what}"
+                        + (", NEGATED so that agreement with the data looks like "
+                           "agreement rather than a mirror image" if flip else "")
+                        + ". One red axis is shared by all twenty panels.",
+                        fontsize=7.5, x=0.01, ha="left")
+                    P.save(fig, outdir,
+                           f"{stem}{tag_wt}{'_flip' if flip else ''}_"
+                           f"{g.replace('_fitness', '')}", None, "I09")
+                    plt.close(fig)
+                    if mode == "dg" and not flip:
+                        for aa, m, sub in drawn:
+                            md = matched[aa].reindex(m.index).dropna()
+                            rows.append({
+                                "protein": g, "wt_set": wt_set, "mut": aa,
+                                "n_positions": int(len(m)),
+                                "n_variants": int(sub.score_z.notna().sum()),
+                                "mean_effect": float(sub.score_z.mean()),
+                                "delta_kd_from_mean_wt": float(
+                                    KD[aa] - np.mean([KD.get(w, np.nan)
+                                                      for w in sub.wt.dropna()])),
+                                "spearman_with_scale_dg": float(ss.spearmanr(
+                                    m.y, [residue_dg(aa, i * HALF_WIDTH / 9.0)
+                                          for i in m.index]).statistic),
+                                "spearman_with_scale_ddg": float(ss.spearmanr(
+                                    m.y.reindex(md.index), md).statistic)
+                                if len(md) >= 3 else np.nan,
+                                "median_n_per_point": float(m.n.median()),
+                                "effect_at_centre": float(
+                                    m.y.reindex(range(-2, 3)).mean()),
+                                "effect_at_edges": float(
+                                    m.y.reindex([-9, -8, -7, 7, 8, 9]).mean())})
+            med = float(np.median([r["median_n_per_point"] for r in rows
+                                   if r["protein"] == g and r["wt_set"] == wt_set]
+                                  or [0.0]))
+            print(f"    {g.replace('_fitness', ''):<12} {wt_set:<4} bin width "
+                  f"{bin_width} -> "
+                  f"{len(np.arange(-9, 10, max(bin_width, 1)))} points, median "
+                  f"{med:.0f} measurements behind each"
+                  + ("  (try --profile-bin 1 for the published 19 columns)"
+                     if med >= 3 * max(min_per_point, 1) and bin_width > 1 else ""),
+                  flush=True)
         out[g] = True
     if not rows:
         return {"status": "skipped", "reason": "no protein has enough TM variants"}
     t = pd.DataFrame(rows)
     t.to_csv(outdir / "i09_profiles.csv", index=False)
     head = "; ".join(
-        f"{g.replace('_fitness', '')} {len(d)} residues drawn, median ρ with the "
-        f"scale {d.spearman_with_scale_dg.median():+.2f} (ΔG) and "
-        f"{d.spearman_with_scale_ddg.median():+.2f} (ΔΔG)"
+        f"{g.replace('_fitness', '')} {d.wt_set.nunique()} wild-type sets, "
+        f"{len(d[d.wt_set == 'all'])} residues, median ρ(ΔΔG) "
+        f"{d[d.wt_set == 'all'].spearman_with_scale_ddg.median():+.2f} all / "
+        f"{d[d.wt_set == 'avli'].spearman_with_scale_ddg.median():+.2f} AVLI"
         for g, d in t.groupby("protein"))
     return {"status": "ok", "headline": head, "by_residue": t.to_dict("records")}
 

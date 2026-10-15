@@ -670,13 +670,25 @@ family of tests.
 
 I09 is the published scales' own presentation turned on the measurements: the
 twenty-panel grid where a charge is a bell peaked at the bilayer centre and a
-hydrophobe is flat. It writes **two figures per protein**, because a scale's per-residue value and
-the measurement are different quantities. `i09_profiles_<ID>` has the scale's **ΔG**
-profile in red, the published quantity — what it costs to *have* that residue at that
-depth. `i09_effect_<ID>` has the **ΔΔG** of changing the wild types actually present
-at each depth into it, which is what the blue curve measures, since substituting *to*
-a residue is a difference. Blue is identical in both; `i09_profiles.csv` carries a
-rank correlation against each. x is the scale's own coordinate — position in a nineteen-residue
+hydrophobe is flat. It writes **eight pages per protein**, from three independent choices:
+
+| choice | pages |
+| --- | --- |
+| which prediction | `i09_profiles` = the scale's **ΔG**, the published quantity, what it costs to *have* that residue there; `i09_effect` = the **ΔΔG** of changing the wild types actually present into it, which is what blue measures |
+| which sign | plain, and `_flip`, which negates the energy axis |
+| which wild types | all of them, and `_avli`, keeping only substitutions **from** A, V, L or I |
+
+The sign matters because energy and effect run opposite ways — a costly substitution
+has a large *positive* ΔΔG and a large *negative* effect — so the two curves mirror
+each other even when they agree perfectly. On the `_flip` pages agreement looks like
+agreement.
+
+The wild-type restriction matters because pooling every wild type mixes L→K with D→K,
+and those are not the same experiment: the second starts from a residue the bilayer
+already disliked. On the `_avli` pages every panel is a change from a comfortable
+hydrophobic baseline, so the profile is about the residue arriving rather than the one
+leaving. `i09_profiles.csv` carries a row per (wild-type set, residue) with a rank
+correlation against each prediction. x is the scale's own coordinate — position in a nineteen-residue
 segment, so it means the same thing here as in table S2 — and positions are pooled
 into bins `--profile-bin` wide (default 3, giving seven points across the segment)
 because a (residue, depth) cell holds only about as many measurements as the protein
