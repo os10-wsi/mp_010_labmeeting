@@ -264,6 +264,73 @@ def t01_overall(data: dict, names: list[str], outdir: Path,
                                   f"n {r.n:,}" for r in t.itertuples())}
 
 
+def _class_scatter(data: dict, names: list[str], outdir: Path, stats: pd.DataFrame,
+                   method: str) -> None:
+    """One scatter per protein per class, on shared axes: the data behind t02.
+
+    A correlation with an interval says how strong the relationship is but not what
+    shape it has, and the two failures that matter here look identical in a forest: a
+    predictor that is simply wrong in the lipid-facing class, and one that is right
+    about a handful of extreme variants and flat everywhere else. The axes are shared
+    across the whole figure so the classes can be compared by eye, and the limits are
+    cut to the central 99% of each axis so one outlier cannot set the scale.
+
+    The correlations drawn here are the ones t02 computed, never recomputed, so the
+    figure and the table cannot disagree.
+    """
+    have = [c for c in BCLASSES if (stats.bclass == c).any()]
+    if not have:
+        return
+    n_r, n_c = len(names), len(have)
+    fig, axes = plt.subplots(n_r, n_c, figsize=(2.25 * n_c + 0.8, 2.15 * n_r + 0.9),
+                             squeeze=False, sharex=True, sharey=True,
+                             layout="constrained")
+    allv = pd.concat([data[g]["var"] for g in names], ignore_index=True)
+    xlo, xhi = np.nanpercentile(allv.ddg, [0.5, 99.5])
+    ylo, yhi = np.nanpercentile(allv.score_z, [0.5, 99.5])
+    xpad, ypad = 0.05 * (xhi - xlo), 0.05 * (yhi - ylo)
+    for i, g in enumerate(names):
+        d = data[g]["var"]
+        for j, c in enumerate(have):
+            ax = axes[i][j]
+            sub = d[d.bclass == c]
+            row = stats[(stats.protein == g) & (stats.bclass == c)]
+            if len(sub):
+                ax.scatter(sub.ddg, sub.score_z, s=5, color=BCOLORS[c], lw=0,
+                           alpha=0.45, rasterized=True)
+            if len(row) and len(sub) > 2 and sub.ddg.nunique() > 2:
+                r = row.iloc[0]
+                b, a = np.polyfit(sub.ddg.astype(float), sub.score_z.astype(float), 1)
+                xs = np.array([max(xlo, sub.ddg.min()), min(xhi, sub.ddg.max())])
+                ax.plot(xs, a + b * xs, color=P.INK, lw=1.1, ls=(0, (4, 2)), zorder=5)
+                sym = "ρ" if method == "spearman" else "r"
+                ax.text(0.04, 0.06, f"{sym} = {r['r']:+.2f}\n[{r['lo']:+.2f}, "
+                                    f"{r['hi']:+.2f}]\nn = {int(r['n']):,}",
+                        transform=ax.transAxes, fontsize=5.8, va="bottom", color=P.INK)
+            elif not len(sub):
+                ax.text(0.5, 0.5, "no variants", transform=ax.transAxes, ha="center",
+                        va="center", fontsize=6, color=P.MUTED)
+            ax.axhline(0, color=P.MUTED, lw=0.5)
+            ax.axhline(-1, color="#B2182B", lw=0.5, ls=(0, (1, 2)))
+            ax.axvline(0, color=P.MUTED, lw=0.5, ls=(0, (1, 2)))
+            if i == 0:
+                # a plain title, not the "(a) name" form the paper style relabels, so
+                # the column keeps saying which class it is in every style
+                ax.set_title(BLABEL[c], fontsize=7, color=BCOLORS[c])
+            if j == 0:
+                ax.set_ylabel(f"{short_name(g)}\nnormalised fitness", fontsize=7)
+    axes[0][0].set_xlim(xlo - xpad, xhi + xpad)
+    axes[0][0].set_ylim(ylo - ypad, yhi + ypad)
+    fig.supxlabel(DDG_LABEL, fontsize=8)
+    _suptitle(fig, "The data behind t02: one row per protein, one column per "
+                   "environment, on shared axes. The dashed line is an ordinary "
+                   "least-squares fit through that panel, drawn to show the shape; the "
+                   "quoted correlation and interval are the ones t02 computed, with "
+                   "positions bootstrapped. Axes are cut to the central 99%.")
+    P.save(fig, outdir, "t02b_scatter_by_class", None, "T02")
+    plt.close(fig)
+
+
 # ------------------------------------------------- t02 the same, split by environment
 def t02_by_class(data: dict, names: list[str], outdir: Path,
                  method: str = "spearman", cols: int = 2) -> dict:
@@ -321,12 +388,13 @@ def t02_by_class(data: dict, names: list[str], outdir: Path,
                  "trained on soluble proteins is expected to do best in the packed "
                  "core; the lipid-facing surface is buried but chemically unlike "
                  "anything in its training set. Intervals bootstrap positions.")
-    P.save(fig, outdir, "t02_correlation_by_class", None, "T02")
+    P.save(fig, outdir, "t02a_correlation_by_class", None, "T02")
     plt.close(fig)
     if not rows:
         return {"status": "skipped", "reason": "no class has enough variants"}
     t = pd.DataFrame(rows)
     t.to_csv(outdir / "t02_correlation_by_class.csv", index=False)
+    _class_scatter(data, names, outdir, t, method)
     dt = pd.DataFrame(diffs)
     if len(dt):
         dt.to_csv(outdir / "t02_class_differences.csv", index=False)

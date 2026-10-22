@@ -178,6 +178,42 @@ def test_t02_writes_its_own_files_and_keeps_the_classes_apart(tmp_path):
     assert (d.contrast == "core − lipid").any()
     assert (tmp_path / "t02_correlation_by_class.csv").exists()
     assert (tmp_path / "t02_class_differences.csv").exists()
+    # the forest and the scatter behind it are both written, under their own names
+    assert (tmp_path / "t02a_correlation_by_class.png").exists()
+    assert (tmp_path / "t02b_scatter_by_class.png").exists()
+
+
+def test_the_scatter_takes_its_numbers_from_the_table_it_is_given(tmp_path):
+    """The figure must not recompute a correlation: one source, so they cannot drift.
+
+    It is handed a stats table that disagrees with the data on purpose; drawing it
+    without complaint is the evidence that the panel annotation comes from the table
+    t02 wrote and not from a second calculation inside the plotting code.
+    """
+    core = _pair(30, -2.5, seed=16, bclass="core", rsa=0.05)
+    lipid = _pair(30, 0.0, seed=17, bclass="lipid", rsa=0.45)
+    lipid["pos"] = lipid.pos + 100
+    data = {"SYN": {"var": pd.concat([core, lipid], ignore_index=True),
+                    "merge": {"offset": 0, "wt_agreement": 1.0}}}
+    stats = pd.DataFrame([{"protein": "SYN", "bclass": "core", "r": -0.99,
+                           "lo": -1.0, "hi": -0.98, "n": 240},
+                          {"protein": "SYN", "bclass": "lipid", "r": 0.42,
+                           "lo": 0.3, "hi": 0.5, "n": 240}])
+    before = stats.copy()
+    S._class_scatter(data, ["SYN"], tmp_path, stats, "spearman")
+    assert (tmp_path / "t02b_scatter_by_class.png").exists()
+    pd.testing.assert_frame_equal(stats, before)
+
+
+def test_the_scatter_survives_a_class_with_no_variants(tmp_path):
+    core = _pair(30, -2.0, seed=18, bclass="core", rsa=0.05)
+    data = {"SYN": {"var": core, "merge": {"offset": 0, "wt_agreement": 1.0}}}
+    stats = pd.DataFrame([{"protein": "SYN", "bclass": "core", "r": -0.7,
+                           "lo": -0.8, "hi": -0.6, "n": 240},
+                          {"protein": "SYN", "bclass": "aqueous", "r": np.nan,
+                           "lo": np.nan, "hi": np.nan, "n": 0}])
+    S._class_scatter(data, ["SYN"], tmp_path, stats, "spearman")
+    assert (tmp_path / "t02b_scatter_by_class.png").exists()
 
 
 def test_t03_contrasts_buried_against_exposed(tmp_path):

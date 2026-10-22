@@ -920,7 +920,7 @@ correlation near zero that looks like a result. Override with `--offset`.
 | | question | what the answer looks like |
 | --- | --- | --- |
 | T01 | does predicted ΔΔG track fitness at all? | one density scatter and one ρ per protein — the number people usually quote |
-| T02 | **does it track it equally well everywhere?** | the same ρ inside core, cavity, lipid-facing and aqueous, with core − class differences bootstrapped and tested |
+| T02 | **does it track it equally well everywhere?** | T02a: the same ρ inside core, cavity, lipid-facing and aqueous, with core − class differences bootstrapped and tested. T02b: the scatter behind it — one row per protein, one column per environment, shared axes, each panel quoting the ρ T02a computed |
 | T03 | the same without a class boundary | ρ as a curve against RSA, plus the buried (< 0.15) − exposed (≥ 0.35) contrast |
 
 **T02 is the point of the module.** ThermoMPNN is trained on soluble proteins, where
