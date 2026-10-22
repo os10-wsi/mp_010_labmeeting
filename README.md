@@ -901,6 +901,40 @@ functional is the same position here.
 Nothing is pooled across proteins. Every panel is one protein, in the order the configs
 are given on the command line.
 
+### A stability predictor, asked separately in each environment
+
+```bash
+python -m mpdms stability configs/AQR1_fitness.yaml configs/HXT1.yaml \
+    --ddg AQR1_fitness=ThermoMPNN_inference_P53943.csv \
+    --ddg HXT1=ThermoMPNN_inference_P39004.csv
+```
+
+The prediction file is a ThermoMPNN inference CSV (`position`, `wildtype`, `mutation`,
+`ddG_pred`; other spellings are accepted). Give it per protein with `--ddg ID=PATH`, or
+put the path in the config as `predictions.thermompnn`. Numbering is reconciled by
+**wild-type agreement**, not assumed: the offset that matches the most residues wins,
+and a best offset below 95 % agreement **stops the protein** rather than warning —
+a wrong offset produces a full table of predictions belonging to other residues and a
+correlation near zero that looks like a result. Override with `--offset`.
+
+| | question | what the answer looks like |
+| --- | --- | --- |
+| T01 | does predicted ΔΔG track fitness at all? | one density scatter and one ρ per protein — the number people usually quote |
+| T02 | **does it track it equally well everywhere?** | the same ρ inside core, cavity, lipid-facing and aqueous, with core − class differences bootstrapped and tested |
+| T03 | the same without a class boundary | ρ as a curve against RSA, plus the buried (< 0.15) − exposed (≥ 0.35) contrast |
+
+**T02 is the point of the module.** ThermoMPNN is trained on soluble proteins, where
+"buried" means water-excluded packing. A membrane protein breaks that equivalence: the
+lipid-facing surface is as water-excluded as a soluble core while being chemically its
+opposite, and the cavity is water in the middle of the membrane. A single
+whole-protein correlation averages those worlds and describes none of them.
+
+**Every interval bootstraps positions, not variants.** Nineteen substitutions at one
+residue are not nineteen independent tests of a predictor — they share that residue's
+context — and resampling variants gives intervals several times too narrow. The
+core-minus-class difference is bootstrapped directly rather than read off two
+overlapping intervals, which is not a test.
+
 ### What solvent accessibility does, and does not, say
 
 ```bash
