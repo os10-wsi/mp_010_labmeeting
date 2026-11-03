@@ -8,6 +8,7 @@ computed on variants that pass the read/replicate filters.
 from __future__ import annotations
 
 import json
+import os
 import re
 from pathlib import Path
 
@@ -387,14 +388,33 @@ def anchors(df: pd.DataFrame, col: str, cfg: Config, wt_score: float | None = No
 
 
 # -------------------------------------------------------------------- main
-def load_dataset(cfg: Config, use_cache: bool = False) -> pd.DataFrame:
+def load_dataset(cfg: Config, use_cache: bool | None = None) -> pd.DataFrame:
+    """The canonical long table for one protein, from its source or from the cache.
+
+    Every call writes `data/processed/<id>.parquet` and its `.meta.json` at the end.
+    Reading them back is opt-in: pass `use_cache=True`, or set MPDMS_CACHE=1 to turn
+    it on for a whole run. It is off by default because a cache that is read without
+    being asked for is a cache that silently answers with yesterday's numbers after
+    someone edits a config or a filter.
+
+    Even when it is on, a cache older than the source table is ignored and the table is
+    rebuilt: the common way to get a wrong answer here is to change the input and not
+    notice that nothing downstream changed.
+    """
     proc = cfg.resolve(f"data/processed/{cfg.id}.parquet")
+    if use_cache is None:
+        use_cache = os.environ.get("MPDMS_CACHE", "").strip().lower() in ("1", "true", "yes")
     if use_cache and proc.exists():
-        df = pd.read_parquet(proc)
-        meta_p = proc.with_suffix(".meta.json")
-        if meta_p.exists():
-            df.attrs.update(json.loads(meta_p.read_text()))
-        return df
+        src = cfg.resolve(cfg.source.path)
+        stale = (src is not None and src.exists()
+                 and src.stat().st_mtime > proc.stat().st_mtime)
+        if not stale:
+            df = pd.read_parquet(proc)
+            meta_p = proc.with_suffix(".meta.json")
+            if meta_p.exists():
+                df.attrs.update(json.loads(meta_p.read_text()))
+            df.attrs["loaded_from"] = str(proc)
+            return df
 
     raw = read_source(cfg.resolve(cfg.source.path))
     colmap = detect_columns(raw, cfg)

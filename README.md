@@ -41,6 +41,23 @@ Everything below is the longer route, for when a dataset needs something the one
 cannot guess.
 
 ## Running it from the repository
+### The processed-table cache
+
+Every `load_dataset` writes `data/processed/<id>.parquet` and `<id>.meta.json`. Reading
+them back is **opt-in**:
+
+```bash
+MPDMS_CACHE=1 python -m mpdms bayes --family hexose=configs/HXT1.yaml,...
+```
+
+Off by default, because a cache read without being asked for answers with yesterday's
+numbers after someone edits a config or a filter. Even with it on, a parquet older than
+its source table is ignored and the table is rebuilt. A table that came from the cache
+carries `loaded_from` in its `attrs`.
+
+The cache is keyed by **config id**, not by file name: `data/processed/HXT1.parquet`
+belongs to the config whose `id:` is `HXT1`.
+
 
 Three places this runs, and they are not interchangeable:
 

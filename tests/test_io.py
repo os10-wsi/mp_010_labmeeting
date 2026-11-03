@@ -317,3 +317,53 @@ def test_zero_anchor_can_be_asked_for_explicitly(tmp_path):
                normalization={"zero_anchor": "wild_type"})
     df = load_dataset(cfg)
     assert df.attrs["normalization"]["score"]["syn_source"] == "wild_type"
+
+
+# ----------------------------------------------- the processed-table cache, opt-in
+def test_the_cache_is_written_every_time_but_never_read_unless_asked(tmp_path):
+    """A cache read without being asked for is one that answers with yesterday's run."""
+    rng = np.random.default_rng(0)
+    cfg = _cfg(tmp_path, _toy(rng))
+    first = load_dataset(cfg)
+    proc = tmp_path / "TST1.parquet"
+    assert proc.exists()                      # written on an ordinary load
+    assert "loaded_from" not in first.attrs    # but that load built the table itself
+
+    # corrupt the cache: if a default load read it, the rows would come back wrong
+    pd.DataFrame({"pos": [1], "wt": ["M"], "mut": ["A"], "score_z": [99.0]}).to_parquet(
+        proc, index=False)
+    again = load_dataset(cfg)
+    assert len(again) == len(first)
+    assert "loaded_from" not in again.attrs
+
+
+def test_the_cache_is_used_when_asked_for_by_flag_or_by_environment(tmp_path, monkeypatch):
+    rng = np.random.default_rng(1)
+    cfg = _cfg(tmp_path, _toy(rng))
+    built = load_dataset(cfg)
+    proc = tmp_path / "TST1.parquet"
+    assert proc.exists()
+
+    by_flag = load_dataset(cfg, use_cache=True)
+    assert by_flag.attrs.get("loaded_from") == str(proc)
+    assert len(by_flag) == len(built)
+
+    monkeypatch.setenv("MPDMS_CACHE", "1")
+    by_env = load_dataset(cfg)
+    assert by_env.attrs.get("loaded_from") == str(proc)
+
+
+def test_a_cache_older_than_its_source_is_ignored(tmp_path, monkeypatch):
+    """Editing the input and seeing nothing change downstream is the failure to avoid."""
+    import os
+    rng = np.random.default_rng(2)
+    cfg = _cfg(tmp_path, _toy(rng))
+    load_dataset(cfg)
+    proc = tmp_path / "TST1.parquet"
+    monkeypatch.setenv("MPDMS_CACHE", "1")
+    assert load_dataset(cfg).attrs.get("loaded_from") == str(proc)
+
+    src = Path(cfg.source.path)
+    os.utime(src, (proc.stat().st_mtime + 10, proc.stat().st_mtime + 10))
+    rebuilt = load_dataset(cfg)
+    assert "loaded_from" not in rebuilt.attrs
