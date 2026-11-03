@@ -901,6 +901,33 @@ functional is the same position here.
 Nothing is pooled across proteins. Every panel is one protein, in the order the configs
 are given on the command line.
 
+### Function against abundance, in a protein measured both ways
+
+```bash
+python -m mpdms dual data/raw/SLC22A1/slc22a1_table_s1.xlsx --id SLC22A1 \
+    --abundance GFP_score --function SM73_1_score --control SM73_0_score
+```
+
+A variant can lose function for two reasons: there is less protein, or the protein that
+is there does not work. Measured both ways in one library, the separation is the result.
+
+| | question | what the answer looks like |
+| --- | --- | --- |
+| D01 | do the two assays agree, and is the selection real? | abundance against function, with the synonymous and dead anchors drawn, and a no-selection control panel beside it |
+| D02 | **which positions lose function the abundance does not account for?** | LOESS of function on abundance; per-site one-sided signed-rank on the residuals, BH across positions; the called sites listed and drawn along the sequence |
+
+Both assays are put on the pipeline's two-point scale, `(x − median(syn)) /
+(median(syn) − median(dead))`, so 0 is wild type and −1 is dead in **both**. Where no
+nonsense variants exist, in-frame deletions are the dead anchor. **The sign is handled
+by that formula, not by hand**: in a survival selection where a broken transporter lets
+the cell live, the dead anchor sits *above* wild type, the denominator is negative, and
+the rescaled score comes out the right way up with nothing to remember.
+
+This is A15's logic with a measured abundance axis in place of an ESM-1v prediction, and
+it is the stronger form of the same argument: A15 asks whether a model expected more
+constraint than the assay found; this asks whether the cell made the protein and it
+still did not work.
+
 ### A stability predictor, asked separately in each environment
 
 ```bash
