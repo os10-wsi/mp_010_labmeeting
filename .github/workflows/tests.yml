@@ -28,12 +28,10 @@ jobs:
           python -m pip install -r requirements.lock
 
       - name: Build the synthetic fixtures
-        # Several tests reach for configs/SYN*.yaml, which are generated rather than
-        # committed. Without this step they fail on a missing config and the real
-        # assertion is never reached. --offline keeps init from touching the network.
-        run: |
-          python tests/make_synthetic.py
-          python -m mpdms init data/raw/SYN1 data/raw/SYN2 data/raw/SYN3 --offline --force
+        # data/ and configs/SYN*.yaml are git-ignored and generated. Without them the
+        # tests that reach for a fixture fail on the missing file rather than on the
+        # thing they exist to check. Offline throughout.
+        run: python tests/bootstrap_fixtures.py
 
       - name: Run the tests
         env:

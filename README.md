@@ -67,10 +67,15 @@ Whichever you use, the test suite needs the synthetic fixtures, which are genera
 rather than committed:
 
 ```bash
-python tests/make_synthetic.py
-python -m mpdms init data/raw/SYN1 data/raw/SYN2 data/raw/SYN3 --offline --force
+python tests/bootstrap_fixtures.py     # datasets, structures, configs, stand-in ESM
 python -m pytest -q
 ```
+
+`bootstrap_fixtures.py` also writes a stand-in ESM-1v table for SYN1 and points the
+config at it. `mpdms init` never sets `evolution.esm_scores` — only `mpdms esm` does,
+and that needs the real weights and the network — so without this step every
+ESM-dependent analysis (A15, E06, B10) skips, and the tests that assert they produced
+something fail on a file that was never written.
 
 ## Quick start
 
