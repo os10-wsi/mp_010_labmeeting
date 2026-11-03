@@ -928,6 +928,78 @@ it is the stronger form of the same argument: A15 asks whether a model expected 
 constraint than the assay found; this asks whether the cell made the protein and it
 still did not work.
 
+### Are those sites the substrate site?
+
+```bash
+python -m mpdms activesite --sites outputs/_dual/d02_sites.csv --id SLC22A1 \
+    --uniprot O15245 --chain A \
+    --structure data/external/SLC22A1/8sc3.cif:ZVJ \
+    --structure data/external/SLC22A1/8sc6.cif:VIB \
+    --structure data/external/SLC22A1/8ju0.cif:SNL
+```
+
+D02 names a position without saying what it does. Where a ligand-bound structure
+exists the claim becomes checkable, and for SLC22A1 three exist: fenoterol (8SC3),
+thiamine (8SC6) and spironolactone (8JU0), each a different compound in the same
+pocket. E01 measures every residue's closest approach to any of them.
+
+| | question | what the answer looks like |
+| --- | --- | --- |
+| E01 | do the called sites touch the transported molecule? | distance to the nearest bound ligand, called against the rest, with every called site named |
+
+Three things would manufacture the result and each is handled rather than hoped away.
+A called site is in a TM helix nearly by construction and TM residues sit nearer the
+central cavity whatever the biology, so **the test is repeated inside the TM region**.
+A single drug is one pose of one pocket, so **every structure is scored separately**
+and a site is placed at its closest approach to any of them. Only modelled residues
+can be scored, so **the number entering each test is printed** rather than assumed.
+
+The side-chain-only distance is written to the table beside the all-atom one and never
+averaged with it: for glycine it is undefined, and glycine is exactly where the two
+differ most.
+
+### Does yeast abundance predict a human protein measured both ways?
+
+```bash
+python -m mpdms transfer --measured outputs/_dual/d02_sites.csv --id SLC22A1 \
+    --prediction PF07690=outputs/_predict/PF07690_SLC22A1_residues.csv \
+    --donor AQR1=data/processed/aqr1_on_slc22a1.csv
+```
+
+`bayes` pools a yeast family column by column and `predict` turns that into one number
+per residue of a human query. Both are built entirely out of **abundance** assays.
+`transfer` asks what those numbers are worth against a protein where abundance and
+function were measured in the same library — the only setting where the question has a
+clean answer.
+
+| | question | what the answer looks like |
+| --- | --- | --- |
+| T01 | every predictor against every measured quantity | one panel each, the D02-called sites picked out |
+| T02 | the same correlations side by side | Spearman over positions with 95% bootstrap intervals |
+
+The three measured quantities are not interchangeable and the comparison between them
+is the result. **Abundance** is what the yeast assays also measured; a family abundance
+model that cannot predict it is not working. **Function** is abundance plus everything
+else, and an abundance model should reach it only through abundance. **The residual**
+is D02's quantity, function with abundance regressed out, and an abundance model has no
+access to it by construction.
+
+So the module states the ordering before it looks — `rho(abundance)` > `rho(function)`
+>> `rho(residual)` ~ 0 — and T02 is drawn to make that ordering, or its absence,
+visible. A residual correlation would be the interesting failure: it would mean the
+yeast assays were reading something beyond abundance all along. The tests plant both
+cases and assert the module separates them.
+
+`--donor` takes one yeast protein's site scores already on the target's numbering,
+as a baseline for the pooled model to beat. The mapping is the part most likely to be
+wrong, so it stays a plain two-column file rather than being computed inside the
+module; `data/alignments/` holds the AQR1 ↔ SLC22A1 column map and the reasons not to
+trust it residue by residue.
+
+Correlations are over positions, not variants. These predictors are position-scored,
+every substitution at a residue gets the same number, and treating variants as
+independent would inflate n twentyfold and shrink every interval to nothing.
+
 ### A stability predictor, asked separately in each environment
 
 ```bash

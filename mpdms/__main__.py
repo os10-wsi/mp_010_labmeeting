@@ -3,7 +3,7 @@ import sys
 
 
 def main():
-    if len(sys.argv) < 2 or sys.argv[1] not in ("init", "run", "helix", "esm", "validate", "bench", "family", "tmhmm", "report", "quickstart", "batch", "panel", "aggregate", "univariate", "bayes", "ladder", "clinvar", "identity", "predict", "famstruct", "environ", "insertion", "arch", "burial", "access", "homolog", "cavity", "stability", "dual"):
+    if len(sys.argv) < 2 or sys.argv[1] not in ("init", "run", "helix", "esm", "validate", "bench", "family", "tmhmm", "report", "quickstart", "batch", "panel", "aggregate", "univariate", "bayes", "ladder", "clinvar", "identity", "predict", "famstruct", "environ", "insertion", "arch", "burial", "access", "homolog", "cavity", "stability", "dual", "activesite", "transfer"):
         sys.exit("usage: python -m mpdms quickstart <fitness_file> --gff3 <file>   (start here)"
                  " | python -m mpdms batch <folder_of_dimsum_output>"
                  " | python -m mpdms panel configs/*.yaml --only a01,a15"
@@ -40,6 +40,10 @@ def main():
         from .architecture import main as m
     elif cmd == "dual":
         from .dualassay import main as m
+    elif cmd == "activesite":
+        from .activesite import main as m
+    elif cmd == "transfer":
+        from .transfer import main as m
     elif cmd == "stability":
         from .stability import main as m
     elif cmd == "burial":
