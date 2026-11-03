@@ -46,3 +46,23 @@ python -m mpdms bayes --family PF07690=configs/AQR1_fitness.yaml,... \
 
 The pairwise map is kept here because the single-donor comparison is still worth
 running as a baseline for the pooled one — it is the thing pooling has to beat.
+
+## The join table
+
+`slc22a1_sites_with_aqr1_column.csv` is one row per SLC22A1 position tested by D02
+(540 of them), carrying the measured abundance, function and residual, the D02 call,
+the distance to the nearest bound ligand, and the AQR1 position it aligns to. 467 have
+an AQR1 partner and 361 of those pass the topology check.
+
+To run the AQR1 comparison, join your AQR1 site medians onto `aqr1_pos`, and filter on
+`topology_ok` before reading anything position by position:
+
+```python
+aqr1 = ...                                    # columns: pos, site_median
+t = (pd.read_csv("data/alignments/slc22a1_sites_with_aqr1_column.csv")
+       .merge(aqr1.rename(columns={"pos": "aqr1_pos"}), on="aqr1_pos")
+       .query("topology_ok == 1"))
+```
+
+The same table, with `site_median` renamed to `score` and `slc22a1_pos` to `pos`, is
+the `--donor AQR1=...` file `mpdms transfer` wants.
