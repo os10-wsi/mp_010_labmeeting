@@ -3,6 +3,11 @@ __pycache__/
 .pytest_cache/
 data/raw/*
 !data/raw/.gitkeep
+# published supplementary tables are committed so an analysis that reads one is
+# reproducible from the checkout alone; measured datasets stay out
+!data/raw/SLC22A1/
+data/raw/SLC22A1/*
+!data/raw/SLC22A1/slc22a1_table_s1.xlsx
 data/external/*
 !data/external/.gitkeep
 data/processed/*
