@@ -40,6 +40,38 @@ and stop, `--only a05,a22` to run a subset, `--style default` for slide-style fi
 Everything below is the longer route, for when a dataset needs something the one-liner
 cannot guess.
 
+## Running it from the repository
+
+Three places this runs, and they are not interchangeable:
+
+**On the farm, from a checkout** — this is where real analyses belong. Each one gets a
+script in `scripts/` that names its inputs, fails immediately if one is missing, and
+writes to its own output folder:
+
+```bash
+REPO=$HOME/mp_010_labmeeting DATA=$PWD bash scripts/run_dual_slc22a1.sh
+# or: bsub -q normal -M 8000 -R "select[mem>8000] rusage[mem=8000]" \
+#          -o d_%J.log "bash scripts/run_dual_slc22a1.sh"
+```
+
+**In GitHub Actions** — tests only (`.github/workflows/tests.yml`), on every push and
+pull request. CI builds the synthetic fixtures and runs `pytest`; it never runs an
+analysis, because `data/` is git-ignored and unpublished measurements have no business
+being copied onto a hosted runner.
+
+**In a Claude Code cloud session** — the checkout is there but the container is rebuilt
+between sessions, so the pinned packages have to be reinstalled before anything will
+import. A `SessionStart` hook is the place for that.
+
+Whichever you use, the test suite needs the synthetic fixtures, which are generated
+rather than committed:
+
+```bash
+python tests/make_synthetic.py
+python -m mpdms init data/raw/SYN1 data/raw/SYN2 data/raw/SYN3 --offline --force
+python -m pytest -q
+```
+
 ## Quick start
 
 ```bash
