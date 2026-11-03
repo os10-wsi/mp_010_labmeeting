@@ -955,6 +955,33 @@ functional is the same position here.
 Nothing is pooled across proteins. Every panel is one protein, in the order the configs
 are given on the command line.
 
+### Does a family's constraint transfer to a protein measured separately?
+
+```bash
+python -m mpdms transfer \
+  --family hexose=configs/HXT1.yaml,configs/HXT2.yaml,configs/HXT3.yaml,configs/HXT7.yaml \
+  --query SLC22A1=O15245 --query SLC2A10=O95528 \
+  --scores SLC22A1=outputs/_dual/variants.csv \
+  --score-cols abundance,function --against HXT2
+```
+
+| | question | what the answer looks like |
+| --- | --- | --- |
+| X01 | **how good is the alignment, really?** | every pairwise identity, the family against itself as the yardstick, with the twilight zone marked |
+| X02 | does the family's column mean predict the query's measurements? | family μ against the query's site median, one panel per readout, ρ with a bootstrap interval |
+| X03 | does one member on its own do as well? | the same against a single named member — the pairwise comparison pooling is meant to improve on |
+
+**X01 is not a formality.** Position-level transfer is only as good as the column
+assignment under it. Two MFS transporters from *different families* sit at 20–25%
+identity — the twilight zone — where an aligner returns columns that look like data and
+a three-residue register slip turns a real relationship into noise. A null result there
+is uninterpretable: it cannot be told apart from a bad alignment. The run prints a loud
+warning when a query is no closer to the family than an unrelated protein would be.
+
+So **pass a true ortholog as a second `--query`**. If constraint transfers to the
+ortholog and not to the distant protein, that is a result; if it transfers to neither,
+the method failed, not the biology.
+
 ### Function against abundance, in a protein measured both ways
 
 ```bash
